@@ -29,6 +29,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { LeadAvatar } from "./LeadAvatar";
+import { isContactedColumn } from "@/constants/columnPatterns";
 
 /* ── Tag colors ───────────────────────────────────────────────── */
 const TAG_HUES = [
@@ -217,8 +218,11 @@ export const LeadCard = memo(({
 
     const logToday = (e) => {
         e.stopPropagation();
+        // Utilise isContactedColumn (patterns centralisés) au lieu d'une comparaison exacte
+        // sur "contacté" — corrige le bug où les colonnes nommées "Appel", "Relance", etc.
+        // n'étaient pas détectées comme cibles de déplacement automatique.
         const contactedColumn = isJobs ? null : Object.values(workspace.columns).find(
-            (c) => c.name.toLowerCase() === "contacté"
+            (c) => isContactedColumn(c.name)
         );
         const willMove = contactedColumn && lead.columnId !== contactedColumn.id;
         dispatch({ type: "LOG_CONTACT", workspaceId: workspace.id, leadId: lead.id,

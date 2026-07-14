@@ -6,10 +6,17 @@ import React, {
     useMemo,
     useReducer,
     useRef,
+    useState,
 } from "react";
 import { inferColumnColor } from "@/lib/columnColors";
 import { startAutoBackup, stopAutoBackup, saveBackup } from "@/lib/autoBackup";
 import { resolveLogo } from "@/lib/logoUtils";
+import {
+    isContactedColumn,
+    isNouveauColumn,
+    isWonColumn,
+    isMeetingColumn,
+} from "@/constants/columnPatterns";
 
 // ---------- Utilities ----------
 const uid = () =>
@@ -24,18 +31,9 @@ const DEFAULT_COLUMNS = [
     "Perdu",
 ];
 
-const CONTACTED_PATTERNS = ["contact", "appel", "relance", "call"];
-
+// shouldPromptNote : même logique que isContactedColumn (colonne de type "contacté")
 function shouldPromptNote(name = "") {
-    const n = name.toLowerCase().trim();
-    return CONTACTED_PATTERNS.some((p) => n.includes(p));
-}
-
-// ── Détection colonne "Contacté" ──────────────────────────────────────────────
-// Retourne true si le nom de la colonne correspond à une étape "contacté"
-function isContactedColumn(name = "") {
-    const n = name.toLowerCase().trim();
-    return CONTACTED_PATTERNS.some((p) => n.includes(p));
+    return isContactedColumn(name);
 }
 
 /**
@@ -237,44 +235,59 @@ function loadState() {
 // Taille max autorisée en localStorage avant d'avertir l'utilisateur (4MB)
 const LS_WARN_BYTES = 4 * 1024 * 1024;
 
+/**
+ * Tente de sauvegarder l'état dans localStorage.
+ * Retourne true si la sauvegarde a réussi, false si le quota est dépassé.
+ *
+ * En cas d'échec (QuotaExceededError) :
+ *   - Ne lève PAS d'exception (gestion silencieuse côté appelant)
+ *   - Déclenche un backup IndexedDB immédiat pour ne rien perdre
+ *   - Retourne false pour que le provider puisse afficher une alerte persistante
+ */
 function saveState(state) {
     try {
         const { lastDeleted: _ld, ...persistent } = state;
         const serialized = JSON.stringify(persistent);
 
-        // Avertir si on approche de la limite localStorage (5MB typique)
+        // Avertir en console si on approche de la limite (5MB typique)
         if (serialized.length > LS_WARN_BYTES) {
             console.warn(
                 `[CRM] État volumineux : ${(serialized.length / 1024).toFixed(0)} KB — risque de quota localStorage.`
             );
         }
 
-        // Sauvegarder l'état précédent comme backup avant d'écraser
+        // Sauvegarder l'état précédent comme backup localStorage avant d'écraser
         try {
             const current = localStorage.getItem(STORAGE_KEY);
             if (current) localStorage.setItem(BACKUP_KEY, current);
         } catch {}
 
         localStorage.setItem(STORAGE_KEY, serialized);
+        return true; // succès
     } catch (err) {
-        // Quota dépassé ou mode privé — alerter l'utilisateur
-        console.error("[CRM] Impossible de sauvegarder :", err);
-        import("sonner").then(({ toast }) =>
-            toast.error("⚠️ Sauvegarde impossible — stockage plein ou navigation privée", {
-                duration: 8000,
-            })
-        );
+        // Quota dépassé ou mode privé
+        console.error("[CRM] Impossible de sauvegarder dans localStorage :", err);
+        // Backup IndexedDB immédiat pour ne pas perdre les données en mémoire
+        saveBackup(state).catch(() => {});
+        return false; // échec
     }
 }
 
 // Référence au timer du debounce — module-level pour persister entre les appels
 let _saveDebounceTimer = null;
 
-function saveStateDebounced(state) {
+/**
+ * Debounce de saveState — appelle le callback onResult(success: boolean)
+ * quand la sauvegarde réelle est effectuée.
+ * @param {object} state
+ * @param {(success: boolean) => void} [onResult]
+ */
+function saveStateDebounced(state, onResult) {
     if (_saveDebounceTimer) clearTimeout(_saveDebounceTimer);
     _saveDebounceTimer = setTimeout(() => {
         _saveDebounceTimer = null;
-        saveState(state);
+        const ok = saveState(state);
+        onResult?.(ok);
     }, 500);
 }
 
@@ -941,9 +954,11 @@ function reducer(state, action) {
                   ]
                 : lead.notes || [];
 
-            // Auto-move to "Contacté" column if it exists and lead isn't already there
+            // Auto-move vers la colonne "Contacté" si elle existe et que le lead n'y est pas déjà.
+            // Utilise isContactedColumn (patterns centralisés) au lieu d'une comparaison exacte
+            // sur "contacté" — couvre aussi "Appel", "Relance", "Call", etc.
             const contactedColumn = Object.values(ws.columns).find(
-                (c) => c.name.toLowerCase() === "contacté"
+                (c) => isContactedColumn(c.name)
             );
             const shouldMove =
                 contactedColumn && lead.columnId !== contactedColumn.id;
@@ -1259,6 +1274,10 @@ export function CrmProvider({ children }) {
         return saved ? { ...base, ...saved, lastDeleted: null } : base;
     });
 
+    // storageError : true si le dernier saveState a échoué (quota dépassé).
+    // Exposé dans le contexte pour permettre l'affichage d'une alerte persistante.
+    const [storageError, setStorageError] = useState(false);
+
     // Undo stack — diffs légers (workspaces modifiés uniquement)
     // Chaque entrée = { changedWsIds, snapshots, topLevel } produit par makeDiff()
     const undoStackRef = useRef([]); // Array<diff>
@@ -1326,8 +1345,11 @@ export function CrmProvider({ children }) {
 
     // Persist to localStorage — debounce 500ms pour éviter de bloquer le thread
     // principal à chaque dispatch (JSON.stringify sur 300+ leads est coûteux).
+    // onResult reçoit true si la sauvegarde a réussi, false si quota dépassé.
     useEffect(() => {
-        saveStateDebounced(state);
+        saveStateDebounced(state, (ok) => {
+            setStorageError(!ok);
+        });
     }, [state]);
 
     // Flush immédiat avant que la page se ferme — garantit que rien n'est perdu
@@ -1433,8 +1455,8 @@ export function CrmProvider({ children }) {
 
     // Objet final du contexte — state change à chaque dispatch, mais stableApi reste identique
     const api = useMemo(
-        () => ({ state, ...stableApi }),
-        [state, stableApi],
+        () => ({ state, storageError, ...stableApi }),
+        [state, storageError, stableApi],
     );
 
     return <CrmContext.Provider value={api}>{children}</CrmContext.Provider>;

@@ -1,12 +1,9 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { Target } from "lucide-react";
+import { isContactedColumn } from "@/constants/columnPatterns";
 
-// ─── Patterns pour détecter les colonnes "contacté" ──────────────────────────
-const CONTACTED_PATTERNS = ["contact", "appel", "relance", "call"];
-function isContactedCol(name = "") {
-    const n = name.toLowerCase().trim();
-    return CONTACTED_PATTERNS.some((p) => n.includes(p));
-}
+// ─── Helper local : accepte un nom de colonne (string) ───────────────────────
+const isContactedCol = (name = "") => isContactedColumn(name);
 
 // ─── Clé localStorage pour l'objectif ────────────────────────────────────────
 const GOAL_KEY = "crm_daily_goal";

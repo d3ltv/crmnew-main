@@ -9,6 +9,7 @@ import {
 import { CreateWorkspaceDialog } from "./CreateWorkspaceDialog";
 import { ThemeToggle } from "./ThemeToggle";
 import { StatsDashboard } from "./StatsDashboard";
+import { StorageErrorBanner } from "./StorageErrorBanner";
 import { getColumnColor } from "@/lib/columnColors";
 import {
     AlertDialog,
@@ -273,6 +274,8 @@ export const WorkspacesPage = () => {
 
     return (
         <div className="min-h-screen bg-background" data-testid="workspaces-page">
+            {/* Alerte persistante si le quota localStorage est dépassé */}
+            <StorageErrorBanner />
             {/* Nav */}
             <nav className="border-b border-border bg-background/95 backdrop-blur-sm sticky top-0 z-30">
                 <div className="max-w-5xl mx-auto px-4 sm:px-8 h-14 flex items-center justify-between">

@@ -40,13 +40,10 @@ import {
 import { ColorPickerRow } from "./ColorPickerRow";
 import { getColumnColor } from "@/lib/columnColors";
 import { useCrm } from "@/context/CrmContext";
+import { isContactedColumn } from "@/constants/columnPatterns";
 
-// Détecte une colonne de type "contacté" pour le tri par défaut
-const CONTACTED_PATTERNS = ["contact", "appel", "relance", "call"];
-function isContactedCol(name = "") {
-    const n = name.toLowerCase().trim();
-    return CONTACTED_PATTERNS.some((p) => n.includes(p));
-}
+// Wrapper local : accepte un nom de colonne string
+const isContactedCol = (name = "") => isContactedColumn(name);
 
 // DropZone between cards — shows an animated insertion line
 const InsertionPlaceholder = () => (

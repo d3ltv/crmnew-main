@@ -11,39 +11,15 @@ import { CsvImportModal } from "./CsvImportModal";
 import { CallNoteModal } from "./CallNoteModal";
 import { WonDealModal } from "./WonDealModal";
 import { MeetingModal } from "./MeetingModal";
+import { StorageErrorBanner } from "./StorageErrorBanner";
 import { Users, Upload, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-
-const WON_PATTERNS = ["gagné", "gagne", "won", "signé", "signe", "closed won"];
-function isWonColumn(col) {
-    if (!col) return false;
-    const n = col.name.toLowerCase();
-    return WON_PATTERNS.some((p) => n.includes(p));
-}
-
-// Colonne de type "Nouveau"
-const NOUVEAU_PATTERNS = ["nouveau", "new", "prospect", "entrant"];
-function isNouveauColumn(col) {
-    if (!col) return false;
-    const n = col.name.toLowerCase();
-    return NOUVEAU_PATTERNS.some((p) => n.includes(p));
-}
-
-// Colonne de type "Contacté"
-const CONTACTED_PATTERNS = ["contact", "appel", "relance", "call"];
-function isContactedColumn(col) {
-    if (!col) return false;
-    const n = col.name.toLowerCase();
-    return CONTACTED_PATTERNS.some((p) => n.includes(p));
-}
-
-// Colonne de type "Rendez-vous"
-const MEETING_PATTERNS = ["rendez-vous", "rendez vous", "rdv", "meeting", "appointment"];
-function isMeetingColumn(col) {
-    if (!col) return false;
-    const n = col.name.toLowerCase();
-    return MEETING_PATTERNS.some((p) => n.includes(p));
-}
+import {
+    isWonCol as isWonColumn,
+    isNouveauCol as isNouveauColumn,
+    isContactedCol as isContactedColumn,
+    isMeetingCol as isMeetingColumn,
+} from "@/constants/columnPatterns";
 
 export const WorkspacePage = () => {
     const { state, dispatch } = useCrm();
@@ -177,6 +153,8 @@ export const WorkspacePage = () => {
                     }}
             />
             <main className="flex-1 flex flex-col min-w-0 h-screen h-[100dvh] overflow-hidden">
+                {/* Alerte persistante si le quota localStorage est dépassé */}
+                <StorageErrorBanner />
                 <TopBar
                     workspace={workspace}
                     filter={filter}

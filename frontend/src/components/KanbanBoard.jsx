@@ -8,19 +8,14 @@ import {
     PopoverContent,
     PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+    isContactedColumn,
+    isNouveauColumn,
+} from "@/constants/columnPatterns";
 
-// Même patterns que le reducer — détecte une colonne de type "contacté"
-const CONTACTED_PATTERNS = ["contact", "appel", "relance", "call"];
-function isContactedCol(name = "") {
-    const n = name.toLowerCase().trim();
-    return CONTACTED_PATTERNS.some((p) => n.includes(p));
-}
-
-const NOUVEAU_PATTERNS = ["nouveau", "new", "prospect", "entrant", "candidature"];
-function isNouveauCol(name = "") {
-    const n = name.toLowerCase().trim();
-    return NOUVEAU_PATTERNS.some((p) => n.includes(p));
-}
+// Wrappers acceptant un objet colonne { name } — interface locale du composant
+const isContactedCol = (name = "") => isContactedColumn(name);
+const isNouveauCol   = (name = "") => isNouveauColumn(name);
 
 export const KanbanBoard = ({
     workspace,

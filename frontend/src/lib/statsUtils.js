@@ -1,5 +1,11 @@
 // ---------- Stats computation helpers ----------
 
+import {
+    isWonColumn,
+    isLostColumn,
+    isContactedColumn,
+} from "@/constants/columnPatterns";
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -26,19 +32,15 @@ function median(arr) {
 }
 
 /**
- * Détecte la colonne "Gagné" et "Perdu" d'un workspace par patterns de nom.
+ * Détecte la colonne "Gagné", "Perdu" et les colonnes "Contacté" d'un workspace
+ * via les patterns centralisés dans columnPatterns.js
  */
 function detectSpecialCols(columns) {
-    const WON_P  = ["gagné", "gagne", "won", "signé", "signe", "closed won"];
-    const LOST_P = ["perdu", "lost", "closed lost", "abandon"];
-    const CONTACT_P = ["contact", "appel", "relance", "call", "contacté"];
-
     let wonId = null, lostId = null, contactIds = [];
     for (const col of Object.values(columns)) {
-        const n = col.name.toLowerCase();
-        if (!wonId  && WON_P.some((p) => n.includes(p)))     wonId = col.id;
-        if (!lostId && LOST_P.some((p) => n.includes(p)))    lostId = col.id;
-        if (CONTACT_P.some((p) => n.includes(p)))            contactIds.push(col.id);
+        if (!wonId  && isWonColumn(col.name))      wonId = col.id;
+        if (!lostId && isLostColumn(col.name))     lostId = col.id;
+        if (isContactedColumn(col.name))           contactIds.push(col.id);
     }
     return { wonId, lostId, contactIds };
 }
