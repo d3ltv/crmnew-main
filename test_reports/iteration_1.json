@@ -1,0 +1,35 @@
+{
+  "summary": "Frontend-only CRM (Apple-inspired, French, in-memory) tested end-to-end. All primary flows work: onboarding, workspace creation, lead creation, lead detail panel (edit fields, status change via select, tags, notes, next action), inline column title double-click edit, add column, search filter, CSV import (upload + mapping + confirm creating 3 leads), theme toggle to dark mode, lead deletion with sonner 'Annuler' undo toast, sidebar home navigation, second workspace creation ('BTP') with proper isolation (Avocats shows 3 leads, BTP shows 0), and Escape closes detail panel. Native HTML5 drag-and-drop was not exercised via Playwright (known flaky) but the status-select alternative works.",
+  "tested_scope": ["frontend", "integration"],
+  "passed": [
+    "Onboarding screen with create-first-workspace-btn",
+    "Workspace 'Avocats' created via name+sector+create buttons",
+    "Empty state 'Créer un lead' button creates a lead card",
+    "Lead card click opens lead-detail-panel with slide-in",
+    "Company name edit updates card in real time",
+    "Status select has 6 options; changing status moves the lead",
+    "Tag added via lead-tag-input + Enter",
+    "Note added via lead-note-input + lead-add-note-btn",
+    "Next action date and label persist",
+    "Escape key closes detail panel",
+    "Column title inline double-click edit ('Edited' persisted, seen on workspace card preview)",
+    "Add column with new-column-input creates 'Prospection'",
+    "Search input filters leads instantly",
+    "CSV import: file upload -> step 2 mapping -> confirm imports 3 leads ('3 lead(s) importé(s)' toast)",
+    "Theme toggle switches root className to 'dark' (dark screenshot captured)",
+    "Lead delete triggers sonner toast with 'Annuler' undo action",
+    "Sidebar home button returns to workspaces list",
+    "Second workspace 'BTP' created; workspace isolation verified (Avocats=3 leads, BTP=0 leads)"
+  ],
+  "failed": [],
+  "not_tested": [
+    "Native HTML5 drag-and-drop of lead between columns (skipped due to Playwright unreliability; alternative via status select verified working)",
+    "Native HTML5 drag-and-drop of column reordering (skipped for same reason)",
+    "CSV export download (topbar-export-btn) — button visible but download not explicitly captured",
+    "Column deletion via column menu (menu opening not exercised)"
+  ],
+  "action_items": [],
+  "success_rate": {"backend": "N/A (skipped per request)", "frontend": "100% (18/18 executed checks passed)"},
+  "retest_needed": false,
+  "full_testing_deferred": true
+}

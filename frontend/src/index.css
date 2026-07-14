@@ -1,0 +1,406 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+    height: 100%;
+}
+
+body {
+    margin: 0;
+    font-family:
+        -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+        "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-feature-settings:
+        "ss01" on,
+        "cv11" on;
+}
+
+@layer base {
+    :root {
+        /* Neutrals — Apple light */
+        --background: 0 0% 100%; /* pure white */
+        --surface: 220 20% 98%; /* app chrome */
+        --surface-2: 220 14% 97%; /* column bg */
+        --foreground: 0 0% 7%; /* near black */
+        --card: 0 0% 100%;
+        --card-foreground: 0 0% 7%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 0 0% 7%;
+        --primary: 211 100% 50%; /* systemBlue #007AFF */
+        --primary-foreground: 0 0% 100%;
+        --secondary: 220 14% 96%;
+        --secondary-foreground: 0 0% 7%;
+        --muted: 220 14% 96%;
+        --muted-foreground: 220 8% 50%;
+        --accent: 220 14% 96%;
+        --accent-foreground: 0 0% 7%;
+        --destructive: 4 90% 58%; /* systemRed */
+        --destructive-foreground: 0 0% 100%;
+        --success: 142 71% 42%; /* systemGreen */
+        --border: 220 13% 90%;
+        --input: 220 13% 91%;
+        --ring: 211 100% 50%;
+        --radius: 0.75rem;
+
+        /* Shadows légères style Notion */
+        --shadow-card:
+            0 1px 2px rgba(15, 23, 42, 0.06),
+            0 0 0 1px rgba(15, 23, 42, 0.07);
+        --shadow-card-hover:
+            0 4px 16px -4px rgba(15, 23, 42, 0.12),
+            0 2px 6px -2px rgba(15, 23, 42, 0.08),
+            0 0 0 1px rgba(15, 23, 42, 0.08);
+        --shadow-panel:
+            0 24px 60px -20px rgba(15, 23, 42, 0.2),
+            0 8px 20px -8px rgba(15, 23, 42, 0.06);
+        --glow-primary: 0 0 0 4px hsl(var(--primary) / 0.08);
+
+        /* Subtle gradient background */
+        --bg-gradient:
+            radial-gradient(
+                1400px 700px at 100% -10%,
+                hsl(211 100% 55% / 0.05),
+                transparent 55%
+            ),
+            radial-gradient(
+                1000px 500px at -10% 110%,
+                hsl(280 90% 65% / 0.03),
+                transparent 55%
+            );
+    }
+    .dark {
+        --background: 222 14% 8%; /* fond global */
+        --surface: 222 14% 10%;
+        --surface-2: 222 14% 12%; /* fond des colonnes */
+        --foreground: 220 10% 94%;
+        --card: 222 14% 22%; /* cartes nettement plus claires que les colonnes */
+        --card-foreground: 220 10% 94%;
+        --popover: 222 14% 13%;
+        --popover-foreground: 220 10% 94%;
+        --primary: 211 100% 58%;
+        --primary-foreground: 0 0% 100%;
+        --secondary: 222 14% 20%;
+        --secondary-foreground: 220 10% 94%;
+        --muted: 222 14% 20%;
+        --muted-foreground: 220 8% 55%;
+        --accent: 222 14% 20%;
+        --accent-foreground: 220 10% 94%;
+        --destructive: 4 80% 55%;
+        --destructive-foreground: 0 0% 100%;
+        --success: 142 71% 45%;
+        --border: 222 14% 26%;
+        --input: 222 14% 26%;
+        --ring: 211 100% 58%;
+
+        --shadow-card:
+            0 2px 6px rgba(0, 0, 0, 0.35),
+            0 0 0 1px rgba(255, 255, 255, 0.05);
+        --shadow-card-hover:
+            0 8px 24px -6px rgba(0, 0, 0, 0.55),
+            0 0 0 1px rgba(255, 255, 255, 0.07);
+        --shadow-panel:
+            0 20px 50px -15px rgba(0, 0, 0, 0.7),
+            0 0 0 1px rgba(255, 255, 255, 0.04);
+        --glow-primary: 0 0 0 4px hsl(var(--primary) / 0.18);
+
+        /* Pas de gros dégradé coloré — fond neutre uniforme */
+        --bg-gradient: none;
+    }
+}
+
+@layer base {
+    * {
+        @apply border-border;
+    }
+    body {
+        @apply bg-background text-foreground;
+        /* Pas de gradient — fond blanc neutre style Notion */
+    }
+    button:focus-visible,
+    [role="button"]:focus-visible,
+    input:focus-visible,
+    textarea:focus-visible {
+        outline: 2px solid hsl(var(--ring));
+        outline-offset: 2px;
+    }
+    ::selection {
+        background: hsl(var(--primary) / 0.2);
+    }
+}
+
+/* Custom utilities */
+@layer utilities {
+    .surface {
+        background-color: hsl(var(--surface) / 0.6);
+        backdrop-filter: saturate(160%) blur(8px);
+    }
+    .surface-2 {
+        background-color: transparent;
+    }
+    .shadow-card {
+        box-shadow: var(--shadow-card);
+    }
+    .shadow-card-hover {
+        box-shadow: var(--shadow-card-hover);
+    }
+    .shadow-panel {
+        box-shadow: var(--shadow-panel);
+    }
+    .glass {
+        background-color: hsl(var(--background) / 0.65);
+        backdrop-filter: saturate(180%) blur(24px);
+        -webkit-backdrop-filter: saturate(180%) blur(24px);
+        border-color: hsl(var(--border) / 0.6);
+    }
+    .glass-strong {
+        background-color: hsl(var(--card) / 0.85);
+        backdrop-filter: saturate(200%) blur(28px);
+        -webkit-backdrop-filter: saturate(200%) blur(28px);
+    }
+    .no-scrollbar::-webkit-scrollbar {
+        display: none;
+    }
+    .no-scrollbar {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+    }
+    .glow-primary {
+        box-shadow: var(--glow-primary);
+    }
+    /* Very subtle card top-edge highlight — désactivé en mode flat */
+    .card-highlight {
+        position: relative;
+    }
+}
+
+/* Kanban column scroll polish */
+.kanban-col-scroll::-webkit-scrollbar {
+    width: 4px;
+}
+.kanban-col-scroll::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 2px;
+}
+.kanban-col-scroll::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+/* Séparateur vertical entre colonnes — supprimé, on utilise gap */
+
+/* Kanban horizontal scroll on mobile — snap between columns */
+.kanban-hscroll {
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
+}
+.kanban-hscroll > * {
+    scroll-snap-align: start;
+}
+@media (max-width: 767px) {
+    .kanban-hscroll > .kanban-col {
+        width: 88vw !important;
+        max-width: 340px;
+    }
+}
+
+/* Bigger tap targets on touch devices */
+@media (hover: none) and (pointer: coarse) {
+    button,
+    [role="button"],
+    a {
+        min-height: 40px;
+    }
+}
+
+/* Safe-area for notched phones */
+@supports (padding: max(0px)) {
+    .safe-bottom {
+        padding-bottom: max(env(safe-area-inset-bottom), 0.5rem);
+    }
+    .safe-top {
+        padding-top: max(env(safe-area-inset-top), 0px);
+    }
+    .safe-left {
+        padding-left: max(env(safe-area-inset-left), 0px);
+    }
+    .safe-right {
+        padding-right: max(env(safe-area-inset-right), 0px);
+    }
+    /* Sheet/panel on left edge needs safe-area on the left */
+    .safe-inset-left {
+        left: max(env(safe-area-inset-left), 0px);
+    }
+}
+
+/* ── Lead card — bg-card s'adapte au dark mode via CSS variables ── */
+.lead-card {
+    transition:
+        transform 150ms cubic-bezier(0.2, 0.8, 0.2, 1),
+        box-shadow 150ms ease;
+
+    background: hsl(var(--card)) !important;
+    border-color: hsl(var(--border)) !important;
+    box-shadow:
+        0 2px 8px rgba(15, 23, 42, 0.12),
+        0 1px 2px rgba(15, 23, 42, 0.08),
+        0 0 0 1px rgba(15, 23, 42, 0.05) !important;
+}
+
+.dark .lead-card {
+    box-shadow:
+        0 1px 4px rgba(0, 0, 0, 0.4),
+        0 0 0 1px rgba(255, 255, 255, 0.04) !important;
+}
+
+.lead-card:hover {
+    transform: translateY(-1px);
+    box-shadow:
+        0 4px 12px rgba(0, 0, 0, 0.10),
+        0 1px 4px rgba(0, 0, 0, 0.06) !important;
+}
+
+.dark .lead-card:hover {
+    box-shadow:
+        0 6px 20px rgba(0, 0, 0, 0.5),
+        0 2px 6px rgba(0, 0, 0, 0.3) !important;
+}
+
+.lead-card.dragging {
+    opacity: 0.25;
+    transform: scale(0.97) rotate(-0.5deg);
+}
+
+.lead-card::after {
+    display: none;
+}
+
+.column-drop-active {
+    background-color: hsl(var(--primary) / 0.04);
+    outline: 2px dashed hsl(var(--primary) / 0.4);
+    outline-offset: -3px;
+    transition: background-color 120ms ease;
+}
+.dark .column-drop-active {
+    background-color: hsl(var(--primary) / 0.10);
+    outline-color: hsl(var(--primary) / 0.5);
+}
+
+/* Insertion placeholder pulse */
+@keyframes placeholderPulse {
+    0%, 100% { opacity: 1; transform: scaleX(1); }
+    50%       { opacity: 0.6; transform: scaleX(0.96); }
+}
+.kanban-insert-placeholder {
+    transition: height 120ms ease;
+    transform-origin: center;
+}
+
+/* Drop slot — zero height at rest, expands when active */
+.kanban-drop-slot {
+    position: relative;
+}
+
+/* Primary button — subtle inner highlight for premium feel */
+.btn-primary-premium {
+    background: linear-gradient(
+        180deg,
+        hsl(var(--primary) / 1),
+        hsl(var(--primary) / 0.92)
+    );
+    box-shadow:
+        inset 0 1px 0 hsl(0 0% 100% / 0.2),
+        0 1px 2px hsl(var(--primary) / 0.4),
+        0 6px 20px -8px hsl(var(--primary) / 0.5);
+    color: white;
+}
+.btn-primary-premium:hover {
+    box-shadow:
+        inset 0 1px 0 hsl(0 0% 100% / 0.25),
+        0 2px 4px hsl(var(--primary) / 0.5),
+        0 10px 28px -10px hsl(var(--primary) / 0.65);
+    transform: translateY(-1px);
+}
+
+/* Entrance animations */
+@keyframes floatIn {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+.float-in {
+    animation: floatIn 340ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes cardIn {
+    from {
+        opacity: 0;
+        transform: translateY(6px) scale(0.98);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+.card-in {
+    animation: cardIn 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* Staggered kids — apply to a container to stagger direct children */
+.stagger > *:nth-child(1) {
+    animation-delay: 0ms;
+}
+.stagger > *:nth-child(2) {
+    animation-delay: 40ms;
+}
+.stagger > *:nth-child(3) {
+    animation-delay: 80ms;
+}
+.stagger > *:nth-child(4) {
+    animation-delay: 120ms;
+}
+.stagger > *:nth-child(5) {
+    animation-delay: 160ms;
+}
+.stagger > *:nth-child(6) {
+    animation-delay: 200ms;
+}
+
+/* Soft pulsing dot for overdue reminders */
+@keyframes softPulse {
+    0%,
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+    50% {
+        opacity: 0.65;
+        transform: scale(1.15);
+    }
+}
+.pulse-dot {
+    animation: softPulse 1.8s ease-in-out infinite;
+}
+
+/* Button press micro-interaction */
+button,
+[role="button"] {
+    transition:
+        background-color 140ms ease,
+        color 140ms ease,
+        transform 90ms ease,
+        box-shadow 160ms ease;
+}
+button:active:not(:disabled),
+[role="button"]:active {
+    transform: scale(0.97);
+}

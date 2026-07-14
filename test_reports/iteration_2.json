@@ -1,0 +1,57 @@
+{
+  "summary": "Iteration 2 frontend testing of Apple-inspired CRM (French, in-memory). Verified all new features: column colors + picker + auto-inference by name, custom fields with pin-to-card, status change timestamps (timeline on card + full history in panel with colored dots + long French date format), and hover quick action buttons (log today + reminder popover with date/label). All targeted scenarios PASSED. Kanban board is only mounted after the first lead is created (empty state renders instead when leadCount===0) — factored that into the flow.",
+  "test_scenarios_executed": [
+    {"scenario": "Workspace 'Avocats' onboarding + create-first-workspace flow", "result": "PASS"},
+    {"scenario": "6 default columns render with correct auto-inferred colors (Nouveau=blue, Contacté=amber, Rendez-vous=violet, Proposition=sky, Gagné=emerald, Perdu=rose) on bar+dot+chip", "result": "PASS"},
+    {"scenario": "column-color-picker renders inside column menu with all 9 swatches (gray, blue, amber, violet, sky, teal, green, red, pink)", "result": "PASS"},
+    {"scenario": "Picking pink on 'Nouveau' recolors bar/dot/chip immediately", "result": "PASS"},
+    {"scenario": "colorSetByUser flag: renaming a manually-colored column to 'Gagné' does NOT auto-revert to green — keeps pink", "result": "PASS"},
+    {"scenario": "Lead card shows colored left rail matching current column", "result": "PASS"},
+    {"scenario": "lead-status-time-<id> row shows 'Nouveau · DD/MM HH:MM' (French short datetime)", "result": "PASS"},
+    {"scenario": "Hover reveals quick-log-<id> + quick-reminder-<id>", "result": "PASS"},
+    {"scenario": "quick-log click → toast 'Contact du jour enregistré' + card shows 'Dernier contact à l'instant'", "result": "PASS"},
+    {"scenario": "quick-reminder popover date+label save → lead-next-action-badge shows '15 mars · Relance'", "result": "PASS"},
+    {"scenario": "Card click opens detail panel; quick-action buttons properly stopPropagation (panel opens only from body click)", "result": "PASS"},
+    {"scenario": "Add custom field (label='Nom du dirigeant', value='Jean Dupont') via custom-field-add-btn creates a custom-field-<id> row", "result": "PASS"},
+    {"scenario": "Pin toggle turns button primary blue (bg-primary/10 text-primary)", "result": "PASS"},
+    {"scenario": "After Escape close, lead-pinned-<fieldId> appears on kanban card with label + value", "result": "PASS"},
+    {"scenario": "Reopen panel, change status via lead-status-select → options carry colored dots per column, Contacté selection records history", "result": "PASS"},
+    {"scenario": "Status history panel shows 2 entries: Contacté (amber dot, 'actuel' badge) then Nouveau (pink dot); dates formatted 'DD mois., HH:MM' (formatDateTimeLong)", "result": "PASS"},
+    {"scenario": "lead-log-today-btn in panel triggers 'Contact du jour enregistré' toast + updates lastContact", "result": "PASS"},
+    {"scenario": "custom-field-remove deletes field row + removes lead-pinned entry from kanban card simultaneously", "result": "PASS"},
+    {"scenario": "Perdu column color changed to green via picker, then renamed to 'Won by us' — color stays green (colorSetByUser flag verified again)", "result": "PASS"},
+    {"scenario": "Add column 'Négociation' via add-column-btn → auto-inferred teal", "result": "PASS"},
+    {"scenario": "Add column 'Devis envoyé' → auto-inferred sky", "result": "PASS"},
+    {"scenario": "Workspace isolation: 2nd workspace 'Restaurants' opens empty (leads not shared)", "result": "PASS"}
+  ],
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "LeadDetailPanel — Champs personnalisés input row", "issues": ["At panel width 480px, the row (label 1/3 + value flex-1 + pin + remove buttons) can crowd right-edge; the 'add' button in the 'new field' row can be pushed slightly past the visible clip on <1600px viewports (playwright reported 'outside viewport' on 1600px width). Not user-blocking on ≥1600px, but consider min-width constraints or making value input narrower on small viewports."]},
+      {"screen": "Empty state vs Kanban", "issues": ["When a new workspace has 0 leads, the Kanban board (columns) is not rendered — only the empty state. Since the review spec mentions verifying the 6 default columns immediately after workspace creation, product may want to always render columns (with empty drop zones) so users see the pipeline structure before adding the first lead. Currently columns become visible only after first lead is added."]}
+    ]
+  },
+  "critical_code_review_comments": [
+    "LeadCard.jsx (306 lines) is still manageable but starting to accumulate concerns (drag, quick actions, reminder popover, pinned fields, timeline). Consider extracting QuickActionBar and ReminderPopover into sub-components for testability.",
+    "LeadDetailPanel.jsx (626 lines) is over the 700-line threshold soon — sections (Coordonnées, Tags, Custom Fields, Status History, Notes) could be modularized.",
+    "MOVE_LEAD is dispatched from both drag-drop AND status-select — both paths correctly append to statusHistory (verified). Good.",
+    "LeadDetailPanel reads `local = lead` directly from props (not a cloned local state) so external updates (LOG_CONTACT from card, MOVE_LEAD from drag) will reflect while panel is open. Verified via panel log-today toast + status history update round-trip.",
+    "Column ID prefixes are generated via nanoid-like short IDs — fine for in-memory app.",
+    "inferColumnColor uses substring matching on lowercase name (case & accent-insensitive substrings). Watch that 'nouveau' rule fires before 'négoc' if a column contains both — currently order is deterministic per RULES list. OK for current keyword set."
+  ],
+  "test_report_links": [],
+  "action_items": [
+    "(Optional) Consider rendering the Kanban board with columns even when leadCount===0 so the pipeline colors/structure are visible before the first lead is added (matches the spec's expectation of verifying 6 default columns immediately after workspace creation).",
+    "(Optional) Constrain Champs personnalisés row width or make value input narrower so the + / X / pin buttons never overflow on tight viewports.",
+    "Consider splitting LeadDetailPanel.jsx into sub-components (approaching 700-line guideline)."
+  ],
+  "updated_files": [],
+  "success_rate": {"frontend": "100%"},
+  "seed_data_creation": "Created workspaces 'Avocats' (with 1 lead + custom field + reminder) and 'Restaurants' (empty) during test — session-only, wiped on refresh.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All iteration-2 features verified. To open the Kanban board a lead must exist first (empty state otherwise). Radix Select 'lead-status-select' inside the fixed 480px right panel can be off-viewport at width<1920 — use JS click or wider viewport. DropdownMenu with ColorPickerRow stays open after picking a color and can block subsequent pointer events on the page — always Escape after picking. Card status timeline text renders as 'Name· DD/MM HH:MM' (French middle-dot, no space before). formatDateTimeLong yields 'DD mois., HH:MM' (e.g. '10 juil., 21:51').",
+  "rca of the issue": "N/A — no bugs found."
+}
