@@ -10,13 +10,31 @@ export const CallNoteModal = ({ open, workspace, lead, onClose, onAutoMoved }) =
     const { dispatch } = useCrm();
     const [text, setText] = useState("");
     const [outcome, setOutcome] = useState(null); // 'reached' | 'noanswer' | null
+    // true dès que l'utilisateur a cliqué manuellement sur un bouton outcome
+    const [outcomeManual, setOutcomeManual] = useState(false);
 
     useEffect(() => {
         if (open) {
             setText("");
             setOutcome(null);
+            setOutcomeManual(false);
         }
     }, [open, lead?.id]);
+
+    // Auto-sélection : si l'utilisateur n'a pas choisi manuellement,
+    // on déduit l'outcome depuis le texte
+    const handleTextChange = (e) => {
+        const val = e.target.value;
+        setText(val);
+        if (!outcomeManual) {
+            setOutcome(val.trim().length > 0 ? "reached" : null);
+        }
+    };
+
+    const handleOutcomeClick = (value) => {
+        setOutcome(value);
+        setOutcomeManual(true);
+    };
 
     useEffect(() => {
         const onKey = (e) => {
@@ -54,22 +72,23 @@ export const CallNoteModal = ({ open, workspace, lead, onClose, onAutoMoved }) =
         .find((c) => c.autoFollowup);
 
     const save = () => {
-        if (!outcome) return;
+        // Si aucun choix manuel et pas de texte → pas de réponse par défaut
+        const finalOutcome = outcome ?? "noanswer";
         const content = text.trim();
 
         // ── 1. Sauvegarder la note telle quelle (jamais modifiée) ──────────
-        const noteText = outcome === "reached"
+        const noteText = finalOutcome === "reached"
             ? (content ? `📞 Joint · ${content}` : "📞 Joint")
             : (content ? `📵 Pas de réponse · ${content}` : "📵 Pas de réponse");
 
-        if (outcome === "reached") {
+        if (finalOutcome === "reached") {
             dispatch({
                 type: "LOG_CONTACT",
                 workspaceId: workspace.id,
                 leadId: lead.id,
                 text: noteText,
             });
-        } else if (outcome === "noanswer") {
+        } else if (finalOutcome === "noanswer") {
             dispatch({
                 type: "ADD_NOTE",
                 workspaceId: workspace.id,
@@ -79,11 +98,13 @@ export const CallNoteModal = ({ open, workspace, lead, onClose, onAutoMoved }) =
         }
 
         // ── 1b. Déplacement vers la colonne de rappel ─────────────────────
-        // Si RDV détecté → toujours déplacer vers la colonne autoFollowup
-        // Si pas de réponse sans RDV → même logique (comportement existant)
+        // On déplace vers autoFollowup seulement si :
+        //   - un RDV a été détecté, OU
+        //   - l'utilisateur a explicitement cliqué "Pas de réponse"
+        //   (pas de déplacement si c'est le fallback silencieux sans action)
         const shouldMove = appointment
             ? (autoFollowupColumn && lead.columnId !== autoFollowupColumn.id)
-            : (outcome === "noanswer" && autoFollowupColumn && lead.columnId !== autoFollowupColumn.id);
+            : (finalOutcome === "noanswer" && outcomeManual && autoFollowupColumn && lead.columnId !== autoFollowupColumn.id);
 
         if (shouldMove) {
             // Signaler à WorkspacePage que ce déplacement est automatique
@@ -197,7 +218,7 @@ export const CallNoteModal = ({ open, workspace, lead, onClose, onAutoMoved }) =
                     <div className="mt-4 flex gap-2">
                         <button
                             data-testid="call-outcome-reached"
-                            onClick={() => setOutcome("reached")}
+                            onClick={() => handleOutcomeClick("reached")}
                             className={`flex-1 h-16 rounded-xl text-sm font-medium flex flex-col items-center justify-center gap-1 transition-all ${
                                 outcome === "reached"
                                     ? "bg-emerald-500 text-white shadow-lg scale-[1.02]"
@@ -209,7 +230,7 @@ export const CallNoteModal = ({ open, workspace, lead, onClose, onAutoMoved }) =
                         </button>
                         <button
                             data-testid="call-outcome-noanswer"
-                            onClick={() => setOutcome("noanswer")}
+                            onClick={() => handleOutcomeClick("noanswer")}
                             className={`flex-1 h-16 rounded-xl text-sm font-medium flex flex-col items-center justify-center gap-1 transition-all ${
                                 outcome === "noanswer"
                                     ? "bg-rose-500 text-white shadow-lg scale-[1.02]"
@@ -225,7 +246,7 @@ export const CallNoteModal = ({ open, workspace, lead, onClose, onAutoMoved }) =
                     <Textarea
                         data-testid="call-note-text"
                         value={text}
-                        onChange={(e) => setText(e.target.value)}
+                        onChange={handleTextChange}
                         placeholder="Note d'appel… Ex : « Rappeler M. Dupont au 06 12 34 56 78 »"
                         autoFocus
                         className="mt-3 min-h-[100px] resize-none rounded-xl text-sm"
@@ -292,7 +313,7 @@ export const CallNoteModal = ({ open, workspace, lead, onClose, onAutoMoved }) =
                 {/* ── Footer ── */}
                 <div className="px-5 py-3 border-t border-border/60 flex items-center justify-between gap-2 bg-secondary/30">
                     <div className="text-[11px] text-muted-foreground">
-                        {hasNewInfo && outcome && (
+                        {hasNewInfo && (
                             <span className="text-primary font-medium">
                                 ✓ Fiche mise à jour automatiquement
                             </span>
@@ -310,7 +331,6 @@ export const CallNoteModal = ({ open, workspace, lead, onClose, onAutoMoved }) =
                         <Button
                             onClick={save}
                             data-testid="call-note-save"
-                            disabled={!outcome}
                             className="h-10 rounded-full bg-primary hover:bg-primary/90 text-primary-foreground"
                         >
                             <Save size={14} className="mr-1.5" />

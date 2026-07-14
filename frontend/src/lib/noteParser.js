@@ -247,19 +247,27 @@ export function detectAppointment(text, now = new Date()) {
     // Le texte doit contenir un mot déclencheur OU une date explicite
     const hasTrigger = TRIGGER_RE.test(t);
 
-    // ── 1. Demain ─────────────────────────────────────────────────────────────
-    if (/\bdemain\b/.test(t)) {
+    // ── 1. Aujourd'hui (avec heure obligatoire) ───────────────────────────────
+    if (/\baujourd'?hui\b/.test(t)) {
+        date = clone(now);
+        timeStr = extractTime(t.split(/aujourd'?hui/)[1] || "");
+        // Sans heure, "aujourd'hui" seul ne constitue pas un RDV pertinent
+        if (!timeStr) date = null;
+    }
+
+    // ── 2. Demain ─────────────────────────────────────────────────────────────
+    else if (/\bdemain\b/.test(t)) {
         date = addDays(now, 1);
         timeStr = extractTime(t.split("demain")[1] || "");
     }
 
-    // ── 2. Après-demain ───────────────────────────────────────────────────────
+    // ── 3. Après-demain ───────────────────────────────────────────────────────
     else if (/\bapr[eè]s[\s-]?demain\b/.test(t)) {
         date = addDays(now, 2);
         timeStr = extractTime(t.replace(/.*apr[eè]s[\s-]?demain/, ""));
     }
 
-    // ── 3. "dans X jours" / "+Xj" ─────────────────────────────────────────────
+    // ── 4. "dans X jours" / "+Xj" ─────────────────────────────────────────────
     else if (/\bdans\s+(\d+)\s+jours?\b/.test(t)) {
         const m = t.match(/\bdans\s+(\d+)\s+jours?\b/);
         date = addDays(now, parseInt(m[1], 10));
@@ -271,7 +279,7 @@ export function detectAppointment(text, now = new Date()) {
         timeStr = extractTime(t.split(m[0])[1] || "");
     }
 
-    // ── 4. Jour de semaine + "prochain" ou seul ───────────────────────────────
+    // ── 5. Jour de semaine + "prochain" ou seul ───────────────────────────────
     else if (/\b(lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\b/.test(t)) {
         const m = t.match(/\b(lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\b/);
         const targetDay = DAYS_FR[m[1]];
@@ -280,7 +288,7 @@ export function detectAppointment(text, now = new Date()) {
         timeStr = extractTime(t.slice(t.indexOf(m[0]) + m[0].length));
     }
 
-    // ── 5. Date absolue : "20 juillet", "20 juillet 2026" ────────────────────
+    // ── 6. Date absolue : "20 juillet", "20 juillet 2026" ────────────────────
     else if (/\b(\d{1,2})\s+(janvier|f[ée]vrier|mars|avril|mai|juin|juillet|ao[uû]t|septembre|octobre|novembre|d[eé]cembre)\b/.test(t)) {
         const m = t.match(/\b(\d{1,2})\s+(janvier|f[ée]vrier|mars|avril|mai|juin|juillet|ao[uû]t|septembre|octobre|novembre|d[eé]cembre)(?:\s+(\d{4}))?\b/);
         const day = parseInt(m[1], 10);
@@ -295,7 +303,7 @@ export function detectAppointment(text, now = new Date()) {
         }
     }
 
-    // ── 6. Format numérique : "20/07", "20-07", "20/07/2026" ─────────────────
+    // ── 7. Format numérique : "20/07", "20-07", "20/07/2026" ─────────────────
     else if (/\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{4}))?\b/.test(t)) {
         const m = t.match(/\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{4}))?\b/);
         const day = parseInt(m[1], 10);
@@ -307,7 +315,7 @@ export function detectAppointment(text, now = new Date()) {
             timeStr = extractTime(t.slice(t.indexOf(m[0]) + m[0].length));
         }
     }
-    // ── 7. "le Xème" / "le X" (ce mois-ci) ──────────────────────────────────
+    // ── 8. "le Xème" / "le X" (ce mois-ci) ──────────────────────────────────
     else if (hasTrigger && /\ble\s+(\d{1,2})(?:er|ème|e)?\b/.test(t)) {
         const m = t.match(/\ble\s+(\d{1,2})(?:er|[eè]me|e)?\b/);
         const day = parseInt(m[1], 10);
@@ -343,9 +351,16 @@ export function detectAppointment(text, now = new Date()) {
     const mm = String(date.getMonth() + 1).padStart(2, "0");
     const hh = String(date.getHours()).padStart(2, "0");
     const min = String(date.getMinutes()).padStart(2, "0");
-    const label = time
-        ? `${dayNames[date.getDay()]} ${dd}/${mm} à ${hh}h${min !== "00" ? min : ""}`
+
+    const isToday = date.toDateString() === now.toDateString();
+    const isTomorrow = date.toDateString() === addDays(now, 1).toDateString();
+    const dayLabel = isToday ? "Aujourd'hui"
+        : isTomorrow ? "Demain"
         : `${dayNames[date.getDay()]} ${dd}/${mm}`;
+
+    const label = time
+        ? `${dayLabel} à ${hh}h${min !== "00" ? min : ""}`
+        : dayLabel;
 
     return {
         iso: date.toISOString(),

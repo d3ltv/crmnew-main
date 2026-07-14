@@ -135,7 +135,7 @@ export const TopBar = ({
             {/* Layout 3 colonnes : gauche / centre / droite */}
             <div className="px-3 sm:px-4 h-14 grid grid-cols-[1fr_auto_1fr] items-center gap-2">
 
-                {/* ── Colonne gauche : sidebar, titre ── */}
+                {/* ── Colonne gauche : sidebar, titre, vues ── */}
                 <div className="flex items-center gap-2 min-w-0">
                     {/* Mobile: hamburger opens sidebar sheet */}
                     <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
@@ -185,6 +185,25 @@ export const TopBar = ({
                             </p>
                         )}
                     </div>
+
+                    {/* Séparateur + Sélecteur de vue — collé au titre */}
+                    <div className="hidden sm:block w-px h-5 bg-border/60 shrink-0 ml-1" />
+                    <div className="hidden sm:flex items-center gap-0.5 bg-muted rounded-lg p-0.5 shrink-0">
+                        {VIEWS.map((v) => (
+                            <button
+                                key={v.id}
+                                onClick={() => onViewChange(v.id)}
+                                title={v.label}
+                                className={`w-8 h-8 flex items-center justify-center rounded-md transition-all ${
+                                    view === v.id
+                                        ? "bg-background text-foreground shadow-sm"
+                                        : "text-muted-foreground hover:text-foreground"
+                                }`}
+                            >
+                                {v.icon}
+                            </button>
+                        ))}
+                    </div>
                 </div>
 
                 {/* ── Colonne centre : mode rapide (si actif) + objectif quotidien ── */}
@@ -225,88 +244,79 @@ export const TopBar = ({
                 </div>
 
                 {/* ── Colonne droite : actions ── */}
-                <div className="flex items-center gap-0.5 sm:gap-1 justify-end">
+                <div className="flex items-center gap-2 justify-end">
 
-                    {/* Sélecteur de vue — icônes seules */}
-                    <div className="hidden sm:flex items-center gap-0.5 bg-muted rounded-lg p-0.5 mr-1">
-                        {VIEWS.map((v) => (
-                            <button
-                                key={v.id}
-                                onClick={() => onViewChange(v.id)}
-                                title={v.label}
-                                className={`w-8 h-8 flex items-center justify-center rounded-md transition-all ${
-                                    view === v.id
-                                        ? "bg-background text-foreground shadow-sm"
-                                        : "text-muted-foreground hover:text-foreground"
-                                }`}
+                    {/* ── Groupe 1 : Recherche + Champs cartes ── */}
+                    <div className="flex items-center gap-0.5">
+                        {/* Search expand */}
+                        {searchOpen && (
+                            <div className="animate-in fade-in slide-in-from-right-2 duration-150 mr-1">
+                                <div className="relative">
+                                    <Search
+                                        size={15}
+                                        className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
+                                    />
+                                    <Input
+                                        data-testid="workspace-search-input"
+                                        value={filter}
+                                        onChange={(e) => setFilter(e.target.value)}
+                                        onKeyDown={(e) => e.key === "Escape" && setSearchOpen(false)}
+                                        placeholder="Rechercher…"
+                                        autoFocus
+                                        className="pl-9 pr-9 h-9 w-44 sm:w-64 rounded-full bg-secondary/70 border-transparent focus-visible:bg-background transition-colors"
+                                    />
+                                    <button
+                                        aria-label="Fermer la recherche"
+                                        onClick={() => { setFilter(""); setSearchOpen(false); }}
+                                        className="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full hover:bg-secondary text-muted-foreground flex items-center justify-center"
+                                    >
+                                        <X size={13} />
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Search toggle */}
+                        <button
+                            data-testid="topbar-search-btn"
+                            aria-label="Rechercher"
+                            onClick={() => setSearchOpen((v) => !v)}
+                            className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors ${
+                                searchOpen
+                                    ? "bg-primary/10 text-primary"
+                                    : "hover:bg-secondary text-muted-foreground"
+                            }`}
+                        >
+                            <Search size={16} />
+                        </button>
+
+                        {/* Champs cartes */}
+                        <Popover>
+                            <PopoverTrigger asChild>
+                                <button
+                                    data-testid="topbar-card-fields-btn"
+                                    aria-label="Configurer les champs affichés sur les cartes"
+                                    title="Configurer la vue des cartes"
+                                    className="w-9 h-9 rounded-full hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors"
+                                >
+                                    <Columns3 size={16} />
+                                </button>
+                            </PopoverTrigger>
+                            <PopoverContent
+                                align="end"
+                                className="p-0 rounded-2xl overflow-hidden shadow-panel glass-strong w-auto"
+                                data-testid="card-fields-popover"
                             >
-                                {v.icon}
-                            </button>
-                        ))}
+                                <CardFieldsPanel workspace={workspace} />
+                            </PopoverContent>
+                        </Popover>
                     </div>
 
-                    {/* Search expand */}
-                    {searchOpen && (
-                        <div className="animate-in fade-in slide-in-from-right-2 duration-150 mr-1">
-                            <div className="relative">
-                                <Search
-                                    size={15}
-                                    className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
-                                />
-                                <Input
-                                    data-testid="workspace-search-input"
-                                    value={filter}
-                                    onChange={(e) => setFilter(e.target.value)}
-                                    onKeyDown={(e) => e.key === "Escape" && setSearchOpen(false)}
-                                    placeholder="Rechercher…"
-                                    autoFocus
-                                    className="pl-9 pr-9 h-9 w-44 sm:w-64 rounded-full bg-secondary/70 border-transparent focus-visible:bg-background transition-colors"
-                                />
-                                <button
-                                    aria-label="Fermer la recherche"
-                                    onClick={() => { setFilter(""); setSearchOpen(false); }}
-                                    className="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full hover:bg-secondary text-muted-foreground flex items-center justify-center"
-                                >
-                                    <X size={13} />
-                                </button>
-                            </div>
-                        </div>
-                    )}
+                    {/* Séparateur */}
+                    <div className="hidden sm:block w-px h-5 bg-border/60 shrink-0" />
 
-                    {/* Search toggle */}
-                    <button
-                        data-testid="topbar-search-btn"
-                        aria-label="Rechercher"
-                        onClick={() => setSearchOpen((v) => !v)}
-                        className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors ${
-                            searchOpen
-                                ? "bg-primary/10 text-primary"
-                                : "hover:bg-secondary text-muted-foreground"
-                        }`}
-                    >
-                        <Search size={16} />
-                    </button>
-
-                    {/* Champs cartes */}
-                    <Popover>
-                        <PopoverTrigger asChild>
-                            <button
-                                data-testid="topbar-card-fields-btn"
-                                aria-label="Configurer les champs affichés sur les cartes"
-                                title="Configurer la vue des cartes"
-                                className="w-9 h-9 rounded-full hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors"
-                            >
-                                <Columns3 size={16} />
-                            </button>
-                        </PopoverTrigger>
-                        <PopoverContent
-                            align="end"
-                            className="p-0 rounded-2xl overflow-hidden shadow-panel glass-strong w-auto"
-                            data-testid="card-fields-popover"
-                        >
-                            <CardFieldsPanel workspace={workspace} />
-                        </PopoverContent>
-                    </Popover>
+                    {/* ── Groupe 2 : Notifs + Thème + Paramètres + Undo ── */}
+                    <div className="flex items-center gap-0.5">
 
                     {/* Notifications */}
                     <Popover>
@@ -509,10 +519,15 @@ export const TopBar = ({
                         <Undo2 size={15} />
                     </button>
 
+                    </div>{/* fin groupe 2 */}
+
+                    {/* Séparateur */}
+                    <div className="hidden sm:block w-px h-5 bg-border/60 shrink-0" />
+
                     <Button
                         onClick={() => onNewLead()}
                         data-testid="topbar-new-lead-btn"
-                        className="h-8 rounded-lg px-2.5 sm:px-3.5 gap-1.5 ml-0.5 bg-foreground text-background hover:bg-foreground/85 text-[12px] font-medium"
+                        className="h-8 rounded-lg px-2.5 sm:px-3.5 gap-1.5 bg-foreground text-background hover:bg-foreground/85 text-[12px] font-medium"
                     >
                         <Plus size={13} />
                         <span className="hidden sm:inline">Nouveau lead</span>

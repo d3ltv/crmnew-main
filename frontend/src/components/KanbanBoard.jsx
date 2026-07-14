@@ -89,6 +89,7 @@ export const KanbanBoard = ({
 
     // --- Leads ordered per column (respects leadOrder if present) ---
     const byColumn = useMemo(() => {
+        const now = Date.now();
         const m = {};
         workspace.columnOrder.forEach((cid) => (m[cid] = []));
         // Group filtered leads by column
@@ -97,6 +98,14 @@ export const KanbanBoard = ({
         filtered.forEach((l) => {
             if (grouped[l.columnId]) grouped[l.columnId].push(l);
         });
+
+        // Détecte si un lead a un RDV dans moins de 24h (non dépassé)
+        const hasUrgentRdv = (lead) => {
+            if (!lead.nextAction?.label?.startsWith("📅 RDV")) return false;
+            const t = new Date(lead.nextAction.dueAt || lead.nextAction.date).getTime();
+            return t > now - 60000 && t - now < 24 * 3600 * 1000;
+        };
+
         // Sort each group by stored leadOrder if present
         workspace.columnOrder.forEach((cid) => {
             const col = workspace.columns[cid];
@@ -123,6 +132,13 @@ export const KanbanBoard = ({
                     ...m[cid].filter((l) => !l.staleInContacted),
                 ];
             }
+
+            // RDV urgent (< 24h) en tête sur TOUTES les colonnes, peu importe le tri
+            // Priorité absolue sur la colonne autoFollowup (colonne rappel auto)
+            m[cid] = [
+                ...m[cid].filter(hasUrgentRdv),
+                ...m[cid].filter((l) => !hasUrgentRdv(l)),
+            ];
         });
         return m;
     }, [filtered, workspace.columnOrder, workspace.leadOrder, workspace.columns]);
@@ -161,6 +177,9 @@ export const KanbanBoard = ({
     const processCurrentLead = useCallback(() => {
         const lead = nouveauLeads[quickIndex];
         if (!lead || !contactedColId) return;
+        // Signaler à WorkspacePage de ne pas ouvrir un 2e CallNoteModal
+        // pour ce lead (le KanbanBoard l'ouvre déjà via setQuickNoteLead)
+        onAutoMoved?.(lead.id);
         dispatch({
             type: "MOVE_LEAD_ORDERED",
             workspaceId: workspace.id,
@@ -171,7 +190,7 @@ export const KanbanBoard = ({
         setQuickNoteLead(lead);
         // Ne pas avancer l'index ici — la liste se raccourcit automatiquement
         // Le quickIndex reste 0 donc le prochain lead "monte"
-    }, [nouveauLeads, quickIndex, contactedColId, dispatch, workspace.id]);
+    }, [nouveauLeads, quickIndex, contactedColId, dispatch, workspace.id, onAutoMoved]);
 
     // Clavier global en mode rapide
     useEffect(() => {
@@ -179,21 +198,25 @@ export const KanbanBoard = ({
         const handler = (e) => {
             // Ignorer si on tape dans un input/textarea
             if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
-            if (e.key === "ArrowRight") {
+            if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "ArrowUp") {
+                // Capturer en phase capture pour court-circuiter Radix DropdownMenu
+                // qui intercepte ArrowDown/ArrowUp pour ouvrir ses menus
                 e.preventDefault();
-                processCurrentLead();
-            } else if (e.key === "ArrowDown") {
-                e.preventDefault();
-                setQuickIndex((i) => Math.min(i + 1, nouveauLeads.length - 1));
-            } else if (e.key === "ArrowUp") {
-                e.preventDefault();
-                setQuickIndex((i) => Math.max(i - 1, 0));
+                e.stopPropagation();
+                if (e.key === "ArrowRight") {
+                    processCurrentLead();
+                } else if (e.key === "ArrowDown") {
+                    setQuickIndex((i) => Math.min(i + 1, nouveauLeads.length - 1));
+                } else if (e.key === "ArrowUp") {
+                    setQuickIndex((i) => Math.max(i - 1, 0));
+                }
             } else if (e.key === "Escape") {
                 stopQuickMode();
             }
         };
-        document.addEventListener("keydown", handler);
-        return () => document.removeEventListener("keydown", handler);
+        // useCapture: true — intercepte avant Radix UI
+        document.addEventListener("keydown", handler, true);
+        return () => document.removeEventListener("keydown", handler, true);
     }, [quickMode, processCurrentLead, nouveauLeads.length, stopQuickMode]);
 
     // Scroll automatique vers la carte focusée

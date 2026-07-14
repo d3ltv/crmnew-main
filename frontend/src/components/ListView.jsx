@@ -94,7 +94,7 @@ export const ListView = ({ workspace, filter, onOpenLead }) => {
                         <div key={cid}>
                             {/* Column header */}
                             <div className="flex items-center gap-2 mb-2">
-                                <button className={`inline-flex items-center px-3 py-1 rounded-full text-[12.5px] font-bold text-white ${color.dot}`}>
+                                <button className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold text-white ${color.dot}`}>
                                     {col.name}
                                 </button>
                                 <span className="text-[12px] text-muted-foreground font-medium">{visibleCountByCol[cid]}</span>

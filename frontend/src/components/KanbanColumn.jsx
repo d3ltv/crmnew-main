@@ -41,6 +41,13 @@ import { ColorPickerRow } from "./ColorPickerRow";
 import { getColumnColor } from "@/lib/columnColors";
 import { useCrm } from "@/context/CrmContext";
 
+// Détecte une colonne de type "contacté" pour le tri par défaut
+const CONTACTED_PATTERNS = ["contact", "appel", "relance", "call"];
+function isContactedCol(name = "") {
+    const n = name.toLowerCase().trim();
+    return CONTACTED_PATTERNS.some((p) => n.includes(p));
+}
+
 // DropZone between cards — shows an animated insertion line
 const InsertionPlaceholder = () => (
     <div
@@ -118,8 +125,16 @@ export const KanbanColumn = ({
     // ── Tri local — persisté par colonne ──────────────────────────────────────
     const SORT_KEY = `crm_sort_${column.id}`;
     const [sort, setSort] = useState(() => {
-        try { const s = localStorage.getItem(SORT_KEY); return s ? JSON.parse(s) : null; }
-        catch { return null; }
+        try {
+            const s = localStorage.getItem(SORT_KEY);
+            // Si déjà sauvegardé (y compris null explicite), respecter le choix
+            if (s !== null) return JSON.parse(s);
+        } catch {}
+        // Tri par défaut : colonnes "contacté" → dernier contact du plus récent au plus ancien
+        if (isContactedCol(column.name)) {
+            return { key: "lastContact", dir: "desc", label: "Dernier contact" };
+        }
+        return null;
     }); // null = ordre manuel | { key, dir: "asc"|"desc", label }
 
     const applySort = (key, label) => {
@@ -134,7 +149,8 @@ export const KanbanColumn = ({
 
     const clearSort = () => {
         setSort(null);
-        try { localStorage.removeItem(SORT_KEY); } catch {}
+        // Stocker null explicitement pour que le tri par défaut ne se réapplique pas
+        try { localStorage.setItem(SORT_KEY, JSON.stringify(null)); } catch {}
     };
 
     // Champs extra disponibles dans cette colonne
@@ -165,13 +181,24 @@ export const KanbanColumn = ({
             return "";
         };
 
-        return [...leads].sort((a, b) => {
+        // Tri appliqué, mais les RDV urgents restent en tête (gérés par KanbanBoard)
+        const now = Date.now();
+        const hasUrgentRdv = (lead) => {
+            if (!lead.nextAction?.label?.startsWith("📅 RDV")) return false;
+            const t = new Date(lead.nextAction.dueAt || lead.nextAction.date).getTime();
+            return t > now - 60000 && t - now < 24 * 3600 * 1000;
+        };
+
+        const urgent = leads.filter(hasUrgentRdv);
+        const rest = [...leads.filter((l) => !hasUrgentRdv(l))].sort((a, b) => {
             const va = getValue(a), vb = getValue(b);
             if (va === vb) return 0;
             if (va === "" || va === -Infinity) return 1;
             if (vb === "" || vb === -Infinity) return -1;
             return va < vb ? -mul : mul;
         });
+
+        return [...urgent, ...rest];
     }, [leads, sort]);
 
     useEffect(() => {
@@ -236,36 +263,28 @@ export const KanbanColumn = ({
     return (
         <div
             data-testid={`kanban-column-${column.id}`}
-            className={`kanban-col relative shrink-0 flex flex-col max-h-full overflow-hidden transition-colors duration-150 rounded-xl ${
-                isDragTarget ? "ring-2 ring-inset ring-primary/40" : ""
+            className={`kanban-col relative shrink-0 flex flex-col max-h-full transition-colors duration-150 ${
+                isDragTarget ? "ring-2 ring-primary/30 rounded-xl" : ""
             }`}
-            style={{ width: `${workspace.columnWidth ?? 340}px` }}
+            style={{ width: `${workspace.columnWidth ?? 300}px` }}
             onDragOver={handleColumnDragOver}
             onDrop={handleColumnDrop}
             onDragLeave={(e) => {
                 if (!e.currentTarget.contains(e.relatedTarget)) {}
             }}
         >
-            {/* Fond coloré dynamique — suit la hauteur réelle du contenu */}
-            <div
-                className={`absolute inset-x-0 top-0 rounded-xl transition-all duration-500 ease-out pointer-events-none ${color.colBg}`}
-                style={{
-                    height: `${bgHeight}px`,
-                    opacity: leads.length === 0 ? 0.5 : 1,
-                }}
-                aria-hidden
-            />
+            {/* Pas de fond coloré — look épuré comme la maquette */}
 
-            {/* Contenu au-dessus du fond */}
-            <div ref={contentRef} className="relative flex flex-col max-h-full overflow-hidden">
+            {/* Contenu */}
+            <div ref={contentRef} className="flex flex-col max-h-full overflow-hidden">
 
-            {/* Header : pill coloré + compteur + menu */}
+            {/* ── Header ── */}
             <div
-                className="px-4 pt-4 pb-2.5 flex items-center gap-2.5 group"
+                className="px-1 pt-1 pb-2 flex items-center gap-2 group"
                 draggable
                 onDragStart={(e) => onColumnDragStart(e, column.id)}
             >
-                {/* Grip */}
+                {/* Grip — visible au hover */}
                 <button
                     aria-label="Réordonner la colonne"
                     className="cursor-grab active:cursor-grabbing text-foreground/20 hover:text-foreground/50 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
@@ -286,28 +305,26 @@ export const KanbanColumn = ({
                             if (e.key === "Enter") commit();
                             if (e.key === "Escape") { setName(column.name); setEditing(false); }
                         }}
-                        className="flex-1 bg-transparent text-[13px] font-bold outline-none border-b border-foreground/30 text-foreground"
+                        className="flex-1 bg-transparent text-[13px] font-semibold outline-none border-b border-foreground/30 text-foreground"
                     />
                 ) : (
                     <button
                         data-testid={`column-title-${column.id}`}
                         onDoubleClick={() => setEditing(true)}
-                        className={`inline-flex items-center px-3.5 py-1.5 rounded-full text-[13px] font-bold text-white ${color.dot} shrink-0 truncate max-w-[170px]`}
+                        className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold text-white ${color.dot} shrink-0 max-w-[160px] truncate`}
                         title="Double-cliquez pour renommer"
                     >
                         {column.name}
                     </button>
                 )}
 
-                {/* Compteur */}
+                {/* Compteur — discret, gris */}
                 <span
                     data-testid={`column-count-${column.id}`}
-                    className="text-[13px] font-medium text-foreground/60 tabular-nums shrink-0"
+                    className="text-[12.5px] text-muted-foreground/60 tabular-nums shrink-0"
                 >
                     {leads.length}
                 </span>
-
-                {/* Indicateur de tri actif */}
                 {sort && (
                     <button
                         onClick={clearSort}
@@ -319,43 +336,48 @@ export const KanbanColumn = ({
                     </button>
                 )}
 
-                {/* Bouton mode traitement rapide — uniquement sur la colonne "Nouveau" */}
-                {onStartQuickMode && leads.length > 0 && (
-                    <button
-                        onClick={onStartQuickMode}
-                        title="Mode traitement rapide (→ pour contacter)"
-                        className={`shrink-0 flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-semibold transition-all ${
-                            quickMode
-                                ? "bg-primary text-primary-foreground"
-                                : "bg-primary/10 text-primary hover:bg-primary/20"
-                        }`}
-                    >
-                        <Zap size={11} className={quickMode ? "fill-primary-foreground" : ""} />
-                        {quickMode ? "Actif" : "Rapide"}
-                    </button>
+                {/* Mode rapide actif — badge discret */}
+                {quickMode && (
+                    <span className="shrink-0 flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-primary text-primary-foreground text-[10px] font-semibold">
+                        <Zap size={9} className="fill-primary-foreground" />
+                        Actif
+                    </span>
                 )}
 
-                {/* Auto-followup */}
+                {/* Auto-followup badge */}
                 {column.autoFollowup && (
                     <span title="Rappels automatiques" className="shrink-0 text-foreground/40">
                         <BellRing size={11} data-testid={`column-followup-badge-${column.id}`} />
                     </span>
                 )}
 
+                {/* ⋯ Menu — toujours visible, pas seulement au hover */}
                 <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                         <button
                             data-testid={`column-menu-${column.id}`}
                             aria-label="Options de colonne"
-                            className="ml-auto w-6 h-6 rounded flex items-center justify-center text-foreground/30 hover:text-foreground hover:bg-black/10 opacity-0 group-hover:opacity-100 transition-all shrink-0"
+                            className="ml-auto w-7 h-7 rounded-lg flex items-center justify-center text-foreground/40 hover:text-foreground hover:bg-black/10 dark:hover:bg-white/10 transition-all shrink-0"
                         >
-                            <MoreHorizontal size={14} />
+                            <MoreHorizontal size={15} />
                         </button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-56 rounded-xl">
+                    <DropdownMenuContent align="end" className="w-60 rounded-xl">
                         <DropdownMenuItem onClick={() => setEditing(true)}>
                             Renommer la colonne
                         </DropdownMenuItem>
+                        {/* Mode traitement rapide — déplacé ici depuis le header */}
+                        {onStartQuickMode && leads.length > 0 && (
+                            <DropdownMenuItem
+                                onClick={() => { onStartQuickMode(); }}
+                                data-testid={`column-quick-mode-${column.id}`}
+                            >
+                                <Zap size={14} className={`mr-2 ${quickMode ? "text-primary fill-primary" : ""}`} />
+                                Mode traitement rapide
+                                {quickMode && <Check size={13} className="ml-auto text-primary" />}
+                                {!quickMode && <span className="ml-auto text-[10px] text-muted-foreground">→ / ↑↓</span>}
+                            </DropdownMenuItem>
+                        )}
                         <DropdownMenuItem
                             onClick={() => onToggleAutoFollowup(!column.autoFollowup)}
                             data-testid={`column-toggle-followup-${column.id}`}
@@ -478,7 +500,7 @@ export const KanbanColumn = ({
             </div>
 
             {/* Cards list */}
-            <div className="kanban-col-scroll overflow-y-auto flex-1 px-3 pb-2">
+            <div className="kanban-col-scroll overflow-y-auto flex-1 px-0 pb-3">
                 {/* Drop slot before first card */}
                 <CardDropSlot
                     index={0}

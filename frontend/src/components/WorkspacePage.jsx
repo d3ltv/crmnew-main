@@ -117,7 +117,9 @@ export const WorkspacePage = () => {
                     setWonLeadId(l.id);
                 }
                 // Prompt meeting date on entering "Rendez-vous"
-                if (isMeetingColumn(targetCol)) {
+                // — sauf si le lead a déjà un RDV enregistré
+                const hasExistingRdv = l.nextAction?.label?.startsWith("📅 RDV");
+                if (isMeetingColumn(targetCol) && !hasExistingRdv) {
                     setMeetingLeadId(l.id);
                 }
             }

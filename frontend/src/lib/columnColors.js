@@ -11,6 +11,7 @@ export const COLUMN_COLORS = {
         chipText: "text-neutral-700 dark:text-neutral-300",
         ring: "ring-neutral-400/30",
         colBg: "bg-neutral-200/70 dark:bg-[hsl(222,14%,12%)]",
+        shadow: "rgba(163,163,163,0.45)",
     },
     blue: {
         label: "Bleu",
@@ -20,6 +21,7 @@ export const COLUMN_COLORS = {
         chipText: "text-blue-700 dark:text-blue-300",
         ring: "ring-blue-500/30",
         colBg: "bg-blue-100/70 dark:bg-[hsl(222,14%,12%)]",
+        shadow: "rgba(59,130,246,0.45)",
     },
     amber: {
         label: "Ambre",
@@ -29,6 +31,7 @@ export const COLUMN_COLORS = {
         chipText: "text-amber-700 dark:text-amber-300",
         ring: "ring-amber-500/30",
         colBg: "bg-amber-100/70 dark:bg-[hsl(222,14%,12%)]",
+        shadow: "rgba(245,158,11,0.45)",
     },
     violet: {
         label: "Violet",
@@ -38,6 +41,7 @@ export const COLUMN_COLORS = {
         chipText: "text-violet-700 dark:text-violet-300",
         ring: "ring-violet-500/30",
         colBg: "bg-violet-100/70 dark:bg-[hsl(222,14%,12%)]",
+        shadow: "rgba(139,92,246,0.45)",
     },
     sky: {
         label: "Ciel",
@@ -47,6 +51,7 @@ export const COLUMN_COLORS = {
         chipText: "text-sky-700 dark:text-sky-300",
         ring: "ring-sky-500/30",
         colBg: "bg-sky-100/70 dark:bg-[hsl(222,14%,12%)]",
+        shadow: "rgba(14,165,233,0.45)",
     },
     teal: {
         label: "Turquoise",
@@ -56,6 +61,7 @@ export const COLUMN_COLORS = {
         chipText: "text-teal-700 dark:text-teal-300",
         ring: "ring-teal-500/30",
         colBg: "bg-teal-100/70 dark:bg-[hsl(222,14%,12%)]",
+        shadow: "rgba(20,184,166,0.45)",
     },
     green: {
         label: "Vert",
@@ -65,6 +71,7 @@ export const COLUMN_COLORS = {
         chipText: "text-emerald-700 dark:text-emerald-300",
         ring: "ring-emerald-500/30",
         colBg: "bg-emerald-100/70 dark:bg-[hsl(222,14%,12%)]",
+        shadow: "rgba(16,185,129,0.45)",
     },
     red: {
         label: "Rouge",
@@ -74,6 +81,7 @@ export const COLUMN_COLORS = {
         chipText: "text-rose-700 dark:text-rose-300",
         ring: "ring-rose-500/30",
         colBg: "bg-rose-100/70 dark:bg-[hsl(222,14%,12%)]",
+        shadow: "rgba(244,63,94,0.45)",
     },
     pink: {
         label: "Rose",
@@ -83,6 +91,7 @@ export const COLUMN_COLORS = {
         chipText: "text-pink-700 dark:text-pink-300",
         ring: "ring-pink-500/30",
         colBg: "bg-pink-100/70 dark:bg-[hsl(222,14%,12%)]",
+        shadow: "rgba(236,72,153,0.45)",
     },
 };
 

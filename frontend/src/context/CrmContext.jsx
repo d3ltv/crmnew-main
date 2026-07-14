@@ -518,9 +518,11 @@ function reducer(state, action) {
                 ? makeFollowup(action.toColumnId, 1, now)
                 : null;
             let nextAction = lead.nextAction;
-            if (autoFollowup) {
+            // Ne jamais écraser un RDV détecté manuellement ("📅 RDV…")
+            const hasManualRdv = lead.nextAction?.label?.startsWith("📅 RDV");
+            if (autoFollowup && !hasManualRdv) {
                 nextAction = followupToNextAction(autoFollowup);
-            } else if (nextAction?.auto) {
+            } else if (!hasManualRdv && nextAction?.auto) {
                 nextAction = null;
             }
             // Update leadOrder for destination column
@@ -970,7 +972,7 @@ function reducer(state, action) {
                         { columnId: contactedColumn.id, at: now },
                     ],
                     autoFollowup,
-                    nextAction: autoFollowup
+                    nextAction: (autoFollowup && !lead.nextAction?.label?.startsWith("📅 RDV"))
                         ? followupToNextAction(autoFollowup)
                         : updatedLead.nextAction,
                     // Enregistrer l'entrée dans la colonne "Contacté"

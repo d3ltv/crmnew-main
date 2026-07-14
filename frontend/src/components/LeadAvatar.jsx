@@ -31,13 +31,14 @@ function pickEmoji(id = "") {
  * Affiche le logo d'une entreprise avec fallback progressif :
  * 1. logoUrl stocké sur le lead (Clearbit)
  * 2. Google Favicon (si le domaine est récupérable)
- * 3. Emoji déterministe
+ * 3. Emoji déterministe dans un cercle coloré (couleur de la colonne)
  *
- * @param {object} lead   - objet lead (besoin de .id, .logoUrl, .website, .email)
- * @param {string} size   - classe Tailwind de taille (défaut: "text-[20px]")
+ * @param {object} lead   - objet lead (.id, .logoUrl, .website, .email)
+ * @param {string} size   - classe Tailwind de taille emoji (défaut auto)
  * @param {boolean} card  - vrai si affiché sur la carte (taille réduite)
+ * @param {string} bgClass - classe Tailwind de fond pour le cercle emoji (ex: "bg-blue-500/15")
  */
-export const LeadAvatar = ({ lead, size, card = false }) => {
+export const LeadAvatar = ({ lead, size, card = false, bgClass = "bg-muted" }) => {
     const [logoFailed, setLogoFailed] = useState(false);
     const [fallbackFailed, setFallbackFailed] = useState(false);
 
@@ -47,17 +48,21 @@ export const LeadAvatar = ({ lead, size, card = false }) => {
         : null;
     const fallbackUrl = domain ? googleFaviconUrl(domain) : null;
 
-    // Si on a un logo Clearbit valide
+    const containerSize = card ? "w-8 h-8" : "w-9 h-9";
+    const imgSize      = card ? "w-6 h-6" : "w-8 h-8";
+    const imgFbSize    = card ? "w-5 h-5" : "w-7 h-7";
+
+    // Logo Clearbit
     if (logoUrl && !logoFailed) {
         return (
             <span
-                className={`shrink-0 select-none flex items-center justify-center ${card ? "w-6 h-6" : "w-9 h-9"} rounded-lg overflow-hidden bg-white`}
+                className={`shrink-0 select-none flex items-center justify-center ${containerSize} rounded-full overflow-hidden ${bgClass}`}
                 aria-hidden
             >
                 <img
                     src={logoUrl}
                     alt=""
-                    className={`${card ? "w-5 h-5" : "w-8 h-8"} object-contain`}
+                    className={`${imgSize} object-contain`}
                     onError={() => setLogoFailed(true)}
                     loading="lazy"
                 />
@@ -65,17 +70,17 @@ export const LeadAvatar = ({ lead, size, card = false }) => {
         );
     }
 
-    // Fallback : Google Favicon
+    // Fallback Google Favicon
     if (fallbackUrl && !fallbackFailed) {
         return (
             <span
-                className={`shrink-0 select-none flex items-center justify-center ${card ? "w-6 h-6" : "w-9 h-9"} rounded-lg overflow-hidden bg-white`}
+                className={`shrink-0 select-none flex items-center justify-center ${containerSize} rounded-full overflow-hidden ${bgClass}`}
                 aria-hidden
             >
                 <img
                     src={fallbackUrl}
                     alt=""
-                    className={`${card ? "w-4 h-4" : "w-7 h-7"} object-contain`}
+                    className={`${imgFbSize} object-contain`}
                     onError={() => setFallbackFailed(true)}
                     loading="lazy"
                 />
@@ -83,13 +88,15 @@ export const LeadAvatar = ({ lead, size, card = false }) => {
         );
     }
 
-    // Dernier fallback : emoji
+    // Emoji dans un cercle coloré
     return (
         <span
-            className={`shrink-0 select-none leading-none ${size || (card ? "text-[18px]" : "text-[28px]")}`}
+            className={`shrink-0 select-none flex items-center justify-center ${containerSize} rounded-full ${bgClass}`}
             aria-hidden
         >
-            {pickEmoji(lead.id)}
+            <span className={size || (card ? "text-[15px]" : "text-[22px]")} style={{ lineHeight: 1 }}>
+                {pickEmoji(lead.id)}
+            </span>
         </span>
     );
 };

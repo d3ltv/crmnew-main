@@ -24,6 +24,8 @@ import {
     PhoneCall,
     ExternalLink,
     Star,
+    CalendarClock,
+    Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -45,7 +47,7 @@ import { toast } from "sonner";
 import { getColumnColor } from "@/lib/columnColors";
 import { formatDateTimeLong } from "@/lib/dateUtils";
 import { telHref, mailtoHref, websiteHref } from "@/lib/actionLinks";
-import { parseNote } from "@/lib/noteParser";
+import { parseNote, detectAppointment, diffWithLead, formatDetected } from "@/lib/noteParser";
 
 function formatDateTime(iso) {
     return formatDateTimeLong(iso);
@@ -58,6 +60,10 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
     const [cfLabel, setCfLabel] = useState("");
     const [cfValue, setCfValue] = useState("");
     const [extraOpen, setExtraOpen] = useState(false);
+    // RDV direct (sans passer par la note)
+    const [rdvDate, setRdvDate] = useState("");
+    const [rdvTime, setRdvTime] = useState("");
+    const [rdvLabel, setRdvLabel] = useState("");
     const panelRef = useRef(null);
     // Use the live lead from props directly — parent computes it from state.
     const local = lead;
@@ -75,12 +81,24 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
         ];
     }, [local?.notes]);
 
+    // Détection en temps réel dans le draft de note
+    const draftDetected = useMemo(() => parseNote(noteDraft), [noteDraft]);
+    const draftDiff = useMemo(
+        () => local ? diffWithLead(draftDetected, local) : { newPhone: null, extraPhones: [], newEmail: null, newAddress: null },
+        [draftDetected, local]
+    );
+    const draftDetectedItems = useMemo(() => formatDetected(draftDetected), [draftDetected]);
+    const draftAppointment = useMemo(() => detectAppointment(noteDraft), [noteDraft]);
+
     useEffect(() => {
         // Reset drafts when switching to a different lead
         setNoteDraft("");
         setTagDraft("");
         setCfLabel("");
         setCfValue("");
+        setRdvDate("");
+        setRdvTime("");
+        setRdvLabel("");
     }, [lead?.id]);
 
     useEffect(() => {
@@ -122,7 +140,63 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
             leadId: local.id,
             text: noteDraft.trim(),
         });
+
+        // Appliquer les infos détectées
+        const patch = {};
+        if (draftDiff.newPhone) patch.phone = draftDiff.newPhone;
+        if (draftDiff.newEmail) patch.email = draftDiff.newEmail;
+
+        // RDV détecté → nextAction (ne pas écraser un RDV existant plus récent)
+        if (draftAppointment) {
+            const existing = local.nextAction?.dueAt;
+            const incomingTime = new Date(draftAppointment.iso).getTime();
+            if (!existing || incomingTime < new Date(existing).getTime()) {
+                patch.nextAction = {
+                    date: draftAppointment.iso.slice(0, 10),
+                    dueAt: draftAppointment.iso,
+                    label: `📅 RDV détecté · ${draftAppointment.label}`,
+                    auto: false,
+                };
+            }
+        }
+
+        if (Object.keys(patch).length > 0) {
+            dispatch({ type: "UPDATE_LEAD", workspaceId: workspace.id, leadId: local.id, patch });
+        }
+
+        // Téléphones supplémentaires → customFields
+        draftDiff.extraPhones.forEach((phone) => {
+            dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label: "Téléphone", value: phone, pinned: false });
+        });
+        if (draftDiff.newAddress) {
+            dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label: "Adresse", value: draftDiff.newAddress, pinned: false });
+        }
+
         setNoteDraft("");
+    };
+
+    const saveRdvDirect = () => {
+        if (!rdvDate) return;
+        const iso = rdvTime ? new Date(`${rdvDate}T${rdvTime}`).toISOString() : new Date(`${rdvDate}T09:00`).toISOString();
+        const d = new Date(iso);
+        const label = rdvLabel.trim() || `RDV ${d.toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" })}${rdvTime ? ` à ${rdvTime.replace(":", "h")}` : ""}`;
+        dispatch({
+            type: "UPDATE_LEAD",
+            workspaceId: workspace.id,
+            leadId: local.id,
+            patch: {
+                nextAction: {
+                    date: rdvDate,
+                    dueAt: iso,
+                    label: `📅 RDV détecté · ${label}`,
+                    auto: false,
+                },
+            },
+        });
+        toast.success("RDV enregistré", { description: label });
+        setRdvDate("");
+        setRdvTime("");
+        setRdvLabel("");
     };
 
     const addTag = () => {
@@ -639,11 +713,66 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                         <h3 className="text-xs uppercase tracking-wider text-muted-foreground font-semibold flex items-center gap-1.5">
                             <MessageSquare size={13} strokeWidth={2.5} /> Notes & Historique
                         </h3>
+
+                        {/* ── Ajout RDV direct ── */}
+                        <div className="rounded-xl border border-border bg-muted/30 p-3 space-y-2">
+                            <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+                                <CalendarClock size={11} /> Planifier un RDV
+                            </p>
+                            <div className="flex gap-2">
+                                <input
+                                    type="date"
+                                    value={rdvDate}
+                                    onChange={(e) => setRdvDate(e.target.value)}
+                                    className="flex-1 h-8 px-2 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                                />
+                                <input
+                                    type="time"
+                                    value={rdvTime}
+                                    onChange={(e) => setRdvTime(e.target.value)}
+                                    className="w-24 h-8 px-2 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                                />
+                            </div>
+                            <div className="flex gap-2">
+                                <input
+                                    type="text"
+                                    value={rdvLabel}
+                                    onChange={(e) => setRdvLabel(e.target.value)}
+                                    placeholder="Objet du RDV (optionnel)"
+                                    onKeyDown={(e) => e.key === "Enter" && saveRdvDirect()}
+                                    className="flex-1 h-8 px-2 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                                />
+                                <Button
+                                    onClick={saveRdvDirect}
+                                    disabled={!rdvDate}
+                                    className="h-8 px-3 rounded-lg text-xs bg-primary text-primary-foreground hover:bg-primary/90"
+                                >
+                                    Enregistrer
+                                </Button>
+                            </div>
+                            {/* RDV existant */}
+                            {local.nextAction?.label?.startsWith("📅 RDV") && (
+                                <div className="flex items-center justify-between gap-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1.5 text-[12px] text-emerald-700 dark:text-emerald-400">
+                                    <div className="flex items-center gap-1.5">
+                                        <CalendarClock size={12} strokeWidth={2.5} />
+                                        <span className="font-medium">{local.nextAction.label.replace("📅 RDV détecté · ", "")}</span>
+                                    </div>
+                                    <button
+                                        onClick={() => patch({ nextAction: null })}
+                                        className="opacity-50 hover:opacity-100 transition-opacity"
+                                        title="Supprimer le RDV"
+                                    >
+                                        <X size={12} />
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+
                         <Textarea
                             data-testid="lead-note-input"
                             value={noteDraft}
                             onChange={(e) => setNoteDraft(e.target.value)}
-                            placeholder="Ajouter une note (Cmd+Entrée ou Ctrl+Entrée pour valider)"
+                            placeholder="Ajouter une note… Ex : « RDV demain à 14h » ou « 06 12 34 56 78 »"
                             onKeyDown={(e) => {
                                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                                     e.preventDefault();
@@ -652,6 +781,35 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                             }}
                             className="min-h-[70px] resize-none text-sm"
                         />
+
+                        {/* ── Détection en temps réel ── */}
+                        {(draftAppointment || draftDetectedItems.length > 0) && (
+                            <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 space-y-2">
+                                <div className="flex items-center gap-1.5 text-[11px] font-semibold text-primary uppercase tracking-wider">
+                                    <Sparkles size={11} /> Détecté — sera appliqué
+                                </div>
+                                {draftAppointment && (
+                                    <div className="flex items-center gap-2 text-[12px] text-foreground font-medium">
+                                        <CalendarClock size={12} className="text-primary shrink-0" />
+                                        <span>RDV · {draftAppointment.label}</span>
+                                    </div>
+                                )}
+                                {draftDetectedItems.map((item, i) => {
+                                    const isNew =
+                                        (item.type === "phone" && (draftDiff.newPhone === item.value || draftDiff.extraPhones.includes(item.value))) ||
+                                        (item.type === "email" && draftDiff.newEmail === item.value) ||
+                                        (item.type === "address" && draftDiff.newAddress === item.value);
+                                    return (
+                                        <div key={i} className={`flex items-center gap-2 text-[12px] rounded-lg px-2 py-0.5 ${isNew ? "text-foreground" : "text-muted-foreground line-through opacity-50"}`}>
+                                            <span className="text-base leading-none shrink-0">{item.icon}</span>
+                                            <span className="font-medium">{item.value}</span>
+                                            {!isNew && <span className="ml-auto text-[10px] opacity-70">déjà présent</span>}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+
                         <div className="flex justify-end">
                             <Button
                                 onClick={addNote}
