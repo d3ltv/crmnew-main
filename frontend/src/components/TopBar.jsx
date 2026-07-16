@@ -15,6 +15,7 @@ import {
     Moon,
     Columns3,
     Undo2,
+    Redo2,
     LayoutList,
     Table2,
     TrendingUp,
@@ -22,6 +23,8 @@ import {
     Target,
     BellRing,
     Zap,
+    PanelRight,
+    Monitor,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -76,7 +79,7 @@ export const TopBar = ({
     quickCount,
     onStopQuickMode,
 }) => {
-    const { state, dispatch, undo, canUndo } = useCrm();
+    const { state, dispatch, undo, redo, canUndo, canRedo } = useCrm();
     const isDark = state.theme === "dark";
     const [confirmDelete, setConfirmDelete] = useState(false);
     const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -474,6 +477,29 @@ export const TopBar = ({
                                 </p>
                             </div>
                             <DropdownMenuSeparator />
+                            <DropdownMenuSeparator />
+                            <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
+                                Affichage
+                            </DropdownMenuLabel>
+                            <div className="px-2 py-1.5">
+                                <p className="text-[10px] text-muted-foreground mb-1.5">Fenêtre du lead</p>
+                                <div className="flex gap-1">
+                                    <button
+                                        onClick={() => dispatch({ type: "SET_LEAD_PANEL_MODE", mode: "side" })}
+                                        title="Panneau latéral"
+                                        className={"flex-1 h-8 rounded-lg flex items-center justify-center gap-1.5 text-xs border transition-colors " + (state.leadPanelMode !== "modal" ? "bg-primary/10 border-primary/30 text-primary" : "border-border text-muted-foreground hover:bg-secondary")}
+                                    >
+                                        <PanelRight size={13} /> Côté
+                                    </button>
+                                    <button
+                                        onClick={() => dispatch({ type: "SET_LEAD_PANEL_MODE", mode: "modal" })}
+                                        title="Modale centrée"
+                                        className={"flex-1 h-8 rounded-lg flex items-center justify-center gap-1.5 text-xs border transition-colors " + (state.leadPanelMode === "modal" ? "bg-primary/10 border-primary/30 text-primary" : "border-border text-muted-foreground hover:bg-secondary")}
+                                    >
+                                        <Monitor size={13} /> Centre
+                                    </button>
+                                </div>
+                            </div>
                             <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
                                 Données
                             </DropdownMenuLabel>
@@ -517,6 +543,24 @@ export const TopBar = ({
                         className="w-9 h-9 rounded-full flex items-center justify-center transition-colors text-muted-foreground hover:text-foreground hover:bg-secondary disabled:opacity-30 disabled:cursor-not-allowed"
                     >
                         <Undo2 size={15} />
+                    </button>
+
+                    {/* Redo */}
+                    <button
+                        data-testid="topbar-redo-btn"
+                        onClick={() => {
+                            const did = redo();
+                            if (!did) return;
+                            import("sonner").then(({ toast }) =>
+                                toast("Action rétablie", { duration: 2000 })
+                            );
+                        }}
+                        disabled={!canRedo()}
+                        title="Rétablir la dernière action (⌘⇧Z)"
+                        aria-label="Rétablir"
+                        className="w-9 h-9 rounded-full flex items-center justify-center transition-colors text-muted-foreground hover:text-foreground hover:bg-secondary disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                        <Redo2 size={15} />
                     </button>
 
                     </div>{/* fin groupe 2 */}

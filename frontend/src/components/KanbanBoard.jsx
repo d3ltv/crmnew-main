@@ -21,6 +21,8 @@ export const KanbanBoard = ({
     workspace,
     filter,
     onOpenLead,
+    onCloseLead,
+    openLeadId,
     onAddLead,
     quickMode: quickModeProp,
     onQuickModeChange,
@@ -152,8 +154,25 @@ export const KanbanBoard = ({
     // en tenant compte du tri éventuel (on récupère l'ordre depuis byColumn, le tri est local à KanbanColumn)
     const nouveauLeads = byColumn[nouveauColId] || [];
 
+    // Clamp quickIndex quand la liste change (évite la sélection "aléatoire")
+    useEffect(() => {
+        if (!quickMode) return;
+        setQuickIndex((i) => Math.min(i, Math.max(0, nouveauLeads.length - 1)));
+    }, [quickMode, nouveauLeads.length]);
+
     // Lead actuellement focusé en mode rapide
-    const focusedLead = quickMode ? (nouveauLeads[quickIndex] || nouveauLeads[0] || null) : null;
+    const focusedLead = quickMode ? (nouveauLeads[quickIndex] ?? null) : null;
+
+    // Refs pour accéder aux valeurs courantes dans le handler clavier (closure stable)
+    const focusedLeadRef = useRef(null);
+    const openLeadIdRef = useRef(null);
+    useEffect(() => { focusedLeadRef.current = focusedLead; }, [focusedLead]);
+    useEffect(() => { openLeadIdRef.current = openLeadId; }, [openLeadId]);
+
+    // Fermer le panel spacebar si le lead focusé change
+    useEffect(() => {
+        if (quickMode) onCloseLead?.();
+    }, [quickIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Démarrer le mode rapide
     const startQuickMode = useCallback(() => {
@@ -165,8 +184,9 @@ export const KanbanBoard = ({
     const stopQuickMode = useCallback(() => {
         setQuickMode(false);
         setQuickNoteLead(null);
+        onCloseLead?.();
         onQuickModeChange?.(false, 0);
-    }, [onQuickModeChange]);
+    }, [onCloseLead, onQuickModeChange]);
 
     // Déplacer le lead focusé vers "Contacté" + ouvrir la note
     const processCurrentLead = useCallback(() => {
@@ -193,7 +213,10 @@ export const KanbanBoard = ({
         const handler = (e) => {
             // Ignorer si on tape dans un input/textarea
             if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
-            if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "ArrowUp") {
+            if (
+                e.key === "ArrowRight" || e.key === "ArrowDown" ||
+                e.key === "ArrowUp"    || e.key === "ArrowLeft"
+            ) {
                 // Capturer en phase capture pour court-circuiter Radix DropdownMenu
                 // qui intercepte ArrowDown/ArrowUp pour ouvrir ses menus
                 e.preventDefault();
@@ -202,11 +225,31 @@ export const KanbanBoard = ({
                     processCurrentLead();
                 } else if (e.key === "ArrowDown") {
                     setQuickIndex((i) => Math.min(i + 1, nouveauLeads.length - 1));
-                } else if (e.key === "ArrowUp") {
+                } else if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
                     setQuickIndex((i) => Math.max(i - 1, 0));
                 }
+            } else if (e.key === " ") {
+                // Spacebar : ouvrir/fermer le panel de détail du lead focusé
+                e.preventDefault();
+                e.stopPropagation();
+                const focused = focusedLeadRef.current;
+                const currentOpen = openLeadIdRef.current;
+                if (focused && currentOpen === focused.id) {
+                    // Déjà ouvert sur ce lead → fermer
+                    onCloseLead?.();
+                } else if (focused) {
+                    // Ouvrir le panel sur le lead focusé
+                    onOpenLead?.(focused);
+                }
             } else if (e.key === "Escape") {
-                stopQuickMode();
+                // Si le panel est ouvert, fermer d'abord le panel
+                if (openLeadIdRef.current !== null) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onCloseLead?.();
+                } else {
+                    stopQuickMode();
+                }
             }
         };
         // useCapture: true — intercepte avant Radix UI

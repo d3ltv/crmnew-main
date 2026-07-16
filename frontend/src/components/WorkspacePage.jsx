@@ -215,6 +215,8 @@ export const WorkspacePage = () => {
                         workspace={workspace}
                         filter={filter}
                         onOpenLead={(l) => setOpenLeadId(l.id)}
+                        onCloseLead={() => setOpenLeadId(null)}
+                        openLeadId={openLeadId}
                         onAddLead={(colId) => onNewLead(colId)}
                         quickMode={quickMode}
                         onQuickModeChange={(active, count) => {

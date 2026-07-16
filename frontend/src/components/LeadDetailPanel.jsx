@@ -54,7 +54,8 @@ function formatDateTime(iso) {
 }
 
 export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
-    const { dispatch } = useCrm();
+    const { dispatch, state } = useCrm();
+    const panelMode = state.leadPanelMode || "side";
     const [noteDraft, setNoteDraft] = useState("");
     const [tagDraft, setTagDraft] = useState("");
     const [cfLabel, setCfLabel] = useState("");
@@ -239,17 +240,27 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
         });
     };
 
-    const toggleHighlightCustomField = (fieldId, current) => {
-        updateCustomField(fieldId, { highlight: !current });
+    const toggleHighlightCustomField = (fieldId, current, fieldLabel) => {
+        // Épingle/désépingle sur TOUS les leads du workspace ayant ce label
+        dispatch({
+            type: "HIGHLIGHT_FIELD_FOR_COLUMN",
+            workspaceId: workspace.id,
+            fieldLabel,
+            currentHighlight: current,
+        });
     };
 
     const highlightExtraField = (extraKey, extraValue) => {
+        // Vérifie l'état actuel : y a-t-il déjà un customField highlight pour cette clé ?
+        const currentHighlight = !!(local.customFields || []).find(
+            (cf) => cf.label === extraKey && cf.highlight
+        );
+        // Épingle/désépingle sur TOUS les leads du workspace ayant cette clé
         dispatch({
-            type: "HIGHLIGHT_EXTRA_FIELD",
+            type: "HIGHLIGHT_FIELD_FOR_COLUMN",
             workspaceId: workspace.id,
-            leadId: local.id,
-            extraKey,
-            extraValue,
+            fieldLabel: extraKey,
+            currentHighlight,
         });
     };
 
@@ -339,15 +350,9 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
             <aside
                 ref={panelRef}
                 data-testid="lead-detail-panel"
-                className="fixed z-50 flex flex-col
-                    inset-0 sm:inset-auto
-                    sm:top-4 sm:bottom-4 sm:right-4
-                    w-full sm:w-[460px]
-                    bg-card
-                    sm:rounded-2xl
-                    sm:border border-border
-                    shadow-2xl
-                    animate-in slide-in-from-right duration-300"
+                className={panelMode === "modal"
+                    ? "fixed z-50 flex flex-col inset-0 sm:inset-auto sm:top-[3%] sm:bottom-[3%] sm:left-1/2 sm:-translate-x-1/2 w-full sm:w-[780px] bg-card sm:rounded-2xl sm:border border-border shadow-2xl animate-in fade-in zoom-in-95 duration-200"
+                    : "fixed z-50 flex flex-col inset-0 sm:inset-auto sm:top-4 sm:bottom-4 sm:right-4 w-full sm:w-[560px] bg-card sm:rounded-2xl sm:border border-border shadow-2xl animate-in slide-in-from-right duration-300"}
             >
                 <div className="glass border-b border-border px-5 py-4 flex items-start justify-between gap-3 rounded-t-2xl shrink-0">
                     <div className="min-w-0 flex-1">
@@ -485,48 +490,18 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                         const actionIcon = isPhone
                                             ? <PhoneCall size={14} />
                                             : <ExternalLink size={14} />;
+                                        const isLong = val.length > 60;
 
                                         return (
-                                            <div
+                                            <ExpandableCustomField
                                                 key={f.id}
-                                                className="flex items-center gap-2 group/cf"
-                                                data-testid={`custom-field-display-${f.id}`}
-                                            >
-                                                <Label className="text-[11px] text-muted-foreground w-2/5 truncate shrink-0 font-medium flex items-center gap-1">
-                                                    {f.highlight && <Star size={9} className="text-amber-500 fill-amber-500 shrink-0" />}
-                                                    {f.label}
-                                                </Label>
-                                                <Input
-                                                    value={f.value}
-                                                    onChange={(e) =>
-                                                        updateCustomField(f.id, { value: e.target.value })
-                                                    }
-                                                    placeholder="—"
-                                                    className="h-8 flex-1 text-sm"
-                                                />
-                                                <button
-                                                    onClick={() => toggleHighlightCustomField(f.id, f.highlight)}
-                                                    title={f.highlight ? "Retirer de l'aperçu carte" : "Afficher sous le nom sur la carte"}
-                                                    className={`shrink-0 w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
-                                                        f.highlight
-                                                            ? "text-amber-500 bg-amber-500/10"
-                                                            : "text-muted-foreground/30 hover:text-amber-500 hover:bg-amber-500/10 opacity-0 group-hover/cf:opacity-100"
-                                                    }`}
-                                                >
-                                                    <Star size={13} strokeWidth={2} className={f.highlight ? "fill-amber-500" : ""} />
-                                                </button>
-                                                {actionHref && val && (
-                                                    <a
-                                                        href={actionHref}
-                                                        target={isPhone ? undefined : "_blank"}
-                                                        rel={isPhone ? undefined : "noreferrer noopener"}
-                                                        title={isPhone ? `Appeler ${val}` : isEmail ? `Email ${val}` : `Ouvrir ${val}`}
-                                                        className="shrink-0 w-8 h-8 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 flex items-center justify-center transition-colors"
-                                                    >
-                                                        {actionIcon}
-                                                    </a>
-                                                )}
-                                            </div>
+                                                field={f}
+                                                isLong={isLong}
+                                                actionHref={actionHref}
+                                                actionIcon={actionIcon}
+                                                onUpdate={(v) => updateCustomField(f.id, { value: v })}
+                                                onToggleHighlight={() => toggleHighlightCustomField(f.id, f.highlight, f.label)}
+                                            />
                                         );
                                     })}
                                 </div>
@@ -534,7 +509,142 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                         )}
                     </div>
 
-                    {/* 💡 Infos détectées dans les notes — au-dessus des tags */}
+                    {/* 💬 Notes & Historique — Grande card */}
+                    <div className="rounded-xl border border-border bg-card p-4 space-y-3 shadow-sm">
+                        <h3 className="text-xs uppercase tracking-wider text-muted-foreground font-semibold flex items-center gap-1.5">
+                            <MessageSquare size={13} strokeWidth={2.5} /> Notes & Historique
+                        </h3>
+
+                        {/* ── Ajout RDV direct ── */}
+                        <div className="rounded-xl border border-border bg-muted/30 p-3 space-y-2">
+                            <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+                                <CalendarClock size={11} /> Planifier un RDV
+                            </p>
+                            <div className="flex gap-2">
+                                <input
+                                    type="date"
+                                    value={rdvDate}
+                                    onChange={(e) => setRdvDate(e.target.value)}
+                                    className="flex-1 h-8 px-2 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                                />
+                                <input
+                                    type="time"
+                                    value={rdvTime}
+                                    onChange={(e) => setRdvTime(e.target.value)}
+                                    className="w-24 h-8 px-2 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                                />
+                            </div>
+                            <div className="flex gap-2">
+                                <input
+                                    type="text"
+                                    value={rdvLabel}
+                                    onChange={(e) => setRdvLabel(e.target.value)}
+                                    placeholder="Objet du RDV (optionnel)"
+                                    onKeyDown={(e) => e.key === "Enter" && saveRdvDirect()}
+                                    className="flex-1 h-8 px-2 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                                />
+                                <Button
+                                    onClick={saveRdvDirect}
+                                    disabled={!rdvDate}
+                                    className="h-8 px-3 rounded-lg text-xs bg-primary text-primary-foreground hover:bg-primary/90"
+                                >
+                                    Enregistrer
+                                </Button>
+                            </div>
+                            {/* RDV existant */}
+                            {local.nextAction?.label?.startsWith("📅 RDV") && (
+                                <div className="flex items-center justify-between gap-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1.5 text-[12px] text-emerald-700 dark:text-emerald-400">
+                                    <div className="flex items-center gap-1.5">
+                                        <CalendarClock size={12} strokeWidth={2.5} />
+                                        <span className="font-medium">{local.nextAction.label.replace("📅 RDV détecté · ", "")}</span>
+                                    </div>
+                                    <button
+                                        onClick={() => patch({ nextAction: null })}
+                                        className="opacity-50 hover:opacity-100 transition-opacity"
+                                        title="Supprimer le RDV"
+                                    >
+                                        <X size={12} />
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+
+                        <Textarea
+                            data-testid="lead-note-input"
+                            value={noteDraft}
+                            onChange={(e) => setNoteDraft(e.target.value)}
+                            placeholder="Ajouter une note… Ex : « RDV demain à 14h » ou « 06 12 34 56 78 »"
+                            onKeyDown={(e) => {
+                                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                                    e.preventDefault();
+                                    addNote();
+                                }
+                            }}
+                            className="min-h-[70px] resize-none text-sm"
+                        />
+
+                        {/* ── Détection en temps réel ── */}
+                        {(draftAppointment || draftDetectedItems.length > 0) && (
+                            <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 space-y-2">
+                                <div className="flex items-center gap-1.5 text-[11px] font-semibold text-primary uppercase tracking-wider">
+                                    <Sparkles size={11} /> Détecté — sera appliqué
+                                </div>
+                                {draftAppointment && (
+                                    <div className="flex items-center gap-2 text-[12px] text-foreground font-medium">
+                                        <CalendarClock size={12} className="text-primary shrink-0" />
+                                        <span>RDV · {draftAppointment.label}</span>
+                                    </div>
+                                )}
+                                {draftDetectedItems.map((item, i) => {
+                                    const isNew =
+                                        (item.type === "phone" && (draftDiff.newPhone === item.value || draftDiff.extraPhones.includes(item.value))) ||
+                                        (item.type === "email" && draftDiff.newEmail === item.value) ||
+                                        (item.type === "address" && draftDiff.newAddress === item.value);
+                                    return (
+                                        <div key={i} className={`flex items-center gap-2 text-[12px] rounded-lg px-2 py-0.5 ${isNew ? "text-foreground" : "text-muted-foreground line-through opacity-50"}`}>
+                                            <span className="text-base leading-none shrink-0">{item.icon}</span>
+                                            <span className="font-medium">{item.value}</span>
+                                            {!isNew && <span className="ml-auto text-[10px] opacity-70">déjà présent</span>}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+
+                        <div className="flex justify-end">
+                            <Button
+                                onClick={addNote}
+                                disabled={!noteDraft.trim()}
+                                data-testid="lead-add-note-btn"
+                                className="h-9 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 text-xs"
+                            >
+                                Ajouter
+                            </Button>
+                        </div>
+                        <div className="space-y-2 pt-2">
+                            {(local.notes || []).map((n) => (
+                                <div
+                                    key={n.id}
+                                    className="rounded-lg border border-border/60 p-3 bg-muted/30"
+                                    data-testid={`lead-note-${n.id}`}
+                                >
+                                    <div className="text-[10px] text-muted-foreground mb-1 font-medium">
+                                        {formatDateTime(n.at)}
+                                    </div>
+                                    <div className="text-sm whitespace-pre-wrap leading-relaxed">
+                                        {n.text}
+                                    </div>
+                                </div>
+                            ))}
+                            {(!local.notes || local.notes.length === 0) && (
+                                <p className="text-xs text-muted-foreground/70 italic text-center py-4">
+                                    Aucune note pour l'instant.
+                                </p>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* 💡 Infos détectées dans les notes */}
                     {detectedFromNotes.length > 0 && (
                         <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 space-y-1.5">
                             <h3 className="text-[11px] uppercase tracking-wider text-primary font-semibold flex items-center gap-1.5">
@@ -706,141 +816,6 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                             </p>
                         )}
 
-                    </div>
-
-                    {/* 💬 Notes & Historique — Grande card */}
-                    <div className="rounded-xl border border-border bg-card p-4 space-y-3 shadow-sm">
-                        <h3 className="text-xs uppercase tracking-wider text-muted-foreground font-semibold flex items-center gap-1.5">
-                            <MessageSquare size={13} strokeWidth={2.5} /> Notes & Historique
-                        </h3>
-
-                        {/* ── Ajout RDV direct ── */}
-                        <div className="rounded-xl border border-border bg-muted/30 p-3 space-y-2">
-                            <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
-                                <CalendarClock size={11} /> Planifier un RDV
-                            </p>
-                            <div className="flex gap-2">
-                                <input
-                                    type="date"
-                                    value={rdvDate}
-                                    onChange={(e) => setRdvDate(e.target.value)}
-                                    className="flex-1 h-8 px-2 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-                                />
-                                <input
-                                    type="time"
-                                    value={rdvTime}
-                                    onChange={(e) => setRdvTime(e.target.value)}
-                                    className="w-24 h-8 px-2 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-                                />
-                            </div>
-                            <div className="flex gap-2">
-                                <input
-                                    type="text"
-                                    value={rdvLabel}
-                                    onChange={(e) => setRdvLabel(e.target.value)}
-                                    placeholder="Objet du RDV (optionnel)"
-                                    onKeyDown={(e) => e.key === "Enter" && saveRdvDirect()}
-                                    className="flex-1 h-8 px-2 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-                                />
-                                <Button
-                                    onClick={saveRdvDirect}
-                                    disabled={!rdvDate}
-                                    className="h-8 px-3 rounded-lg text-xs bg-primary text-primary-foreground hover:bg-primary/90"
-                                >
-                                    Enregistrer
-                                </Button>
-                            </div>
-                            {/* RDV existant */}
-                            {local.nextAction?.label?.startsWith("📅 RDV") && (
-                                <div className="flex items-center justify-between gap-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1.5 text-[12px] text-emerald-700 dark:text-emerald-400">
-                                    <div className="flex items-center gap-1.5">
-                                        <CalendarClock size={12} strokeWidth={2.5} />
-                                        <span className="font-medium">{local.nextAction.label.replace("📅 RDV détecté · ", "")}</span>
-                                    </div>
-                                    <button
-                                        onClick={() => patch({ nextAction: null })}
-                                        className="opacity-50 hover:opacity-100 transition-opacity"
-                                        title="Supprimer le RDV"
-                                    >
-                                        <X size={12} />
-                                    </button>
-                                </div>
-                            )}
-                        </div>
-
-                        <Textarea
-                            data-testid="lead-note-input"
-                            value={noteDraft}
-                            onChange={(e) => setNoteDraft(e.target.value)}
-                            placeholder="Ajouter une note… Ex : « RDV demain à 14h » ou « 06 12 34 56 78 »"
-                            onKeyDown={(e) => {
-                                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                                    e.preventDefault();
-                                    addNote();
-                                }
-                            }}
-                            className="min-h-[70px] resize-none text-sm"
-                        />
-
-                        {/* ── Détection en temps réel ── */}
-                        {(draftAppointment || draftDetectedItems.length > 0) && (
-                            <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 space-y-2">
-                                <div className="flex items-center gap-1.5 text-[11px] font-semibold text-primary uppercase tracking-wider">
-                                    <Sparkles size={11} /> Détecté — sera appliqué
-                                </div>
-                                {draftAppointment && (
-                                    <div className="flex items-center gap-2 text-[12px] text-foreground font-medium">
-                                        <CalendarClock size={12} className="text-primary shrink-0" />
-                                        <span>RDV · {draftAppointment.label}</span>
-                                    </div>
-                                )}
-                                {draftDetectedItems.map((item, i) => {
-                                    const isNew =
-                                        (item.type === "phone" && (draftDiff.newPhone === item.value || draftDiff.extraPhones.includes(item.value))) ||
-                                        (item.type === "email" && draftDiff.newEmail === item.value) ||
-                                        (item.type === "address" && draftDiff.newAddress === item.value);
-                                    return (
-                                        <div key={i} className={`flex items-center gap-2 text-[12px] rounded-lg px-2 py-0.5 ${isNew ? "text-foreground" : "text-muted-foreground line-through opacity-50"}`}>
-                                            <span className="text-base leading-none shrink-0">{item.icon}</span>
-                                            <span className="font-medium">{item.value}</span>
-                                            {!isNew && <span className="ml-auto text-[10px] opacity-70">déjà présent</span>}
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        )}
-
-                        <div className="flex justify-end">
-                            <Button
-                                onClick={addNote}
-                                disabled={!noteDraft.trim()}
-                                data-testid="lead-add-note-btn"
-                                className="h-9 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 text-xs"
-                            >
-                                Ajouter
-                            </Button>
-                        </div>
-                        <div className="space-y-2 pt-2">
-                            {(local.notes || []).map((n) => (
-                                <div
-                                    key={n.id}
-                                    className="rounded-lg border border-border/60 p-3 bg-muted/30"
-                                    data-testid={`lead-note-${n.id}`}
-                                >
-                                    <div className="text-[10px] text-muted-foreground mb-1 font-medium">
-                                        {formatDateTime(n.at)}
-                                    </div>
-                                    <div className="text-sm whitespace-pre-wrap leading-relaxed">
-                                        {n.text}
-                                    </div>
-                                </div>
-                            ))}
-                            {(!local.notes || local.notes.length === 0) && (
-                                <p className="text-xs text-muted-foreground/70 italic text-center py-4">
-                                    Aucune note pour l'instant.
-                                </p>
-                            )}
-                        </div>
                     </div>
 
                     {/* 📦 Données importées — Collapsible */}
@@ -1022,6 +997,78 @@ const ExtraDeleteButton = ({ extraKey, extraValue, onDelete }) => {
         >
             <Trash2 size={12} strokeWidth={2} />
         </button>
+    );
+};
+
+const ExpandableCustomField = ({ field: f, isLong, actionHref, actionIcon, onUpdate, onToggleHighlight }) => {
+    const [expanded, setExpanded] = useState(false);
+    const val = f.value || "";
+    const isPhone = actionHref?.startsWith("tel:");
+
+    return (
+        <div
+            className="flex items-start gap-2 group/cf"
+            data-testid={`custom-field-display-${f.id}`}
+        >
+            <Label className="text-[11px] text-muted-foreground w-2/5 truncate shrink-0 font-medium flex items-center gap-1 mt-2">
+                {f.highlight && <Star size={9} className="text-amber-500 fill-amber-500 shrink-0" />}
+                {f.label}
+            </Label>
+            <div className="flex-1 min-w-0">
+                {expanded ? (
+                    <textarea
+                        value={f.value}
+                        onChange={(e) => onUpdate(e.target.value)}
+                        placeholder="—"
+                        rows={3}
+                        className="w-full text-sm rounded-md border border-input bg-background px-3 py-1.5 resize-none focus:outline-none focus:ring-1 focus:ring-ring"
+                    />
+                ) : (
+                    <Input
+                        value={f.value}
+                        onChange={(e) => onUpdate(e.target.value)}
+                        placeholder="—"
+                        className="h-8 text-sm"
+                    />
+                )}
+            </div>
+            {/* Bouton déplier — uniquement si valeur longue */}
+            {isLong && (
+                <button
+                    onClick={() => setExpanded((v) => !v)}
+                    title={expanded ? "Réduire" : "Déplier pour lire en entier"}
+                    className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center transition-colors text-muted-foreground/40 hover:text-primary hover:bg-primary/10"
+                >
+                    <ChevronDown
+                        size={13}
+                        strokeWidth={2}
+                        className={`transition-transform duration-200 ${expanded ? "rotate-180" : ""}`}
+                    />
+                </button>
+            )}
+            <button
+                onClick={onToggleHighlight}
+                title={f.highlight ? "Retirer de l'aperçu carte" : "Afficher sous le nom sur la carte"}
+                className={`shrink-0 w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                    f.highlight
+                        ? "text-amber-500 bg-amber-500/10"
+                        : "text-muted-foreground/30 hover:text-amber-500 hover:bg-amber-500/10 opacity-0 group-hover/cf:opacity-100"
+                }`}
+            >
+                <Star size={13} strokeWidth={2} className={f.highlight ? "fill-amber-500" : ""} />
+            </button>
+            {actionHref && val && (
+                <a
+                    href={actionHref}
+                    target={isPhone ? undefined : "_blank"}
+                    rel={isPhone ? undefined : "noreferrer noopener"}
+                    title={isPhone ? `Appeler ${val}` : `Ouvrir ${val}`}
+                    className="shrink-0 w-8 h-8 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 flex items-center justify-center transition-colors"
+                >
+                    {actionIcon}
+                </a>
+            )}
+        </div>
     );
 };
 

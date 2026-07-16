@@ -296,58 +296,39 @@ function saveStateDebounced(state, onResult) {
 const NON_UNDOABLE = new Set([
     "CHECK_FOLLOWUPS",
     "SET_THEME",
+    "SET_LEAD_PANEL_MODE",
     "SELECT_WORKSPACE",
     "RESTORE_LAST_DELETED",
     "CLEAR_LAST_DELETED",
     "UNDO",
 ]);
 
-// ---------- Undo stack — diffs légers ----------
-// On ne stocke QUE les workspaces modifiés, pas l'état entier.
-// Format d'une entrée : { changedWsIds: string[], snapshots: { [wsId]: workspace } }
-// Pour la restauration, on fusionne les snapshots dans l'état courant.
-const MAX_UNDO_STACK = 20; // réduit de 50 → 20 pour limiter la mémoire
+// ---------- Undo/Redo stack — snapshots complets légers ----------
+// Chaque entrée stocke { before, after } — les deux états complets (sans lastDeleted).
+// Cela évite toute ambiguïté de sens dans les diffs et rend undo/redo parfaitement symétriques.
+// Pour limiter la mémoire, on ne clone que les workspaces qui ont changé entre before et after
+// (les workspaces inchangés sont partagés par référence).
+const MAX_UNDO_STACK = 50;
+const MAX_REDO_STACK = 50;
 
-function makeDiff(prevState, nextState) {
-    // Trouve les workspaces qui ont changé entre les deux états
-    const changedWsIds = [];
-    const snapshots = {};
-    const allIds = new Set([
-        ...Object.keys(prevState.workspaces),
-        ...Object.keys(nextState.workspaces),
-    ]);
-    for (const wsId of allIds) {
-        if (prevState.workspaces[wsId] !== nextState.workspaces[wsId]) {
-            changedWsIds.push(wsId);
-            snapshots[wsId] = prevState.workspaces[wsId]; // snapshot AVANT l'action
-        }
-    }
-    // Capture aussi les champs de premier niveau (order, currentId, theme)
-    const topLevel = {};
-    for (const k of ["order", "currentId", "theme"]) {
-        if (prevState[k] !== nextState[k]) topLevel[k] = prevState[k];
-    }
-    return { changedWsIds, snapshots, topLevel };
+function stripTransient(state) {
+    // Retire lastDeleted (buffer temporaire) du snapshot pour ne pas polluer le stack
+    const { lastDeleted: _ld, ...clean } = state;
+    return clean;
 }
 
-function applyDiff(currentState, diff) {
-    // Restaure uniquement les workspaces et champs de premier niveau du diff
-    const restoredWs = { ...currentState.workspaces };
-    for (const wsId of diff.changedWsIds) {
-        if (diff.snapshots[wsId] === undefined) {
-            // Le workspace existait dans nextState mais pas dans prevState → le supprimer
-            delete restoredWs[wsId];
-        } else {
-            restoredWs[wsId] = diff.snapshots[wsId];
-        }
-    }
-    return {
-        ...currentState,
-        workspaces: restoredWs,
-        ...(diff.topLevel || {}),
-        lastDeleted: null,
-    };
+function statesAreEqual(a, b) {
+    if (a === b) return true;
+    if (a.order !== b.order || a.currentId !== b.currentId || a.theme !== b.theme) return false;
+    if (a.workspaces === b.workspaces) return true;
+    const aIds = Object.keys(a.workspaces);
+    const bIds = Object.keys(b.workspaces);
+    if (aIds.length !== bIds.length) return false;
+    return aIds.every((id) => a.workspaces[id] === b.workspaces[id]);
 }
+
+// Chaque entrée du stack = { before, after } — snapshots complets sans lastDeleted.
+// Undo restaure `before`, Redo restaure `after`. Symétrique, sans ambiguïté de sens.
 
 // ---------- Initial state ----------
 const initialState = {
@@ -355,6 +336,7 @@ const initialState = {
     order: [],
     currentId: null,
     theme: "light",
+    leadPanelMode: "side", // "side" | "modal"
     // undo stack for lead deletions (Gmail-style)
     lastDeleted: null, // { workspaceId, lead }
 };
@@ -364,6 +346,9 @@ function reducer(state, action) {
     switch (action.type) {
         case "SET_THEME":
             return { ...state, theme: action.theme };
+
+        case "SET_LEAD_PANEL_MODE":
+            return { ...state, leadPanelMode: action.mode };
 
         case "CREATE_WORKSPACE": {
             const ws = makeWorkspace(action.name, action.sector, action.template || "crm");
@@ -1225,6 +1210,59 @@ function reducer(state, action) {
                 },
             });
         }
+        case "HIGHLIGHT_FIELD_FOR_COLUMN": {
+            // Épingle/désépingle un champ (par label/clé) sur TOUS les leads du workspace.
+            // - Pour les champs extra (données importées) : crée un customField highlight:true si absent.
+            // - Pour les customFields déjà promus : met à jour highlight sur tous ceux ayant le même label.
+            // action: { workspaceId, fieldLabel, currentHighlight }
+            // currentHighlight: true → désépingle partout, false → épingle partout
+            const ws = state.workspaces[action.workspaceId];
+            if (!ws) return state;
+
+            const updatedLeads = { ...ws.leads };
+            const newHighlight = !action.currentHighlight;
+
+            Object.values(ws.leads).forEach((lead) => {
+
+                const labelLower = action.fieldLabel.toLowerCase();
+                const existing = (lead.customFields || []).find(
+                    (cf) => cf.label.toLowerCase() === labelLower
+                );
+
+                if (existing) {
+                    // Mettre à jour highlight sur le customField existant
+                    updatedLeads[lead.id] = {
+                        ...lead,
+                        customFields: (lead.customFields || []).map((cf) =>
+                            cf.label.toLowerCase() === labelLower
+                                ? { ...cf, highlight: newHighlight }
+                                : cf
+                        ),
+                    };
+                } else if (newHighlight) {
+                    // Pas encore de customField pour ce label → en créer un depuis extra si disponible
+                    const extraVal = lead.extra?.[action.fieldLabel];
+                    if (extraVal == null || extraVal === "") return;
+                    updatedLeads[lead.id] = {
+                        ...lead,
+                        customFields: [
+                            ...(lead.customFields || []),
+                            {
+                                id: uid(),
+                                label: action.fieldLabel,
+                                value: extraVal,
+                                pinned: false,
+                                highlight: true,
+                                fromExtra: true,
+                            },
+                        ],
+                    };
+                }
+            });
+
+            return updateWs(state, ws.id, { leads: updatedLeads });
+        }
+
         case "DELETE_LEAD_EXTRA_FIELD": {            // Supprime un champ extra sur TOUS les leads qui ont la même clé + valeur exacte.
             // action: { workspaceId, leadId, extraKey, extraValue }
             const ws = state.workspaces[action.workspaceId];
@@ -1281,56 +1319,103 @@ export function CrmProvider({ children }) {
     // Undo stack — diffs légers (workspaces modifiés uniquement)
     // Chaque entrée = { changedWsIds, snapshots, topLevel } produit par makeDiff()
     const undoStackRef = useRef([]); // Array<diff>
+    const redoStackRef = useRef([]); // Array<diff> — forward diffs pour redo
     const stateRef = useRef(state);
     stateRef.current = state;
 
-    // Wrapped dispatch: calcule un diff AVANT l'action puis l'empile
+    // Wrapped dispatch: pousse { before, after } sur le undo stack de façon synchrone
     const dispatch = useCallback(
         (action) => {
             if (!NON_UNDOABLE.has(action.type)) {
-                // On doit lire l'état courant AVANT que rawDispatch ne l'applique.
-                // stateRef.current est synchronisé à chaque render, donc il est fiable ici.
-                const prevState = stateRef.current;
-                rawDispatch(action);
-                // Après le dispatch, le prochain render mettra à jour stateRef.
-                // On reporte le calcul du diff au prochain tick pour avoir nextState.
-                requestAnimationFrame(() => {
-                    const nextState = stateRef.current;
-                    const diff = makeDiff(prevState, nextState);
-                    if (diff.changedWsIds.length > 0 || Object.keys(diff.topLevel).length > 0) {
-                        undoStackRef.current = [
-                            ...undoStackRef.current.slice(-(MAX_UNDO_STACK - 1)),
-                            diff,
-                        ];
-                    }
-                });
-            } else {
-                rawDispatch(action);
+                const before = stripTransient(stateRef.current);
+                const after  = stripTransient(reducer(stateRef.current, action));
+                if (!statesAreEqual(before, after)) {
+                    undoStackRef.current = [
+                        ...undoStackRef.current.slice(-(MAX_UNDO_STACK - 1)),
+                        { before, after },
+                    ];
+                    redoStackRef.current = [];
+                }
             }
+            rawDispatch(action);
         },
         [rawDispatch],
     );
 
-    // Undo: dépile le dernier diff et restaure uniquement les workspaces impactés
+    // Undo: restaure `before`, pousse l'entrée sur le redo stack
     const undo = useCallback(() => {
         const stack = undoStackRef.current;
         if (stack.length === 0) return false;
-        const diff = stack[stack.length - 1];
+        const entry = stack[stack.length - 1];
         undoStackRef.current = stack.slice(0, -1);
-        rawDispatch({ type: "RESTORE_SNAPSHOT", snapshot: applyDiff(stateRef.current, diff) });
+        redoStackRef.current = [
+            ...redoStackRef.current.slice(-(MAX_REDO_STACK - 1)),
+            entry,
+        ];
+        rawDispatch({ type: "RESTORE_SNAPSHOT", snapshot: entry.before });
         return true;
     }, [rawDispatch]);
 
-    // Keyboard shortcut — Cmd+Z / Ctrl+Z
+    // Redo: restaure `after`, remet l'entrée sur le undo stack
+    const redo = useCallback(() => {
+        const stack = redoStackRef.current;
+        if (stack.length === 0) return false;
+        const entry = stack[stack.length - 1];
+        redoStackRef.current = stack.slice(0, -1);
+        undoStackRef.current = [
+            ...undoStackRef.current.slice(-(MAX_UNDO_STACK - 1)),
+            entry,
+        ];
+        rawDispatch({ type: "RESTORE_SNAPSHOT", snapshot: entry.after });
+        return true;
+    }, [rawDispatch]);
+
+    // batchDispatch : groupe plusieurs actions en UNE SEULE entrée undo/redo
+    const batchDispatch = useCallback(
+        (actions) => {
+            if (!actions || actions.length === 0) return;
+            const before = stripTransient(stateRef.current);
+            let intermediate = stateRef.current;
+            actions.forEach((action) => {
+                intermediate = reducer(intermediate, action);
+            });
+            const after = stripTransient(intermediate);
+            if (!statesAreEqual(before, after)) {
+                undoStackRef.current = [
+                    ...undoStackRef.current.slice(-(MAX_UNDO_STACK - 1)),
+                    { before, after },
+                ];
+                redoStackRef.current = [];
+            }
+            actions.forEach((action) => rawDispatch(action));
+        },
+        [rawDispatch],
+    );
+
+    // Keyboard shortcut — Cmd+Z / Ctrl+Z  (undo)
+    //                     Cmd+Shift+Z / Ctrl+Shift+Z  (redo)
     useEffect(() => {
         const onKey = (e) => {
             const isMac = navigator.platform.toUpperCase().includes("MAC");
             const modifier = isMac ? e.metaKey : e.ctrlKey;
-            if (modifier && e.key === "z" && !e.shiftKey) {
-                // Don't intercept if focus is inside an input/textarea
-                const tag = document.activeElement?.tagName;
-                if (tag === "INPUT" || tag === "TEXTAREA") return;
-                e.preventDefault();
+            if (!modifier || e.key.toLowerCase() !== "z") return;
+
+            // Don't intercept if focus is inside an input/textarea
+            const tag = document.activeElement?.tagName;
+            if (tag === "INPUT" || tag === "TEXTAREA") return;
+
+            e.preventDefault();
+
+            if (e.shiftKey) {
+                // Redo
+                const didRedo = redo();
+                if (didRedo) {
+                    import("sonner").then(({ toast }) =>
+                        toast("Action rétablie", { duration: 2000 }),
+                    );
+                }
+            } else {
+                // Undo
                 const didUndo = undo();
                 if (didUndo) {
                     import("sonner").then(({ toast }) =>
@@ -1341,7 +1426,7 @@ export function CrmProvider({ children }) {
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [undo]);
+    }, [undo, redo]);
 
     // Persist to localStorage — debounce 500ms pour éviter de bloquer le thread
     // principal à chaque dispatch (JSON.stringify sur 300+ leads est coûteux).
@@ -1408,8 +1493,11 @@ export function CrmProvider({ children }) {
     const stableApi = useMemo(
         () => ({
             dispatch,
+            batchDispatch,
             undo,
+            redo,
             canUndo: () => undoStackRef.current.length > 0,
+            canRedo: () => redoStackRef.current.length > 0,
             currentWorkspace: () =>
                 stateRef.current.currentId
                     ? stateRef.current.workspaces[stateRef.current.currentId]
@@ -1450,7 +1538,7 @@ export function CrmProvider({ children }) {
             },
         }),
         // eslint-disable-next-line react-hooks/exhaustive-deps
-        [dispatch, undo], // rawDispatch est stable, dispatch/undo aussi → ce memo ne se recrée jamais
+        [dispatch, batchDispatch, undo, redo], // rawDispatch est stable, dispatch/undo/redo aussi → ce memo ne se recrée jamais
     );
 
     // Objet final du contexte — state change à chaque dispatch, mais stableApi reste identique

@@ -39,10 +39,13 @@ export const CallNoteModal = ({ open, workspace, lead, onClose, onAutoMoved }) =
     useEffect(() => {
         const onKey = (e) => {
             if (e.key === "Escape" && open) onClose();
-            if (e.key === "Enter" && open && outcome) {
+            if (e.key === "Enter" && open) {
+                // Dans le textarea : seulement Cmd/Ctrl+Entrée
                 if (e.target.tagName === "TEXTAREA") {
                     if (e.metaKey || e.ctrlKey) save();
                 } else {
+                    // Hors textarea : Entrée seul suffit — même sans texte ni outcome sélectionné
+                    // (fallback → "Pas de réponse" géré dans save())
                     save();
                 }
             }
@@ -76,7 +79,7 @@ export const CallNoteModal = ({ open, workspace, lead, onClose, onAutoMoved }) =
         const finalOutcome = outcome ?? "noanswer";
         const content = text.trim();
 
-        // ── 1. Sauvegarder la note telle quelle (jamais modifiée) ──────────
+        // ── 1. Sauvegarder la note ──────────────────────────────────────────
         const noteText = finalOutcome === "reached"
             ? (content ? `📞 Joint · ${content}` : "📞 Joint")
             : (content ? `📵 Pas de réponse · ${content}` : "📵 Pas de réponse");
@@ -98,17 +101,11 @@ export const CallNoteModal = ({ open, workspace, lead, onClose, onAutoMoved }) =
         }
 
         // ── 1b. Déplacement vers la colonne de rappel ─────────────────────
-        // On déplace vers autoFollowup seulement si :
-        //   - un RDV a été détecté, OU
-        //   - l'utilisateur a explicitement cliqué "Pas de réponse"
-        //   (pas de déplacement si c'est le fallback silencieux sans action)
         const shouldMove = appointment
             ? (autoFollowupColumn && lead.columnId !== autoFollowupColumn.id)
             : (finalOutcome === "noanswer" && outcomeManual && autoFollowupColumn && lead.columnId !== autoFollowupColumn.id);
 
         if (shouldMove) {
-            // Signaler à WorkspacePage que ce déplacement est automatique
-            // → pas besoin d'ouvrir un nouveau modal pour ce lead
             onAutoMoved?.(lead.id);
             dispatch({
                 type: "MOVE_LEAD_ORDERED",
@@ -124,7 +121,41 @@ export const CallNoteModal = ({ open, workspace, lead, onClose, onAutoMoved }) =
         if (diff.newPhone) patch.phone = diff.newPhone;
         if (diff.newEmail) patch.email = diff.newEmail;
 
-        // Rendez-vous détecté → nextAction
+        // ── 2b. Rappel automatique "Pas de réponse" ───────────────────────
+        // Si pas de réponse et pas de RDV détecté dans la note :
+        // → programmer un rappel +1j / +2j / +3j selon le nombre de tentatives
+        // (basé sur le stage de l'autoFollowup existant, ou 1 si premier appel)
+        if (finalOutcome === "noanswer" && !appointment) {
+            // Calculer le stage : si le lead a déjà un autoFollowup en cours, avancer d'un cran
+            const currentStage = lead.autoFollowup?.stage ?? 0;
+            const nextStage = Math.min(currentStage + 1, 3); // max 3
+            const daysUntilReminder = nextStage; // +1j, +2j, +3j
+            const now = new Date().toISOString();
+            const dueAt = new Date(Date.now() + daysUntilReminder * 24 * 60 * 60 * 1000).toISOString();
+
+            const stageLabels = {
+                1: `📵 Pas de réponse · rappel dans 1 jour`,
+                2: `📵 Pas de réponse · rappel dans 2 jours`,
+                3: `📵 Pas de réponse · rappel dans 3 jours`,
+            };
+
+            patch.autoFollowup = {
+                stage: nextStage,
+                dueAt,
+                startedAt: lead.autoFollowup?.startedAt || now,
+                columnId: lead.columnId,
+                overdue: false,
+            };
+            patch.nextAction = {
+                date: dueAt.slice(0, 10),
+                dueAt,
+                label: stageLabels[nextStage],
+                auto: true,
+                stage: nextStage,
+            };
+        }
+
+        // Rendez-vous détecté dans la note → nextAction (prioritaire sur le rappel auto)
         if (appointment) {
             patch.nextAction = {
                 date: appointment.iso.slice(0, 10),
@@ -251,8 +282,16 @@ export const CallNoteModal = ({ open, workspace, lead, onClose, onAutoMoved }) =
                         autoFocus
                         className="mt-3 min-h-[100px] resize-none rounded-xl text-sm"
                     />
-                    <p className="text-[11px] text-muted-foreground mt-1.5">
-                        {isMac ? "⌘" : "Ctrl"} + Entrée pour enregistrer
+                    <p className="text-[11px] text-muted-foreground mt-1.5 flex items-center gap-2 flex-wrap">
+                        <span>
+                            <kbd className="px-1.5 py-0.5 rounded bg-muted border border-border font-mono text-[10px]">Entrée</kbd>
+                            {" "}→ enregistrer « Pas de réponse » + rappel auto
+                        </span>
+                        <span className="opacity-50">·</span>
+                        <span>
+                            <kbd className="px-1.5 py-0.5 rounded bg-muted border border-border font-mono text-[10px]">{isMac ? "⌘" : "Ctrl"}+Entrée</kbd>
+                            {" "}dans la note
+                        </span>
                     </p>
 
                     {/* ── Rendez-vous détecté ── */}
@@ -318,6 +357,16 @@ export const CallNoteModal = ({ open, workspace, lead, onClose, onAutoMoved }) =
                                 ✓ Fiche mise à jour automatiquement
                             </span>
                         )}
+                        {!hasNewInfo && !appointment && (outcome === "noanswer" || (!outcome && !text.trim())) && (() => {
+                            const currentStage = lead.autoFollowup?.stage ?? 0;
+                            const nextStage = Math.min(currentStage + 1, 3);
+                            const labels = { 1: "+1 jour", 2: "+2 jours", 3: "+3 jours" };
+                            return (
+                                <span className="text-amber-600 dark:text-amber-400 font-medium flex items-center gap-1">
+                                    🔔 Rappel automatique dans {labels[nextStage]}
+                                </span>
+                            );
+                        })()}
                     </div>
                     <div className="flex gap-2">
                         <Button

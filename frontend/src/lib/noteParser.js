@@ -157,17 +157,17 @@ export function formatDetected(detected) {
 
 const MONTHS_FR = {
     janvier: 0, jan: 0,
-    février: 1, fevrier: 1, fev: 1,
+    "f\u00e9vrier": 1, fevrier: 1, fev: 1,
     mars: 2, mar: 2,
     avril: 3, avr: 3,
     mai: 4,
     juin: 5,
     juillet: 6, juil: 6,
-    août: 7, aout: 7,
+    "ao\u00fbt": 7, aout: 7,
     septembre: 8, sep: 8, sept: 8,
     octobre: 9, oct: 9,
     novembre: 10, nov: 10,
-    décembre: 11, decembre: 11, dec: 11,
+    "d\u00e9cembre": 11, decembre: 11, dec: 11,
 };
 
 const DAYS_FR = {
@@ -206,17 +206,14 @@ function nextWeekday(from, targetDay, next = false) {
 
 /**
  * Détecte un rendez-vous ou rappel dans le texte d'une note.
- * Comprend :
- *   - "demain à 11h15"
- *   - "après-demain à 14h"
- *   - "lundi prochain à 9h30"
- *   - "mardi à 15h" (prochain mardi)
- *   - "le 20 juillet à 11h"
- *   - "20/07 à 14h30"
- *   - "20-07 à 11h"
- *   - "le 20 à 11h" (ce mois-ci)
- *   - "+2j" / "dans 2 jours"
- *   - sans heure → heure non définie (null)
+ *
+ * Gère correctement les phrases mixtes contenant "aujourd'hui" + une date future :
+ *   - "pas dispo aujourd'hui, rappeler demain a 9h"  → demain 9h ✓
+ *   - "absent aujourd'hui, recontacter lundi a 14h"  → lundi 14h ✓
+ *   - "mr dupont pas dispo aujourd'hui, rappeler demain a 9h car absent" → demain 9h ✓
+ *
+ * Approche : on collecte TOUS les candidats trouvés dans le texte (sans else-if),
+ * puis on sélectionne le plus pertinent (priorité + date la plus proche).
  *
  * @param {string} text
  * @param {Date} [now] — date de référence (défaut : maintenant)
@@ -225,146 +222,182 @@ function nextWeekday(from, targetDay, next = false) {
 export function detectAppointment(text, now = new Date()) {
     if (!text || !text.trim()) return null;
 
+    // Normaliser : minuscules + strip accents + normaliser apostrophes
     const t = text.toLowerCase()
-        .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // strip accents
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
         .replace(/['']/g, "'");
-
-    let date = null;
-    let timeStr = null;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
     const clone = (d) => new Date(d.getTime());
     const addDays = (d, n) => { const r = clone(d); r.setDate(r.getDate() + n); return r; };
 
-    // Chercher une heure dans le texte complet (après la date trouvée)
+    // Extraire une heure dans un fragment de texte
     const extractTime = (fragment) => {
+        if (!fragment) return null;
         const m = fragment.match(/(?:a\s+)?(\d{1,2}h\d{0,2}|\d{1,2}:\d{2})/i);
         return m ? m[1] : null;
     };
 
-    // ── Mots-clés de rappel / rendez-vous ─────────────────────────────────────
-    const TRIGGER_RE = /(?:rappel(?:er|ler|le)?|rappel|rdv|rendez-?vous|recontact(?:er)?|relance(?:r)?|call(?:er)?|joindre|r[ée]appeler)/;
-    // Le texte doit contenir un mot déclencheur OU une date explicite
+    // ── Mots-clés déclencheurs ────────────────────────────────────────────────
+    const TRIGGER_RE = /(?:rappel(?:er|ler|le)?|rappel|rdv|rendez-?vous|recontact(?:er)?|relance(?:r)?|call(?:er)?|joindre|reappeler)/;
     const hasTrigger = TRIGGER_RE.test(t);
 
-    // ── 1. Aujourd'hui (avec heure obligatoire) ───────────────────────────────
-    if (/\baujourd'?hui\b/.test(t)) {
-        date = clone(now);
-        timeStr = extractTime(t.split(/aujourd'?hui/)[1] || "");
-        // Sans heure, "aujourd'hui" seul ne constitue pas un RDV pertinent
-        if (!timeStr) date = null;
+    // ── Collecte de tous les candidats ───────────────────────────────────────
+    // priority : 3 = très fiable (demain, après-demain), 2 = fiable, 1 = faible
+    const candidates = [];
+
+    const addCandidate = (date, timeStr, priority) => {
+        if (!date) return;
+        const d = clone(date);
+        const time = timeStr ? parseTime(timeStr) : null;
+        if (time) {
+            d.setHours(time.hours, time.minutes, 0, 0);
+        } else {
+            d.setHours(9, 0, 0, 0);
+        }
+        // Ignorer les dates passées (tolérance -5 min)
+        if (d.getTime() < Date.now() - 5 * 60 * 1000) return;
+        candidates.push({ date: d, hasTime: !!time, priority });
+    };
+
+    // ── 1. Aujourd'hui — heure obligatoire pour être pertinent ───────────────
+    // On ne l'ignore PAS si présent, mais on ne l'accepte QUE avec une heure.
+    // Cela évite de bloquer "aujourd'hui ... demain" via l'ancien else-if.
+    const huiIdx = t.indexOf("aujourd'hui");
+    if (huiIdx !== -1) {
+        const after = t.slice(huiIdx + "aujourd'hui".length);
+        const ts = extractTime(after);
+        if (ts) {
+            // Heure trouvée après "aujourd'hui" → candidat valide
+            addCandidate(clone(now), ts, 2);
+        }
+        // Pas d'heure → on ignore "aujourd'hui" mais on continue l'analyse
     }
 
     // ── 2. Demain ─────────────────────────────────────────────────────────────
-    else if (/\bdemain\b/.test(t)) {
-        date = addDays(now, 1);
-        timeStr = extractTime(t.split("demain")[1] || "");
+    const demainRe = /\bdemain\b/g;
+    let mD;
+    while ((mD = demainRe.exec(t)) !== null) {
+        const after = t.slice(mD.index + mD[0].length);
+        addCandidate(addDays(now, 1), extractTime(after), 3);
     }
 
     // ── 3. Après-demain ───────────────────────────────────────────────────────
-    else if (/\bapr[eè]s[\s-]?demain\b/.test(t)) {
-        date = addDays(now, 2);
-        timeStr = extractTime(t.replace(/.*apr[eè]s[\s-]?demain/, ""));
+    const apresRe = /\bapr[e\u00e8]s[\s-]?demain\b/g;
+    let mAD;
+    while ((mAD = apresRe.exec(t)) !== null) {
+        const after = t.slice(mAD.index + mAD[0].length);
+        addCandidate(addDays(now, 2), extractTime(after), 3);
     }
 
     // ── 4. "dans X jours" / "+Xj" ─────────────────────────────────────────────
-    else if (/\bdans\s+(\d+)\s+jours?\b/.test(t)) {
-        const m = t.match(/\bdans\s+(\d+)\s+jours?\b/);
-        date = addDays(now, parseInt(m[1], 10));
-        timeStr = extractTime(t.split(m[0])[1] || "");
+    const dansRe = /\bdans\s+(\d+)\s+jours?\b/g;
+    let mDans;
+    while ((mDans = dansRe.exec(t)) !== null) {
+        const after = t.slice(mDans.index + mDans[0].length);
+        addCandidate(addDays(now, parseInt(mDans[1], 10)), extractTime(after), 2);
     }
-    else if (/\+(\d+)j\b/.test(t)) {
-        const m = t.match(/\+(\d+)j\b/);
-        date = addDays(now, parseInt(m[1], 10));
-        timeStr = extractTime(t.split(m[0])[1] || "");
+    const plusJRe = /\+(\d+)j\b/g;
+    let mPJ;
+    while ((mPJ = plusJRe.exec(t)) !== null) {
+        const after = t.slice(mPJ.index + mPJ[0].length);
+        addCandidate(addDays(now, parseInt(mPJ[1], 10)), extractTime(after), 2);
     }
 
-    // ── 5. Jour de semaine + "prochain" ou seul ───────────────────────────────
-    else if (/\b(lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\b/.test(t)) {
-        const m = t.match(/\b(lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\b/);
-        const targetDay = DAYS_FR[m[1]];
-        const isNext = /prochain/.test(t.slice(t.indexOf(m[1])));
-        date = nextWeekday(now, targetDay, isNext);
-        timeStr = extractTime(t.slice(t.indexOf(m[0]) + m[0].length));
+    // ── 5. Jour de semaine ────────────────────────────────────────────────────
+    const joursRe = /\b(lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\b/g;
+    let mJour;
+    while ((mJour = joursRe.exec(t)) !== null) {
+        const targetDay = DAYS_FR[mJour[1]];
+        const afterJour = t.slice(mJour.index + mJour[0].length);
+        const isNext = /prochain/.test(afterJour.slice(0, 15));
+        addCandidate(nextWeekday(now, targetDay, isNext), extractTime(afterJour), 2);
     }
 
     // ── 6. Date absolue : "20 juillet", "20 juillet 2026" ────────────────────
-    else if (/\b(\d{1,2})\s+(janvier|f[ée]vrier|mars|avril|mai|juin|juillet|ao[uû]t|septembre|octobre|novembre|d[eé]cembre)\b/.test(t)) {
-        const m = t.match(/\b(\d{1,2})\s+(janvier|f[ée]vrier|mars|avril|mai|juin|juillet|ao[uû]t|septembre|octobre|novembre|d[eé]cembre)(?:\s+(\d{4}))?\b/);
-        const day = parseInt(m[1], 10);
-        const monthKey = m[2].normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-        const month = MONTHS_FR[monthKey];
-        const year = m[3] ? parseInt(m[3], 10) : now.getFullYear();
+    const moisRe = /\b(\d{1,2})\s+(janvier|fevrier|mars|avril|mai|juin|juillet|aout|septembre|octobre|novembre|decembre)(?:\s+(\d{4}))?\b/g;
+    let mMois;
+    while ((mMois = moisRe.exec(t)) !== null) {
+        const day = parseInt(mMois[1], 10);
+        const month = MONTHS_FR[mMois[2]];
+        const year = mMois[3] ? parseInt(mMois[3], 10) : now.getFullYear();
         if (month !== undefined) {
-            date = new Date(year, month, day);
-            // Si la date est déjà passée cette année, aller à l'an prochain
-            if (date < now && !m[3]) date.setFullYear(year + 1);
-            timeStr = extractTime(t.slice(t.indexOf(m[0]) + m[0].length));
+            const d = new Date(year, month, day);
+            if (d < now && !mMois[3]) d.setFullYear(year + 1);
+            addCandidate(d, extractTime(t.slice(mMois.index + mMois[0].length)), 2);
         }
     }
 
     // ── 7. Format numérique : "20/07", "20-07", "20/07/2026" ─────────────────
-    else if (/\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{4}))?\b/.test(t)) {
-        const m = t.match(/\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{4}))?\b/);
-        const day = parseInt(m[1], 10);
-        const month = parseInt(m[2], 10) - 1;
-        const year = m[3] ? parseInt(m[3], 10) : now.getFullYear();
+    const numRe = /\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{4}))?\b/g;
+    let mNum;
+    while ((mNum = numRe.exec(t)) !== null) {
+        const day = parseInt(mNum[1], 10);
+        const month = parseInt(mNum[2], 10) - 1;
+        const year = mNum[3] ? parseInt(mNum[3], 10) : now.getFullYear();
         if (day >= 1 && day <= 31 && month >= 0 && month <= 11) {
-            date = new Date(year, month, day);
-            if (date < now && !m[3]) date.setFullYear(year + 1);
-            timeStr = extractTime(t.slice(t.indexOf(m[0]) + m[0].length));
-        }
-    }
-    // ── 8. "le Xème" / "le X" (ce mois-ci) ──────────────────────────────────
-    else if (hasTrigger && /\ble\s+(\d{1,2})(?:er|ème|e)?\b/.test(t)) {
-        const m = t.match(/\ble\s+(\d{1,2})(?:er|[eè]me|e)?\b/);
-        const day = parseInt(m[1], 10);
-        if (day >= 1 && day <= 31) {
-            date = new Date(now.getFullYear(), now.getMonth(), day);
-            if (date <= now) date.setMonth(date.getMonth() + 1);
-            timeStr = extractTime(t.slice(t.indexOf(m[0]) + m[0].length));
+            const d = new Date(year, month, day);
+            if (d < now && !mNum[3]) d.setFullYear(year + 1);
+            addCandidate(d, extractTime(t.slice(mNum.index + mNum[0].length)), 2);
         }
     }
 
-    // Aucune date trouvée
-    if (!date) return null;
-
-    // Doit avoir un déclencheur OU une date explicite (format court ou long avec heure)
-    // Une date courte XX/XX ou XX-XX est suffisamment explicite sans mot déclencheur
-    const time = timeStr ? parseTime(timeStr) : null;
-    const isExplicitDate = /\b\d{1,2}[\/\-]\d{1,2}\b/.test(t) || /\b\d{1,2}\s+(janvier|f[ée]vrier|mars|avril|mai|juin|juillet|ao[uû]t|septembre|octobre|novembre|d[eé]cembre)\b/.test(t);
-    if (!hasTrigger && !time && !isExplicitDate) return null;
-
-    // Appliquer l'heure si détectée
-    if (time) {
-        date.setHours(time.hours, time.minutes, 0, 0);
-    } else {
-        date.setHours(9, 0, 0, 0); // défaut 9h00
+    // ── 8. "le X" / "le Xème" (ce mois-ci) — seulement avec déclencheur ─────
+    if (hasTrigger) {
+        const leRe = /\ble\s+(\d{1,2})(?:er|[e\u00e8]me|e)?\b/g;
+        let mLe;
+        while ((mLe = leRe.exec(t)) !== null) {
+            const day = parseInt(mLe[1], 10);
+            if (day >= 1 && day <= 31) {
+                const d = new Date(now.getFullYear(), now.getMonth(), day);
+                if (d <= now) d.setMonth(d.getMonth() + 1);
+                addCandidate(d, extractTime(t.slice(mLe.index + mLe[0].length)), 1);
+            }
+        }
     }
 
-    // Vérifier que la date est dans le futur (tolérance : -5 min)
-    if (date.getTime() < Date.now() - 5 * 60 * 1000) return null;
+    // ── Sélection du meilleur candidat ───────────────────────────────────────
+    if (candidates.length === 0) return null;
 
-    // Formater le label lisible
+    // Filtre : besoin d'un déclencheur OU d'une date explicite/heure pour valider
+    const isExplicitDate =
+        /\b\d{1,2}[\/\-]\d{1,2}\b/.test(t) ||
+        /\b\d{1,2}\s+(janvier|fevrier|mars|avril|mai|juin|juillet|aout|septembre|octobre|novembre|decembre)\b/.test(t);
+
+    const valid = candidates.filter((c) => hasTrigger || isExplicitDate || c.hasTime);
+
+    if (valid.length === 0) return null;
+
+    // Trier : priorité décroissante, puis date croissante (la plus proche en premier)
+    valid.sort((a, b) =>
+        b.priority !== a.priority
+            ? b.priority - a.priority
+            : a.date.getTime() - b.date.getTime()
+    );
+
+    const best = valid[0];
+    const date = best.date;
+
+    // ── Formatage du label ────────────────────────────────────────────────────
     const dayNames = ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"];
     const dd = String(date.getDate()).padStart(2, "0");
     const mm = String(date.getMonth() + 1).padStart(2, "0");
     const hh = String(date.getHours()).padStart(2, "0");
     const min = String(date.getMinutes()).padStart(2, "0");
 
-    const isToday = date.toDateString() === now.toDateString();
+    const isToday    = date.toDateString() === now.toDateString();
     const isTomorrow = date.toDateString() === addDays(now, 1).toDateString();
-    const dayLabel = isToday ? "Aujourd'hui"
-        : isTomorrow ? "Demain"
-        : `${dayNames[date.getDay()]} ${dd}/${mm}`;
+    const dayLabel   = isToday    ? "Aujourd'hui"
+                     : isTomorrow ? "Demain"
+                     : `${dayNames[date.getDay()]} ${dd}/${mm}`;
 
-    const label = time
-        ? `${dayLabel} à ${hh}h${min !== "00" ? min : ""}`
+    const label = best.hasTime
+        ? `${dayLabel} \u00e0 ${hh}h${min !== "00" ? min : ""}`
         : dayLabel;
 
     return {
         iso: date.toISOString(),
         label,
-        hasTime: !!time,
+        hasTime: best.hasTime,
     };
 }
