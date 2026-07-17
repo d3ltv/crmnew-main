@@ -45,6 +45,42 @@ import { isContactedColumn } from "@/constants/columnPatterns";
 // Wrapper local : accepte un nom de colonne string
 const isContactedCol = (name = "") => isContactedColumn(name);
 
+// Wrapper qui applique un scale CSS sur la card sans changer le flow du document.
+// Un margin-bottom négatif compense la hauteur "fantôme" réservée par le navigateur.
+const CardScaleWrapper = ({ scale = 1, children }) => {
+    const ref = React.useRef(null);
+    const [negMargin, setNegMargin] = React.useState(0);
+
+    React.useEffect(() => {
+        const el = ref.current;
+        if (!el || scale >= 1) return;
+        const update = () => {
+            const h = el.scrollHeight;
+            setNegMargin(Math.round(h * (1 - scale)));
+        };
+        update();
+        const ro = new ResizeObserver(update);
+        ro.observe(el);
+        return () => ro.disconnect();
+    }, [scale]);
+
+    if (scale >= 1) return children;
+
+    return (
+        <div
+            ref={ref}
+            style={{
+                transform: `scale(${scale})`,
+                transformOrigin: "top center",
+                marginBottom: `-${negMargin}px`,
+                willChange: "transform",
+            }}
+        >
+            {children}
+        </div>
+    );
+};
+
 // DropZone between cards — shows an animated insertion line
 const InsertionPlaceholder = () => (
     <div
@@ -108,6 +144,7 @@ export const KanbanColumn = ({
     quickMode,
     quickFocusedLeadId,
     onStartQuickMode,
+    onSortedLeadsChange,
 }) => {
     const [editing, setEditing] = useState(false);
     const [name, setName] = useState(column.name);
@@ -117,7 +154,7 @@ export const KanbanColumn = ({
     const contentRef = useRef(null);
     const [bgHeight, setBgHeight] = useState(160);
     const color = getColumnColor(column);
-    const { dispatch } = useCrm();
+    const { dispatch, state: crmState } = useCrm();
 
     // ── Tri local — persisté par colonne ──────────────────────────────────────
     const SORT_KEY = `crm_sort_${column.id}`;
@@ -203,6 +240,11 @@ export const KanbanColumn = ({
     }, [editing]);
     useEffect(() => setName(column.name), [column.name]);
 
+    // Notifie le parent (KanbanBoard) de l'ordre trié réel — utilisé par le mode rapide
+    useEffect(() => {
+        onSortedLeadsChange?.(sortedLeads);
+    }, [sortedLeads]); // eslint-disable-line react-hooks/exhaustive-deps
+
     // Mesure la hauteur réelle du contenu pour animer le fond
     useEffect(() => {
         if (!contentRef.current) return;
@@ -257,23 +299,27 @@ export const KanbanColumn = ({
         [column.id, leads.length, onDropLead, onColumnDrop],
     );
 
+    // Detect dark mode via CRM context (reactive to theme changes)
+    const isDark = crmState.theme === "dark";
+
     return (
         <div
             data-testid={`kanban-column-${column.id}`}
-            className={`kanban-col relative shrink-0 flex flex-col max-h-full transition-colors duration-150 ${
-                isDragTarget ? "ring-2 ring-primary/30 rounded-xl" : ""
+            className={`kanban-col relative shrink-0 flex flex-col transition-colors duration-150 rounded-xl ${
+                isDragTarget ? "ring-2 ring-primary/30" : ""
             }`}
-            style={{ width: `${workspace.columnWidth ?? 300}px` }}
+            style={{
+                width: `${workspace.columnWidth ?? 300}px`,
+                backgroundColor: isDark ? color.colTintDark : color.colTint,
+            }}
             onDragOver={handleColumnDragOver}
             onDrop={handleColumnDrop}
             onDragLeave={(e) => {
                 if (!e.currentTarget.contains(e.relatedTarget)) {}
             }}
         >
-            {/* Pas de fond coloré — look épuré comme la maquette */}
-
             {/* Contenu */}
-            <div ref={contentRef} className="flex flex-col max-h-full overflow-hidden">
+            <div ref={contentRef} className="flex flex-col">
 
             {/* ── Header ── */}
             <div
@@ -497,7 +543,7 @@ export const KanbanColumn = ({
             </div>
 
             {/* Cards list */}
-            <div className="kanban-col-scroll overflow-y-auto flex-1 px-0 pb-3">
+            <div className="flex-1 px-2 pb-3">
                 {/* Drop slot before first card */}
                 <CardDropSlot
                     index={0}
@@ -510,16 +556,18 @@ export const KanbanColumn = ({
 
                 {sortedLeads.map((lead, i) => (
                     <React.Fragment key={lead.id}>
-                        <LeadCard
-                            lead={lead}
-                            column={column}
-                            workspace={workspace}
-                            onOpen={onOpenLead}
-                            onDragStart={onDragStartLead}
-                            onDragEnd={onDragEndLead}
-                            dragging={dragState?.leadId === lead.id}
-                            quickFocused={quickMode && lead.id === quickFocusedLeadId}
-                        />
+                        <CardScaleWrapper scale={workspace.cardScale ?? 1}>
+                            <LeadCard
+                                lead={lead}
+                                column={column}
+                                workspace={workspace}
+                                onOpen={onOpenLead}
+                                onDragStart={onDragStartLead}
+                                onDragEnd={onDragEndLead}
+                                dragging={dragState?.leadId === lead.id}
+                                quickFocused={quickMode && lead.id === quickFocusedLeadId}
+                            />
+                        </CardScaleWrapper>
                         <CardDropSlot
                             index={i + 1}
                             isActive={isDragTarget && insertIndex === i + 1}

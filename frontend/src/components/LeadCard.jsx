@@ -258,7 +258,12 @@ export const LeadCard = memo(({
         : isStale            ? "border-l-4 border-l-rose-500 border-t border-r border-b border-border bg-rose-500/[0.02]"
         : followupIsOverdue  ? "border-l-4 border-l-rose-400 border-t border-r border-b border-border"
         : followupDue        ? "border-l-4 border-l-amber-400 border-t border-r border-b border-border"
-        : "border border-border";
+        : "border";
+
+    // Liseré coloré via CSS var — très subtil, couleur de la colonne
+    const cardBorderColor = (!rdv && !isStale && !followupDue && !followupIsOverdue && !quickFocused)
+        ? colColor.cardBorder
+        : undefined;
 
     // Ombre colorée : uniquement quand RDV présent, couleur selon urgence
     const rdvShadowColor = rdv && !quickFocused
@@ -377,8 +382,11 @@ export const LeadCard = memo(({
                 if (e.target.closest("a, button, input, textarea, [data-no-open]")) return;
                 onOpen(lead);
             }}
-            className={`lead-card ${dragging ? "dragging" : ""} ${rdvShadowColor ? "rdv-shadow" : ""} ${rdv && rdvIsSoon && !rdvIsPast ? "rdv-soon" : ""} relative bg-card rounded-xl cursor-grab active:cursor-grabbing mb-2.5 transition-all ${urgencyBorder}`}
-            style={rdvShadowColor ? { "--rdv-shadow": rdvShadowColor } : undefined}
+            className={`lead-card ${dragging ? "dragging" : ""} ${rdvShadowColor ? "rdv-shadow" : ""} ${rdv && rdvIsSoon && !rdvIsPast ? "rdv-soon" : ""} relative bg-card rounded-xl cursor-grab active:cursor-grabbing mb-1.5 transition-all ${urgencyBorder}`}
+            style={{
+                ...(rdvShadowColor ? { "--rdv-shadow": rdvShadowColor } : {}),
+                ...(cardBorderColor ? { borderColor: cardBorderColor } : {}),
+            }}
             role="button"
             tabIndex={0}
             onKeyDown={(e) => e.key === "Enter" && onOpen(lead)}
@@ -387,7 +395,7 @@ export const LeadCard = memo(({
                 <span className="absolute -left-0.5 top-1/2 -translate-y-1/2 w-1 h-10 rounded-r-full bg-primary z-10" aria-hidden />
             )}
 
-            <div className="px-4 pt-4 pb-3 space-y-2">
+            <div className="px-3.5 pt-3.5 pb-3 space-y-2">
 
                 {/* ── Ligne 1 : Avatar (cercle coloré colonne) + Nom + Contact ── */}
                 <div className="flex items-start gap-2.5">

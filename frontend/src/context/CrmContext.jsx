@@ -148,6 +148,7 @@ const makeWorkspace = (name, sector = "", template = "crm") => {
         leads: {},
         cardFields: tpl.cardFields,
         columnWidth: 340,
+        cardScale: 1,
         createdAt: new Date().toISOString(),
     };
 };
@@ -206,10 +207,11 @@ function loadState() {
         const parsed = JSON.parse(raw);
         // Validation basique — si la structure est invalide, on ignore
         if (!parsed || typeof parsed !== "object" || !parsed.workspaces) return null;
-        // Migrer les anciens workspaces sans columnWidth
+        // Migrer les anciens workspaces sans columnWidth / cardScale
         if (parsed.workspaces) {
             Object.values(parsed.workspaces).forEach((ws) => {
                 if (ws.columnWidth === undefined) ws.columnWidth = 340;
+                if (ws.cardScale === undefined) ws.cardScale = 1;
             });
         }
         return parsed;
@@ -1102,6 +1104,13 @@ function reducer(state, action) {
             if (!ws) return state;
             const w = Math.min(600, Math.max(200, action.width));
             return updateWs(state, ws.id, { columnWidth: w });
+        }
+        case "SET_CARD_SCALE": {
+            // action.workspaceId, action.scale (number 0.7–1.0)
+            const ws = state.workspaces[action.workspaceId];
+            if (!ws) return state;
+            const s = Math.min(1, Math.max(0.7, action.scale));
+            return updateWs(state, ws.id, { cardScale: s });
         }
         case "SET_DEAL_VALUE": {
             // action.workspaceId, action.leadId, action.value (number | null)

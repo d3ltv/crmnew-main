@@ -150,9 +150,16 @@ export const KanbanBoard = ({
         workspace.columnOrder.find((cid) => isContactedCol(workspace.columns[cid]?.name)),
     [workspace.columnOrder, workspace.columns]);
 
-    // Leads de la colonne "Nouveau" dans l'ordre — on utilise le même ordre que KanbanColumn
-    // en tenant compte du tri éventuel (on récupère l'ordre depuis byColumn, le tri est local à KanbanColumn)
-    const nouveauLeads = byColumn[nouveauColId] || [];
+    // Leads de la colonne "Nouveau" dans l'ordre affiché (tri local de KanbanColumn inclus)
+    // On utilise une ref mise à jour par KanbanColumn via onSortedLeadsChange
+    const nouveauLeadsRef = useRef(byColumn[nouveauColId] || []);
+    const [nouveauLeads, setNouveauLeads] = useState(byColumn[nouveauColId] || []);
+
+    // Sync de base quand byColumn change (sans tri appliqué)
+    useEffect(() => {
+        nouveauLeadsRef.current = byColumn[nouveauColId] || [];
+        setNouveauLeads(byColumn[nouveauColId] || []);
+    }, [byColumn, nouveauColId]);
 
     // Clamp quickIndex quand la liste change (évite la sélection "aléatoire")
     useEffect(() => {
@@ -266,7 +273,11 @@ export const KanbanBoard = ({
         }
     }, [quickMode, focusedLead?.id]);
 
-    // Quand le modal ferme, passer au lead suivant
+    // Callback reçu depuis KanbanColumn quand la liste triée change
+    // — garde nouveauLeads synchronisé avec l'ordre affiché à l'écran
+    const handleNouveauSortedLeads = useCallback((sorted) => {
+        setNouveauLeads(sorted);
+    }, []);
     const handleQuickNoteClose = useCallback(() => {
         setQuickNoteLead(null);
         if (nouveauLeads.length <= 1) stopQuickMode();
@@ -396,9 +407,9 @@ export const KanbanBoard = ({
     };
 
     return (
-        <div className="flex-1 overflow-x-auto overflow-y-hidden kanban-hscroll relative">
+        <div className="overflow-x-auto kanban-hscroll relative">
             <div
-                className="flex gap-4 h-full px-4 sm:px-6 pb-6 pt-3 min-w-min"
+                className="flex gap-4 px-4 sm:px-6 pb-6 pt-3 min-w-min"
                 data-testid="kanban-board"
             >
                 {workspace.columnOrder.map((cid) => (
@@ -413,6 +424,7 @@ export const KanbanBoard = ({
                         quickMode={quickMode && cid === nouveauColId}
                         quickFocusedLeadId={focusedLead?.id}
                         onStartQuickMode={cid === nouveauColId ? startQuickMode : undefined}
+                        onSortedLeadsChange={cid === nouveauColId ? handleNouveauSortedLeads : undefined}
                         onRename={(newName) =>
                             dispatch({
                                 type: "RENAME_COLUMN",

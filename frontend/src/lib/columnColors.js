@@ -12,6 +12,11 @@ export const COLUMN_COLORS = {
         ring: "ring-neutral-400/30",
         colBg: "bg-neutral-200/70 dark:bg-[hsl(222,14%,12%)]",
         shadow: "rgba(163,163,163,0.45)",
+        // Fond teinté colonne (très léger) + accent bar en haut + liseré card
+        colTint: "rgba(163,163,163,0.05)",
+        colTintDark: "rgba(163,163,163,0.03)",
+        accentBar: "rgba(163,163,163,0.35)",
+        cardBorder: "rgba(163,163,163,0.14)",
     },
     blue: {
         label: "Bleu",
@@ -22,6 +27,10 @@ export const COLUMN_COLORS = {
         ring: "ring-blue-500/30",
         colBg: "bg-blue-100/70 dark:bg-[hsl(222,14%,12%)]",
         shadow: "rgba(59,130,246,0.45)",
+        colTint: "rgba(59,130,246,0.05)",
+        colTintDark: "rgba(59,130,246,0.03)",
+        accentBar: "rgba(59,130,246,0.45)",
+        cardBorder: "rgba(59,130,246,0.14)",
     },
     amber: {
         label: "Ambre",
@@ -32,6 +41,10 @@ export const COLUMN_COLORS = {
         ring: "ring-amber-500/30",
         colBg: "bg-amber-100/70 dark:bg-[hsl(222,14%,12%)]",
         shadow: "rgba(245,158,11,0.45)",
+        colTint: "rgba(245,158,11,0.05)",
+        colTintDark: "rgba(245,158,11,0.03)",
+        accentBar: "rgba(245,158,11,0.5)",
+        cardBorder: "rgba(245,158,11,0.15)",
     },
     violet: {
         label: "Violet",
@@ -42,6 +55,10 @@ export const COLUMN_COLORS = {
         ring: "ring-violet-500/30",
         colBg: "bg-violet-100/70 dark:bg-[hsl(222,14%,12%)]",
         shadow: "rgba(139,92,246,0.45)",
+        colTint: "rgba(139,92,246,0.05)",
+        colTintDark: "rgba(139,92,246,0.03)",
+        accentBar: "rgba(139,92,246,0.45)",
+        cardBorder: "rgba(139,92,246,0.14)",
     },
     sky: {
         label: "Ciel",
@@ -52,6 +69,10 @@ export const COLUMN_COLORS = {
         ring: "ring-sky-500/30",
         colBg: "bg-sky-100/70 dark:bg-[hsl(222,14%,12%)]",
         shadow: "rgba(14,165,233,0.45)",
+        colTint: "rgba(14,165,233,0.05)",
+        colTintDark: "rgba(14,165,233,0.03)",
+        accentBar: "rgba(14,165,233,0.45)",
+        cardBorder: "rgba(14,165,233,0.14)",
     },
     teal: {
         label: "Turquoise",
@@ -62,6 +83,10 @@ export const COLUMN_COLORS = {
         ring: "ring-teal-500/30",
         colBg: "bg-teal-100/70 dark:bg-[hsl(222,14%,12%)]",
         shadow: "rgba(20,184,166,0.45)",
+        colTint: "rgba(20,184,166,0.05)",
+        colTintDark: "rgba(20,184,166,0.03)",
+        accentBar: "rgba(20,184,166,0.45)",
+        cardBorder: "rgba(20,184,166,0.14)",
     },
     green: {
         label: "Vert",
@@ -72,6 +97,10 @@ export const COLUMN_COLORS = {
         ring: "ring-emerald-500/30",
         colBg: "bg-emerald-100/70 dark:bg-[hsl(222,14%,12%)]",
         shadow: "rgba(16,185,129,0.45)",
+        colTint: "rgba(16,185,129,0.05)",
+        colTintDark: "rgba(16,185,129,0.03)",
+        accentBar: "rgba(16,185,129,0.45)",
+        cardBorder: "rgba(16,185,129,0.14)",
     },
     red: {
         label: "Rouge",
@@ -82,6 +111,10 @@ export const COLUMN_COLORS = {
         ring: "ring-rose-500/30",
         colBg: "bg-rose-100/70 dark:bg-[hsl(222,14%,12%)]",
         shadow: "rgba(244,63,94,0.45)",
+        colTint: "rgba(244,63,94,0.05)",
+        colTintDark: "rgba(244,63,94,0.03)",
+        accentBar: "rgba(244,63,94,0.45)",
+        cardBorder: "rgba(244,63,94,0.14)",
     },
     pink: {
         label: "Rose",
@@ -92,6 +125,10 @@ export const COLUMN_COLORS = {
         ring: "ring-pink-500/30",
         colBg: "bg-pink-100/70 dark:bg-[hsl(222,14%,12%)]",
         shadow: "rgba(236,72,153,0.45)",
+        colTint: "rgba(236,72,153,0.05)",
+        colTintDark: "rgba(236,72,153,0.03)",
+        accentBar: "rgba(236,72,153,0.45)",
+        cardBorder: "rgba(236,72,153,0.14)",
     },
 };
 

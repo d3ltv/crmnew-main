@@ -1,16 +1,20 @@
 import React, { useMemo, useState } from "react";
 import { useCrm } from "@/context/CrmContext";
 import { DEFAULT_CARD_FIELDS } from "@/context/CrmContext";
-import { GripVertical, Eye, EyeOff, PanelsLeftRight, Trash2 } from "lucide-react";
+import { GripVertical, Eye, EyeOff, PanelsLeftRight, Trash2, GalleryHorizontal } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 
 const MIN_WIDTH = 260;
 const MAX_WIDTH = 520;
 const DEFAULT_WIDTH = 340;
 
+const MIN_SCALE = 0.7;
+const MAX_SCALE = 1.0;
+const DEFAULT_SCALE = 1.0;
+
 /**
- * Popover content for configuring card fields visibility/order
- * and column width (persisted in workspace.columnWidth).
+ * Popover content for configuring card fields visibility/order,
+ * column width, and card scale (persisted in workspace).
  */
 export const CardFieldsPanel = ({ workspace }) => {
     const { dispatch } = useCrm();
@@ -18,6 +22,7 @@ export const CardFieldsPanel = ({ workspace }) => {
     const [hoverIndex, setHoverIndex] = useState(null);
 
     const currentWidth = workspace.columnWidth ?? DEFAULT_WIDTH;
+    const currentScale = workspace.cardScale ?? DEFAULT_SCALE;
 
     const extraKeys = useMemo(() => {
         const known = new Set(DEFAULT_CARD_FIELDS.map((f) => f.key));
@@ -71,6 +76,14 @@ export const CardFieldsPanel = ({ workspace }) => {
             type: "SET_COLUMN_WIDTH",
             workspaceId: workspace.id,
             width: Number(e.target.value),
+        });
+    };
+
+    const handleScaleChange = (e) => {
+        dispatch({
+            type: "SET_CARD_SCALE",
+            workspaceId: workspace.id,
+            scale: Number(e.target.value),
         });
     };
 
@@ -128,6 +141,34 @@ export const CardFieldsPanel = ({ workspace }) => {
                 </div>
             </div>
 
+            {/* ── Slider taille des cartes ── */}
+            <div className="px-4 pt-3 pb-3 border-b border-border/60">
+                <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-1.5 text-sm font-semibold">
+                        <GalleryHorizontal size={14} className="text-muted-foreground" />
+                        Taille des cartes
+                    </div>
+                    <span className="text-xs font-medium text-muted-foreground tabular-nums">
+                        {currentScale === DEFAULT_SCALE ? "100%" : `${Math.round(currentScale * 100)}%`}
+                    </span>
+                </div>
+                <input
+                    type="range"
+                    min={MIN_SCALE}
+                    max={MAX_SCALE}
+                    step={0.05}
+                    value={currentScale}
+                    onChange={handleScaleChange}
+                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer accent-primary bg-border"
+                    aria-label="Taille des cartes"
+                    data-testid="card-scale-slider"
+                />
+                <div className="flex justify-between text-[10px] text-muted-foreground mt-1">
+                    <span>Compact</span>
+                    <span>Normal</span>
+                </div>
+            </div>
+
             {/* ── Champs visibles ── */}
             <div className="px-4 py-3 border-b border-border/60">
                 <div className="flex items-center justify-between gap-2">
@@ -172,6 +213,7 @@ export const CardFieldsPanel = ({ workspace }) => {
                     onClick={() => {
                         dispatch({ type: "SET_CARD_FIELDS", workspaceId: workspace.id, fields: DEFAULT_CARD_FIELDS });
                         dispatch({ type: "SET_COLUMN_WIDTH", workspaceId: workspace.id, width: DEFAULT_WIDTH });
+                        dispatch({ type: "SET_CARD_SCALE", workspaceId: workspace.id, scale: DEFAULT_SCALE });
                     }}
                     className="text-xs text-muted-foreground hover:text-foreground transition-colors"
                 >
