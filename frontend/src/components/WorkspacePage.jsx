@@ -25,6 +25,7 @@ export const WorkspacePage = () => {
     const { state, dispatch } = useCrm();
     const workspace = state.workspaces[state.currentId];
     const [filter, setFilter] = useState("");
+    const [activeFilters, setActiveFilters] = useState([]);
     const [openLeadId, setOpenLeadId] = useState(null);
     const [importOpen, setImportOpen] = useState(false);
     // Vue active — persistée en localStorage
@@ -159,6 +160,8 @@ export const WorkspacePage = () => {
                     workspace={workspace}
                     filter={filter}
                     setFilter={setFilter}
+                    activeFilters={activeFilters}
+                    setActiveFilters={setActiveFilters}
                     onImport={() => setImportOpen(true)}
                     onNewLead={onNewLead}
                     onOpenLead={(l) => setOpenLeadId(l.id)}
@@ -214,6 +217,7 @@ export const WorkspacePage = () => {
                     <KanbanBoard
                         workspace={workspace}
                         filter={filter}
+                        activeFilters={activeFilters}
                         onOpenLead={(l) => setOpenLeadId(l.id)}
                         onCloseLead={() => setOpenLeadId(null)}
                         openLeadId={openLeadId}

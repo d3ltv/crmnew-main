@@ -68,6 +68,8 @@ export const TopBar = ({
     workspace,
     filter,
     setFilter,
+    activeFilters,
+    setActiveFilters,
     onImport,
     onNewLead,
     onOpenLead,
@@ -85,6 +87,7 @@ export const TopBar = ({
     const [mobileNavOpen, setMobileNavOpen] = useState(false);
     const [searchOpen, setSearchOpen] = useState(false);
     const [goalEditorOpen, setGoalEditorOpen] = useState(false);
+    const [filterInput, setFilterInput] = useState("");
 
     const VIEWS = [
         { id: "kanban",   icon: <Trello size={15} />,      label: "Kanban" },
@@ -254,43 +257,96 @@ export const TopBar = ({
                         {/* Search expand */}
                         {searchOpen && (
                             <div className="animate-in fade-in slide-in-from-right-2 duration-150 mr-1">
-                                <div className="relative">
-                                    <Search
-                                        size={15}
-                                        className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
-                                    />
-                                    <Input
-                                        data-testid="workspace-search-input"
-                                        value={filter}
-                                        onChange={(e) => setFilter(e.target.value)}
-                                        onKeyDown={(e) => e.key === "Escape" && setSearchOpen(false)}
-                                        placeholder="Rechercher…"
-                                        autoFocus
-                                        className="pl-9 pr-9 h-9 w-44 sm:w-64 rounded-full bg-secondary/70 border-transparent focus-visible:bg-background transition-colors"
-                                    />
-                                    <button
-                                        aria-label="Fermer la recherche"
-                                        onClick={() => { setFilter(""); setSearchOpen(false); }}
-                                        className="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full hover:bg-secondary text-muted-foreground flex items-center justify-center"
-                                    >
-                                        <X size={13} />
-                                    </button>
+                                <div className="flex items-center gap-1.5 flex-wrap max-w-xs">
+                                    {/* Tags des filtres actifs */}
+                                    {(activeFilters || []).length > 0 && (
+                                        <div className="flex items-center gap-1 flex-wrap">
+                                            {(activeFilters || []).map((tag) => (
+                                                <span
+                                                    key={tag}
+                                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/12 border border-primary/25 text-primary text-[11px] font-medium"
+                                                >
+                                                    {tag}
+                                                    <button
+                                                        onClick={() => setActiveFilters((prev) => prev.filter((t) => t !== tag))}
+                                                        className="hover:text-rose-500 transition-colors"
+                                                        aria-label={`Retirer le filtre ${tag}`}
+                                                    >
+                                                        <X size={9} strokeWidth={2.5} />
+                                                    </button>
+                                                </span>
+                                            ))}
+                                            <button
+                                                onClick={() => setActiveFilters([])}
+                                                className="text-[10px] text-muted-foreground hover:text-foreground transition-colors px-1"
+                                                title="Effacer tous les filtres"
+                                            >
+                                                Tout effacer
+                                            </button>
+                                        </div>
+                                    )}
+                                    {/* Input */}
+                                    <div className="relative">
+                                        <Search
+                                            size={14}
+                                            className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
+                                        />
+                                        <Input
+                                            data-testid="workspace-search-input"
+                                            value={filterInput}
+                                            onChange={(e) => {
+                                                setFilterInput(e.target.value);
+                                                setFilter(e.target.value);
+                                            }}
+                                            onKeyDown={(e) => {
+                                                if (e.key === "Enter" && filterInput.trim()) {
+                                                    const val = filterInput.trim();
+                                                    if (!(activeFilters || []).includes(val)) {
+                                                        setActiveFilters((prev) => [...prev, val]);
+                                                    }
+                                                    setFilterInput("");
+                                                    setFilter("");
+                                                    e.preventDefault();
+                                                } else if (e.key === "Backspace" && !filterInput && (activeFilters || []).length > 0) {
+                                                    setActiveFilters((prev) => prev.slice(0, -1));
+                                                } else if (e.key === "Escape") {
+                                                    setFilterInput("");
+                                                    setFilter("");
+                                                    setSearchOpen(false);
+                                                }
+                                            }}
+                                            placeholder={(activeFilters || []).length > 0 ? "Ajouter un filtre…" : "Rechercher ou filtrer…"}
+                                            autoFocus
+                                            className="pl-8 pr-3 h-9 w-48 sm:w-56 rounded-full bg-secondary/70 border-transparent focus-visible:bg-background transition-colors text-[13px]"
+                                        />
+                                    </div>
                                 </div>
                             </div>
                         )}
 
-                        {/* Search toggle */}
+                        {/* Search toggle — badge rouge si filtres actifs */}
                         <button
                             data-testid="topbar-search-btn"
                             aria-label="Rechercher"
-                            onClick={() => setSearchOpen((v) => !v)}
-                            className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors ${
-                                searchOpen
+                            onClick={() => {
+                                setSearchOpen((v) => !v);
+                                if (searchOpen) {
+                                    setFilterInput("");
+                                    setFilter("");
+                                }
+                            }}
+                            className={`relative w-9 h-9 rounded-full flex items-center justify-center transition-colors ${
+                                searchOpen || (activeFilters || []).length > 0
                                     ? "bg-primary/10 text-primary"
                                     : "hover:bg-secondary text-muted-foreground"
                             }`}
                         >
                             <Search size={16} />
+                            {(activeFilters || []).length > 0 && (
+                                <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-primary text-primary-foreground text-[9px] font-bold flex items-center justify-center">
+                                    {(activeFilters || []).length}
+                                </span>
+                            )}
                         </button>
 
                         {/* Champs cartes */}

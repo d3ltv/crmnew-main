@@ -20,6 +20,7 @@ const isNouveauCol   = (name = "") => isNouveauColumn(name);
 export const KanbanBoard = ({
     workspace,
     filter,
+    activeFilters,
     onOpenLead,
     onCloseLead,
     openLeadId,
@@ -60,29 +61,52 @@ export const KanbanBoard = ({
     }, []);
 
     // --- Filtered leads ---
+    // Chaque lead reçoit un score = nombre de filtres actifs qu'il satisfait.
+    // Un lead passe si : il matche le filtre texte simple ET au moins 1 filtre actif
+    // (ou tous, selon la config). On trie ensuite par score décroissant pour prioriser
+    // les leads qui matchent le plus de filtres.
     const filtered = useMemo(() => {
         const q = (filter || "").toLowerCase().trim();
+        const tags = (activeFilters || []).map((f) => f.toLowerCase().trim()).filter(Boolean);
         const all = Object.values(workspace.leads);
-        if (!q) return all;
-        return all.filter(
-            (l) =>
-                (l.company || "").toLowerCase().includes(q) ||
-                (l.contact || "").toLowerCase().includes(q) ||
-                (l.phone || "").toLowerCase().includes(q) ||
-                (l.website || "").toLowerCase().includes(q) ||
-                (l.email || "").toLowerCase().includes(q) ||
-                (l.tags || []).some((t) => t.toLowerCase().includes(q)) ||
-                // Chercher dans les champs extra (CSV)
-                Object.entries(l.extra || {}).some(([, v]) =>
-                    String(v || "").toLowerCase().includes(q)
-                ) ||
-                // Chercher dans les champs personnalisés
-                (l.customFields || []).some((cf) =>
-                    (cf.label || "").toLowerCase().includes(q) ||
-                    (cf.value || "").toLowerCase().includes(q)
-                ),
-        );
-    }, [workspace.leads, filter]);
+
+        // Fonction qui teste si une valeur de lead contient un terme
+        const matchesTerm = (lead, term) =>
+            (lead.company || "").toLowerCase().includes(term) ||
+            (lead.contact || "").toLowerCase().includes(term) ||
+            (lead.phone || "").toLowerCase().includes(term) ||
+            (lead.website || "").toLowerCase().includes(term) ||
+            (lead.email || "").toLowerCase().includes(term) ||
+            (lead.tags || []).some((t) => t.toLowerCase().includes(term)) ||
+            Object.entries(lead.extra || {}).some(([, v]) =>
+                String(v || "").toLowerCase().includes(term)
+            ) ||
+            (lead.customFields || []).some((cf) =>
+                (cf.label || "").toLowerCase().includes(term) ||
+                (cf.value || "").toLowerCase().includes(term)
+            );
+
+        let result = all;
+
+        // Filtre texte simple (barre de recherche)
+        if (q) result = result.filter((l) => matchesTerm(l, q));
+
+        // Filtres multiples actifs
+        if (tags.length > 0) {
+            // Ne garder que les leads qui matchent AU MOINS UN filtre actif
+            result = result.filter((l) => tags.some((tag) => matchesTerm(l, tag)));
+            // Ajouter le score pour le tri (nombre de filtres matchés)
+            result = result.map((l) => ({
+                lead: l,
+                score: tags.filter((tag) => matchesTerm(l, tag)).length,
+            }));
+            // Trier par score décroissant (ceux qui matchent le plus en premier)
+            result.sort((a, b) => b.score - a.score);
+            result = result.map((x) => x.lead);
+        }
+
+        return result;
+    }, [workspace.leads, filter, activeFilters]);
 
     // --- Leads ordered per column (respects leadOrder if present) ---
     const byColumn = useMemo(() => {
@@ -151,15 +175,9 @@ export const KanbanBoard = ({
     [workspace.columnOrder, workspace.columns]);
 
     // Leads de la colonne "Nouveau" dans l'ordre affiché (tri local de KanbanColumn inclus)
-    // On utilise une ref mise à jour par KanbanColumn via onSortedLeadsChange
-    const nouveauLeadsRef = useRef(byColumn[nouveauColId] || []);
-    const [nouveauLeads, setNouveauLeads] = useState(byColumn[nouveauColId] || []);
-
-    // Sync de base quand byColumn change (sans tri appliqué)
-    useEffect(() => {
-        nouveauLeadsRef.current = byColumn[nouveauColId] || [];
-        setNouveauLeads(byColumn[nouveauColId] || []);
-    }, [byColumn, nouveauColId]);
+    // Mis à jour exclusivement par handleNouveauSortedLeads depuis KanbanColumn.
+    // On initialise avec byColumn pour avoir quelque chose dès le premier render.
+    const [nouveauLeads, setNouveauLeads] = useState(() => byColumn[nouveauColId] || []);
 
     // Clamp quickIndex quand la liste change (évite la sélection "aléatoire")
     useEffect(() => {

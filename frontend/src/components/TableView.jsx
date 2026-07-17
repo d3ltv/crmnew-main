@@ -1,7 +1,8 @@
 import React, { useMemo, useState, useRef, useCallback } from "react";
-import { Trophy, ChevronUp, ChevronDown, Phone, Mail } from "lucide-react";
+import { Trophy, ChevronUp, ChevronDown, Phone, Mail, Trash2, Globe, User } from "lucide-react";
 import { getColumnColor } from "@/lib/columnColors";
 import { telHref, mailtoHref } from "@/lib/actionLinks";
+import { useCrm } from "@/context/CrmContext";
 
 function formatDate(iso) {
     if (!iso) return "—";
@@ -42,6 +43,7 @@ function useVirtualRange(totalCount, containerRef) {
 }
 
 export const TableView = ({ workspace, filter, onOpenLead }) => {
+    const { dispatch } = useCrm();
     const [sortKey, setSortKey] = useState("company");
     const [sortDir, setSortDir] = useState("asc");
     const containerRef = useRef(null);
@@ -118,6 +120,7 @@ export const TableView = ({ workspace, filter, onOpenLead }) => {
                             <Th label="Statut" k="column" />
                             <Th label="Deal" k="dealValue" />
                             <Th label="Dernier contact" k="lastContact" />
+                            <th className="px-3 py-2.5 text-left text-[11px] font-semibold text-muted-foreground uppercase tracking-wider whitespace-nowrap">Relances</th>
                             <th className="px-3 py-2.5 text-left text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Tags</th>
                         </tr>
                     </thead>
@@ -125,7 +128,7 @@ export const TableView = ({ workspace, filter, onOpenLead }) => {
                         {/* Spacer haut — remplace les lignes non rendues au-dessus */}
                         {topSpacerHeight > 0 && (
                             <tr aria-hidden style={{ height: topSpacerHeight }}>
-                                <td colSpan={7} />
+                                <td colSpan={8} />
                             </tr>
                         )}
 
@@ -152,18 +155,100 @@ export const TableView = ({ workspace, filter, onOpenLead }) => {
                                     {/* Tél / Email */}
                                     <td className="px-3 py-2.5">
                                         <div className="flex flex-col gap-0.5">
+                                            {/* Téléphone principal */}
                                             {lead.phone && (
-                                                <a href={telHref(lead.phone) || undefined} onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 text-[11.5px] text-muted-foreground hover:text-foreground truncate max-w-[130px]">
+                                                <a href={telHref(lead.phone) || undefined} onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 text-[11.5px] text-muted-foreground hover:text-foreground truncate max-w-[150px]">
                                                     <Phone size={10} strokeWidth={1.75} className="shrink-0" />
                                                     {lead.phone}
                                                 </a>
                                             )}
+                                            {/* Téléphone 2, 3… */}
+                                            {(lead.customFields || [])
+                                                .filter((f) => /^téléphone\s*\d+$/i.test(f.label) && f.value)
+                                                .map((f) => (
+                                                    <div key={f.id} className="flex items-center gap-1 group/cfrow">
+                                                        <a href={`tel:${f.value.replace(/[^+\d]/g,"")}`} onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 text-[11.5px] text-muted-foreground hover:text-foreground truncate max-w-[120px]">
+                                                            <Phone size={10} strokeWidth={1.75} className="shrink-0 opacity-50" />
+                                                            <span className="text-[10px] text-muted-foreground/60 mr-0.5">{f.label.replace(/téléphone\s*/i,"#")}</span>
+                                                            {f.value}
+                                                        </a>
+                                                        <button
+                                                            onClick={(e) => { e.stopPropagation(); dispatch({ type: "REMOVE_CUSTOM_FIELD", workspaceId: workspace.id, leadId: lead.id, fieldId: f.id }); }}
+                                                            className="opacity-0 group-hover/cfrow:opacity-60 hover:!opacity-100 text-rose-500 transition-opacity shrink-0"
+                                                            title={`Supprimer ${f.label}`}
+                                                        >
+                                                            <Trash2 size={10} />
+                                                        </button>
+                                                    </div>
+                                                ))
+                                            }
+                                            {/* Email principal */}
                                             {lead.email && (
-                                                <a href={mailtoHref(lead.email) || undefined} onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 text-[11.5px] text-muted-foreground hover:text-foreground truncate max-w-[130px]">
+                                                <a href={mailtoHref(lead.email) || undefined} onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 text-[11.5px] text-muted-foreground hover:text-foreground truncate max-w-[150px]">
                                                     <Mail size={10} strokeWidth={1.75} className="shrink-0" />
                                                     {lead.email}
                                                 </a>
                                             )}
+                                            {/* Email 2, 3… */}
+                                            {(lead.customFields || [])
+                                                .filter((f) => /^email\s*\d+$/i.test(f.label) && f.value)
+                                                .map((f) => (
+                                                    <div key={f.id} className="flex items-center gap-1 group/cfrow">
+                                                        <a href={`mailto:${f.value}`} onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 text-[11.5px] text-muted-foreground hover:text-foreground truncate max-w-[120px]">
+                                                            <Mail size={10} strokeWidth={1.75} className="shrink-0 opacity-50" />
+                                                            <span className="text-[10px] text-muted-foreground/60 mr-0.5">{f.label.replace(/email\s*/i,"#")}</span>
+                                                            {f.value}
+                                                        </a>
+                                                        <button
+                                                            onClick={(e) => { e.stopPropagation(); dispatch({ type: "REMOVE_CUSTOM_FIELD", workspaceId: workspace.id, leadId: lead.id, fieldId: f.id }); }}
+                                                            className="opacity-0 group-hover/cfrow:opacity-60 hover:!opacity-100 text-rose-500 transition-opacity shrink-0"
+                                                            title={`Supprimer ${f.label}`}
+                                                        >
+                                                            <Trash2 size={10} />
+                                                        </button>
+                                                    </div>
+                                                ))
+                                            }
+                                            {/* Contact 2, 3… */}
+                                            {(lead.customFields || [])
+                                                .filter((f) => /^contact(\s*(rh|2|3|4))?\s*\d*$/i.test(f.label) && f.value && f.label.toLowerCase() !== "contact")
+                                                .map((f) => (
+                                                    <div key={f.id} className="flex items-center gap-1 group/cfrow">
+                                                        <span className="flex items-center gap-1 text-[11.5px] text-muted-foreground truncate max-w-[120px]">
+                                                            <User size={10} strokeWidth={1.75} className="shrink-0 opacity-50" />
+                                                            <span className="text-[10px] text-muted-foreground/60 mr-0.5">{f.label}</span>
+                                                            {f.value}
+                                                        </span>
+                                                        <button
+                                                            onClick={(e) => { e.stopPropagation(); dispatch({ type: "REMOVE_CUSTOM_FIELD", workspaceId: workspace.id, leadId: lead.id, fieldId: f.id }); }}
+                                                            className="opacity-0 group-hover/cfrow:opacity-60 hover:!opacity-100 text-rose-500 transition-opacity shrink-0"
+                                                            title={`Supprimer ${f.label}`}
+                                                        >
+                                                            <Trash2 size={10} />
+                                                        </button>
+                                                    </div>
+                                                ))
+                                            }
+                                            {/* Site web 2, 3… */}
+                                            {(lead.customFields || [])
+                                                .filter((f) => /^(site web|site)\s*\d+$/i.test(f.label) && f.value)
+                                                .map((f) => (
+                                                    <div key={f.id} className="flex items-center gap-1 group/cfrow">
+                                                        <a href={f.value.startsWith("http") ? f.value : "https://" + f.value} target="_blank" rel="noreferrer noopener" onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 text-[11.5px] text-primary hover:underline truncate max-w-[120px]">
+                                                            <Globe size={10} strokeWidth={1.75} className="shrink-0 opacity-50" />
+                                                            <span className="text-[10px] text-muted-foreground/60 mr-0.5">{f.label}</span>
+                                                            {f.value}
+                                                        </a>
+                                                        <button
+                                                            onClick={(e) => { e.stopPropagation(); dispatch({ type: "REMOVE_CUSTOM_FIELD", workspaceId: workspace.id, leadId: lead.id, fieldId: f.id }); }}
+                                                            className="opacity-0 group-hover/cfrow:opacity-60 hover:!opacity-100 text-rose-500 transition-opacity shrink-0"
+                                                            title={`Supprimer ${f.label}`}
+                                                        >
+                                                            <Trash2 size={10} />
+                                                        </button>
+                                                    </div>
+                                                ))
+                                            }
                                             {!lead.phone && !lead.email && <span className="text-[12px] text-muted-foreground/40">—</span>}
                                         </div>
                                     </td>
@@ -186,6 +271,36 @@ export const TableView = ({ workspace, filter, onOpenLead }) => {
                                     <td className="px-3 py-2.5 text-[12px] text-muted-foreground whitespace-nowrap">
                                         {formatDate(lead.lastContact)}
                                     </td>
+                                    {/* Relances */}
+                                    <td className="px-3 py-2.5">
+                                        {(() => {
+                                            const relances = lead.relances || [];
+                                            if (relances.length === 0) return <span className="text-muted-foreground/40 text-[12px]">—</span>;
+                                            const COLORS = [
+                                                "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300",
+                                                "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+                                                "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
+                                                "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+                                                "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300",
+                                                "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300",
+                                                "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
+                                            ];
+                                            const num = relances.length;
+                                            const colorClass = COLORS[Math.min(num - 1, COLORS.length - 1)];
+                                            const last = relances[num - 1];
+                                            const CANAL_EMOJI = { "Téléphone": "📞", "Email": "✉️", "SMS": "💬", "LinkedIn": "💼", "WhatsApp": "📱", "Courrier": "📮", "Autre": "🔁" };
+                                            return (
+                                                <div className="flex items-center gap-1.5">
+                                                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold ${colorClass}`}>
+                                                        {CANAL_EMOJI[last?.canal] || "🔁"} R{num}
+                                                    </span>
+                                                    <span className="text-[10.5px] text-muted-foreground hidden lg:inline">
+                                                        {last?.canal}
+                                                    </span>
+                                                </div>
+                                            );
+                                        })()}
+                                    </td>
                                     {/* Tags */}
                                     <td className="px-3 py-2.5">
                                         <div className="flex flex-wrap gap-1">
@@ -203,13 +318,13 @@ export const TableView = ({ workspace, filter, onOpenLead }) => {
                         {/* Spacer bas — remplace les lignes non rendues en dessous */}
                         {bottomSpacerHeight > 0 && (
                             <tr aria-hidden style={{ height: bottomSpacerHeight }}>
-                                <td colSpan={7} />
+                                <td colSpan={8} />
                             </tr>
                         )}
 
                         {leads.length === 0 && (
                             <tr>
-                                <td colSpan={7} className="px-4 py-12 text-center text-muted-foreground text-sm">
+                                <td colSpan={8} className="px-4 py-12 text-center text-muted-foreground text-sm">
                                     Aucun lead trouvé
                                 </td>
                             </tr>

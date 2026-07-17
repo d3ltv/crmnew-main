@@ -1019,6 +1019,54 @@ function reducer(state, action) {
                 },
             });
         }
+        // ── LOG_RELANCE : enregistre une relance manuelle avec canal ────────────
+        // action: { workspaceId, leadId, canal: string, note?: string }
+        // Stocké dans lead.relances : [{ id, at, canal, note, num }]
+        case "LOG_RELANCE": {
+            const ws = state.workspaces[action.workspaceId];
+            if (!ws) return state;
+            const lead = ws.leads[action.leadId];
+            if (!lead) return state;
+            const existing = lead.relances || [];
+            const num = existing.length + 1;
+            const now = new Date().toISOString();
+            const entry = {
+                id: uid(),
+                at: now,
+                canal: action.canal || "Téléphone",
+                note: action.note || "",
+                num,
+            };
+            const noteText = `🔁 Relance #${num} · ${action.canal || "Téléphone"}${action.note ? ` · ${action.note}` : ""}`;
+            const noteEntry = { id: uid(), text: noteText, at: now };
+            return updateWs(state, ws.id, {
+                leads: {
+                    ...ws.leads,
+                    [action.leadId]: {
+                        ...lead,
+                        relances: [...existing, entry],
+                        notes: [noteEntry, ...(lead.notes || [])],
+                        lastContact: now,
+                    },
+                },
+            });
+        }
+        // ── DELETE_RELANCE : supprime une entrée de relance ───────────────────
+        case "DELETE_RELANCE": {
+            const ws = state.workspaces[action.workspaceId];
+            if (!ws) return state;
+            const lead = ws.leads[action.leadId];
+            if (!lead) return state;
+            const filtered = (lead.relances || []).filter((r) => r.id !== action.relanceId);
+            // Renuméroter
+            const renumbered = filtered.map((r, i) => ({ ...r, num: i + 1 }));
+            return updateWs(state, ws.id, {
+                leads: {
+                    ...ws.leads,
+                    [action.leadId]: { ...lead, relances: renumbered },
+                },
+            });
+        }
         case "ADD_CUSTOM_FIELD": {
             const ws = state.workspaces[action.workspaceId];
             if (!ws) return state;
@@ -1030,7 +1078,47 @@ function reducer(state, action) {
                 value: action.value || "",
                 pinned: !!action.pinned,
             };
+            // Si c'est un doublon de champ principal (Téléphone 2, Email 2…),
+            // l'enregistrer automatiquement dans cardFields du workspace (visible par défaut)
+            // et l'insérer juste après le champ parent (ex: "phone" pour "Téléphone 2")
+            let updatedCardFields = ws.cardFields || DEFAULT_CARD_FIELDS;
+            if (action.isMainDuplicate) {
+                const cfKey = "cf:" + action.label;
+                const alreadyInCf = updatedCardFields.some((f) => f.key === cfKey);
+                if (!alreadyInCf) {
+                    // Trouver la clé parente : le dernier champ cf: ou fixe du même type de base
+                    // Ex: "Téléphone 2" → parent = "phone" ou dernier "cf:Téléphone N"
+                    const baseLabel = action.label.replace(/\s*\d+$/, "").toLowerCase();
+                    const PARENT_KEYS = {
+                        "téléphone": "phone", "telephone": "phone",
+                        "email": "email",
+                        "contact": "contact", "contact rh": "contact",
+                        "site web": "website", "site": "website", "lien offre": "website",
+                    };
+                    const parentKey = PARENT_KEYS[baseLabel] || null;
+                    // Trouver l'index du dernier champ qui appartient à ce groupe (parent + doublons existants)
+                    let insertAfterIdx = updatedCardFields.length - 1;
+                    for (let i = updatedCardFields.length - 1; i >= 0; i--) {
+                        const fk = updatedCardFields[i].key;
+                        const fl = updatedCardFields[i].label?.toLowerCase() || "";
+                        const isParent = parentKey && fk === parentKey;
+                        const isSameGroup = fk.startsWith("cf:") && fl.startsWith(baseLabel);
+                        if (isParent || isSameGroup) {
+                            insertAfterIdx = i;
+                            break;
+                        }
+                    }
+                    const before = updatedCardFields.slice(0, insertAfterIdx + 1);
+                    const after = updatedCardFields.slice(insertAfterIdx + 1);
+                    updatedCardFields = [
+                        ...before,
+                        { key: cfKey, label: action.label, visible: true },
+                        ...after,
+                    ];
+                }
+            }
             return updateWs(state, ws.id, {
+                cardFields: updatedCardFields,
                 leads: {
                     ...ws.leads,
                     [action.leadId]: {
@@ -1062,15 +1150,29 @@ function reducer(state, action) {
             if (!ws) return state;
             const lead = ws.leads[action.leadId];
             if (!lead) return state;
+            // Retrouver le label du champ supprimé pour éventuellement nettoyer cardFields
+            const removedField = (lead.customFields || []).find((f) => f.id === action.fieldId);
+            const updatedLead = {
+                ...lead,
+                customFields: (lead.customFields || []).filter((f) => f.id !== action.fieldId),
+            };
+            // Si c'était un doublon principal, vérifier si d'autres leads ont encore ce label
+            let updatedCardFields = ws.cardFields;
+            if (removedField && updatedCardFields) {
+                const cfKey = "cf:" + removedField.label;
+                const stillExists = Object.values(ws.leads).some(
+                    (l) => l.id !== action.leadId &&
+                           (l.customFields || []).some((f) => f.label === removedField.label)
+                );
+                if (!stillExists) {
+                    updatedCardFields = updatedCardFields.filter((f) => f.key !== cfKey);
+                }
+            }
             return updateWs(state, ws.id, {
+                cardFields: updatedCardFields,
                 leads: {
                     ...ws.leads,
-                    [action.leadId]: {
-                        ...lead,
-                        customFields: (lead.customFields || []).filter(
-                            (f) => f.id !== action.fieldId,
-                        ),
-                    },
+                    [action.leadId]: updatedLead,
                 },
             });
         }
@@ -1096,6 +1198,22 @@ function reducer(state, action) {
             const newCardFields = (ws.cardFields || []).filter(
                 (f) => f.key !== action.fieldKey
             );
+            return updateWs(state, ws.id, { leads: newLeads, cardFields: newCardFields });
+        }
+        case "DELETE_CF_FIELD": {
+            // action.workspaceId, action.label (e.g. "Téléphone 2")
+            // Supprime le champ de tous les customFields des leads + de cardFields
+            const ws = state.workspaces[action.workspaceId];
+            if (!ws) return state;
+            const cfKey = "cf:" + action.label;
+            const newLeads = {};
+            Object.values(ws.leads).forEach((l) => {
+                newLeads[l.id] = {
+                    ...l,
+                    customFields: (l.customFields || []).filter((f) => f.label !== action.label),
+                };
+            });
+            const newCardFields = (ws.cardFields || []).filter((f) => f.key !== cfKey);
             return updateWs(state, ws.id, { leads: newLeads, cardFields: newCardFields });
         }
         case "SET_COLUMN_WIDTH": {

@@ -26,6 +26,11 @@ import {
     Star,
     CalendarClock,
     Sparkles,
+    RefreshCw,
+    Mail as MailIcon,
+    Linkedin,
+    MessageCircle,
+    Repeat2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -53,6 +58,234 @@ function formatDateTime(iso) {
     return formatDateTimeLong(iso);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ── Canaux de relance disponibles ────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+const RELANCE_CANAUX = [
+    { value: "Téléphone",  label: "Téléphone",   emoji: "📞" },
+    { value: "Email",      label: "Email",        emoji: "✉️"  },
+    { value: "SMS",        label: "SMS",          emoji: "💬" },
+    { value: "LinkedIn",   label: "LinkedIn",     emoji: "💼" },
+    { value: "WhatsApp",   label: "WhatsApp",     emoji: "📱" },
+    { value: "Courrier",   label: "Courrier",     emoji: "📮" },
+    { value: "Autre",      label: "Autre",        emoji: "🔁" },
+];
+
+// Couleurs par numéro de relance (1–7)
+const RELANCE_COLORS = [
+    { bg: "bg-sky-100 dark:bg-sky-900/40",       text: "text-sky-700 dark:text-sky-300",       dot: "bg-sky-500"     }, // 1
+    { bg: "bg-blue-100 dark:bg-blue-900/40",      text: "text-blue-700 dark:text-blue-300",      dot: "bg-blue-500"    }, // 2
+    { bg: "bg-violet-100 dark:bg-violet-900/40",  text: "text-violet-700 dark:text-violet-300",  dot: "bg-violet-500"  }, // 3
+    { bg: "bg-amber-100 dark:bg-amber-900/40",    text: "text-amber-700 dark:text-amber-300",    dot: "bg-amber-500"   }, // 4
+    { bg: "bg-orange-100 dark:bg-orange-900/40",  text: "text-orange-700 dark:text-orange-300",  dot: "bg-orange-500"  }, // 5
+    { bg: "bg-rose-100 dark:bg-rose-900/40",      text: "text-rose-700 dark:text-rose-300",      dot: "bg-rose-500"    }, // 6
+    { bg: "bg-red-100 dark:bg-red-900/40",        text: "text-red-700 dark:text-red-300",        dot: "bg-red-600"     }, // 7+
+];
+function getRelanceColor(num) {
+    return RELANCE_COLORS[Math.min(num - 1, RELANCE_COLORS.length - 1)];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ── RelancesWidget ────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+const RelancesWidget = ({ lead, workspace, dispatch }) => {
+    const [canal, setCanal] = useState("Téléphone");
+    const [note, setNote] = useState("");
+    const [adding, setAdding] = useState(false);
+
+    const relances = lead.relances || [];
+    const nextNum = relances.length + 1;
+    const maxRelances = 7;
+    const atMax = relances.length >= maxRelances;
+
+    const handleLog = () => {
+        if (atMax) return;
+        dispatch({
+            type: "LOG_RELANCE",
+            workspaceId: workspace.id,
+            leadId: lead.id,
+            canal,
+            note: note.trim(),
+        });
+        toast.success(`Relance #${nextNum} enregistrée`, {
+            description: `${canal}${note.trim() ? ` · ${note.trim()}` : ""}`,
+        });
+        setNote("");
+        setAdding(false);
+    };
+
+    const handleDelete = (relanceId) => {
+        dispatch({
+            type: "DELETE_RELANCE",
+            workspaceId: workspace.id,
+            leadId: lead.id,
+            relanceId,
+        });
+    };
+
+    return (
+        <div className="rounded-xl border border-border bg-card p-4 space-y-3 shadow-sm">
+            {/* Header */}
+            <div className="flex items-center justify-between">
+                <h3 className="text-xs uppercase tracking-wider text-muted-foreground font-semibold flex items-center gap-1.5">
+                    <Repeat2 size={13} strokeWidth={2.5} />
+                    Suivi des relances
+                    {relances.length > 0 && (
+                        <span className="ml-1 text-[10px] font-bold text-foreground bg-secondary rounded-full px-1.5 py-0.5">
+                            {relances.length}/{maxRelances}
+                        </span>
+                    )}
+                </h3>
+                {!atMax && (
+                    <button
+                        onClick={() => setAdding((v) => !v)}
+                        className={`h-7 px-2.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-colors ${
+                            adding
+                                ? "bg-secondary text-foreground"
+                                : "bg-primary text-primary-foreground hover:bg-primary/90"
+                        }`}
+                    >
+                        <Repeat2 size={11} strokeWidth={2} />
+                        {adding ? "Annuler" : `Relance #${nextNum}`}
+                    </button>
+                )}
+                {atMax && (
+                    <span className="text-[11px] text-rose-600 dark:text-rose-400 font-medium">Max 7 relances</span>
+                )}
+            </div>
+
+            {/* Badges visuels 1–7 */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+                {Array.from({ length: maxRelances }, (_, i) => {
+                    const num = i + 1;
+                    const done = num <= relances.length;
+                    const color = getRelanceColor(num);
+                    const entry = relances[i];
+                    return (
+                        <div
+                            key={num}
+                            title={done && entry ? `${entry.canal} · ${new Date(entry.at).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}${entry.note ? ` · ${entry.note}` : ""}` : `Relance ${num}`}
+                            className={`relative w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-bold transition-all select-none
+                                ${done
+                                    ? `${color.bg} ${color.text} shadow-sm ring-1 ring-inset ring-current/20`
+                                    : "bg-muted/60 text-muted-foreground/40 border border-dashed border-border"
+                                }`}
+                        >
+                            {num}
+                            {done && (
+                                <span className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ${color.dot} ring-1 ring-background`} />
+                            )}
+                        </div>
+                    );
+                })}
+                {relances.length > 0 && (
+                    <span className="text-[11px] text-muted-foreground ml-1">
+                        {relances.length === 1 ? "1 relance" : `${relances.length} relances`}
+                    </span>
+                )}
+            </div>
+
+            {/* Formulaire d'ajout */}
+            {adding && !atMax && (
+                <div className="rounded-xl border border-primary/30 bg-primary/5 p-3 space-y-2.5 animate-in fade-in slide-in-from-top-1 duration-150">
+                    <p className="text-[11px] font-semibold text-primary uppercase tracking-wider">
+                        Relance #{nextNum} — Canal utilisé
+                    </p>
+                    {/* Sélecteur canal en chips */}
+                    <div className="flex flex-wrap gap-1.5">
+                        {RELANCE_CANAUX.map((c) => (
+                            <button
+                                key={c.value}
+                                onClick={() => setCanal(c.value)}
+                                className={`h-7 px-2.5 rounded-full text-[11.5px] font-medium flex items-center gap-1 transition-all border ${
+                                    canal === c.value
+                                        ? "bg-primary text-primary-foreground border-primary shadow-sm"
+                                        : "bg-card text-foreground/70 border-border hover:border-primary/50 hover:text-foreground"
+                                }`}
+                            >
+                                <span>{c.emoji}</span>
+                                <span>{c.label}</span>
+                            </button>
+                        ))}
+                    </div>
+                    {/* Note optionnelle */}
+                    <input
+                        type="text"
+                        value={note}
+                        onChange={(e) => setNote(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && handleLog()}
+                        placeholder="Note optionnelle… ex : messagerie, rappel demandé"
+                        className="w-full h-8 px-3 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                    />
+                    <div className="flex justify-end gap-2">
+                        <button
+                            onClick={() => { setAdding(false); setNote(""); }}
+                            className="h-8 px-3 rounded-full text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                        >
+                            Annuler
+                        </button>
+                        <button
+                            onClick={handleLog}
+                            className="h-8 px-4 rounded-full text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors flex items-center gap-1.5"
+                        >
+                            <Repeat2 size={11} />
+                            Enregistrer la relance #{nextNum}
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* Historique des relances */}
+            {relances.length > 0 && (
+                <div className="space-y-1.5">
+                    {[...relances].reverse().map((r) => {
+                        const color = getRelanceColor(r.num);
+                        const canal = RELANCE_CANAUX.find((c) => c.value === r.canal);
+                        return (
+                            <div
+                                key={r.id}
+                                className="flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 bg-muted/40 border border-border/50 group"
+                            >
+                                {/* Badge numéro */}
+                                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${color.bg} ${color.text}`}>
+                                    {r.num}
+                                </div>
+                                {/* Canal + note */}
+                                <div className="flex-1 min-w-0">
+                                    <span className="text-[12px] font-medium text-foreground">
+                                        {canal?.emoji} {r.canal}
+                                    </span>
+                                    {r.note && (
+                                        <span className="text-[11px] text-muted-foreground ml-1.5">· {r.note}</span>
+                                    )}
+                                </div>
+                                {/* Date */}
+                                <span className="text-[10px] text-muted-foreground shrink-0">
+                                    {new Date(r.at).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}
+                                </span>
+                                {/* Supprimer */}
+                                <button
+                                    onClick={() => handleDelete(r.id)}
+                                    className="opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity text-muted-foreground hover:text-rose-500"
+                                    title="Supprimer cette relance"
+                                >
+                                    <X size={12} />
+                                </button>
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
+
+            {relances.length === 0 && !adding && (
+                <p className="text-xs text-muted-foreground/60 italic text-center py-2">
+                    Aucune relance enregistrée. Cliquez sur "Relance #1" pour commencer le suivi.
+                </p>
+            )}
+        </div>
+    );
+};
+
 export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
     const { dispatch, state } = useCrm();
     const panelMode = state.leadPanelMode || "side";
@@ -61,6 +294,7 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
     const [cfLabel, setCfLabel] = useState("");
     const [cfValue, setCfValue] = useState("");
     const [extraOpen, setExtraOpen] = useState(false);
+    const [lastAddedFieldLabel, setLastAddedFieldLabel] = useState(null);
     // RDV direct (sans passer par la note)
     const [rdvDate, setRdvDate] = useState("");
     const [rdvTime, setRdvTime] = useState("");
@@ -424,45 +658,77 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                             {isJobs ? "Entreprise & Recruteur" : "Contact & Coordonnées"}
                         </h3>
                         <div className="space-y-2.5">
-                            <Field
+                            {/* ── Contact ── */}
+                            <FieldGroup
                                 icon={User}
                                 label={isJobs ? "Recruteur / Contact RH" : "Contact"}
+                                baseLabel={isJobs ? "Contact RH" : "Contact"}
                                 value={local.contact}
                                 onChange={(v) => patch({ contact: v })}
                                 testId="lead-contact-input"
+                                customFields={local.customFields || []}
+                                lastAddedFieldLabel={lastAddedFieldLabel}
+                                onClearLastAdded={() => setLastAddedFieldLabel(null)}
+                                onAdd={(label) => { dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label, value: "", pinned: false, isMainDuplicate: true }); setLastAddedFieldLabel(label); }}
+                                onUpdateCf={(id, v) => updateCustomField(id, { value: v })}
+                                onDeleteCf={(id) => dispatch({ type: "REMOVE_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, fieldId: id })}
                             />
-                            <Field
+                            {/* ── Téléphone ── */}
+                            <FieldGroup
                                 icon={Phone}
                                 label="Téléphone"
+                                baseLabel="Téléphone"
                                 value={local.phone}
                                 onChange={(v) => patch({ phone: v })}
                                 testId="lead-phone-input"
                                 type="tel"
+                                customFields={local.customFields || []}
+                                lastAddedFieldLabel={lastAddedFieldLabel}
+                                onClearLastAdded={() => setLastAddedFieldLabel(null)}
+                                onAdd={(label) => { dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label, value: "", pinned: false, isMainDuplicate: true }); setLastAddedFieldLabel(label); }}
+                                onUpdateCf={(id, v) => updateCustomField(id, { value: v })}
+                                onDeleteCf={(id) => dispatch({ type: "REMOVE_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, fieldId: id })}
                                 action={
                                     telHref(local.phone)
                                         ? { href: telHref(local.phone), label: `Appeler ${local.phone}`, icon: <PhoneCall size={15} />, testId: "lead-phone-action" }
                                         : null
                                 }
                             />
-                            <Field
+                            {/* ── Email ── */}
+                            <FieldGroup
                                 icon={Mail}
                                 label="Email"
+                                baseLabel="Email"
                                 value={local.email}
                                 onChange={(v) => patch({ email: v })}
                                 testId="lead-email-input"
                                 type="email"
+                                customFields={local.customFields || []}
+                                lastAddedFieldLabel={lastAddedFieldLabel}
+                                onClearLastAdded={() => setLastAddedFieldLabel(null)}
+                                onAdd={(label) => { dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label, value: "", pinned: false, isMainDuplicate: true }); setLastAddedFieldLabel(label); }}
+                                onUpdateCf={(id, v) => updateCustomField(id, { value: v })}
+                                onDeleteCf={(id) => dispatch({ type: "REMOVE_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, fieldId: id })}
                                 action={
                                     mailtoHref(local.email)
                                         ? { href: mailtoHref(local.email), label: `Envoyer un email`, icon: <ExternalLink size={15} />, testId: "lead-email-action" }
                                         : null
                                 }
                             />
-                            <Field
+                            {/* ── Site web ── */}
+                            <FieldGroup
                                 icon={Globe}
                                 label={isJobs ? "Lien offre / Site entreprise" : "Site web"}
+                                baseLabel={isJobs ? "Site" : "Site web"}
                                 value={local.website}
                                 onChange={(v) => patch({ website: v })}
                                 testId="lead-website-input"
+                                customFields={local.customFields || []}
+                                lastAddedFieldLabel={lastAddedFieldLabel}
+                                onClearLastAdded={() => setLastAddedFieldLabel(null)}
+                                onAdd={(label) => { dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label, value: "", pinned: false, isMainDuplicate: true }); setLastAddedFieldLabel(label); }}
+                                onUpdateCf={(id, v) => updateCustomField(id, { value: v })}
+                                onDeleteCf={(id) => dispatch({ type: "REMOVE_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, fieldId: id })}
                                 action={
                                     websiteHref(local.website)
                                         ? { href: websiteHref(local.website), target: "_blank", label: `Ouvrir le site`, icon: <ExternalLink size={15} />, testId: "lead-website-action" }
@@ -471,13 +737,12 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                             />
                         </div>
 
-                        {/* Infos complémentaires (customFields) — directement sous les coordonnées */}
-                        {(local.customFields || []).length > 0 && (
+                        {/* Infos complémentaires (customFields) — exclure les doublons gérés par FieldGroup */}
+                        {(local.customFields || []).filter((f) => !isMainFieldDuplicate(f.label)).length > 0 && (
                             <>
                                 <div className="h-px bg-border/60 -mx-1" />
                                 <div className="space-y-2">
-                                    {(local.customFields || []).map((f) => {
-                                        // Détecter le type de valeur pour proposer l'action adaptée
+                                    {(local.customFields || []).filter((f) => !isMainFieldDuplicate(f.label)).map((f) => {
                                         const val = f.value || "";
                                         const isPhone = /^[+\d\s.\-()]{7,}$/.test(val) && val.replace(/\D/g, "").length >= 7;
                                         const isEmail = val.includes("@") && val.includes(".");
@@ -487,11 +752,8 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                             : isEmail ? `mailto:${val.trim()}`
                                             : isUrl ? (val.startsWith("http") ? val : `https://${val}`)
                                             : null;
-                                        const actionIcon = isPhone
-                                            ? <PhoneCall size={14} />
-                                            : <ExternalLink size={14} />;
+                                        const actionIcon = isPhone ? <PhoneCall size={14} /> : <ExternalLink size={14} />;
                                         const isLong = val.length > 60;
-
                                         return (
                                             <ExpandableCustomField
                                                 key={f.id}
@@ -499,6 +761,8 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                                 isLong={isLong}
                                                 actionHref={actionHref}
                                                 actionIcon={actionIcon}
+                                                autoFocus={false}
+                                                onFocused={() => {}}
                                                 onUpdate={(v) => updateCustomField(f.id, { value: v })}
                                                 onToggleHighlight={() => toggleHighlightCustomField(f.id, f.highlight, f.label)}
                                             />
@@ -508,6 +772,13 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                             </>
                         )}
                     </div>
+
+                    {/* 🔁 Suivi des relances */}
+                    <RelancesWidget
+                        lead={local}
+                        workspace={workspace}
+                        dispatch={dispatch}
+                    />
 
                     {/* 💬 Notes & Historique — Grande card */}
                     <div className="rounded-xl border border-border bg-card p-4 space-y-3 shadow-sm">
@@ -1000,10 +1271,33 @@ const ExtraDeleteButton = ({ extraKey, extraValue, onDelete }) => {
     );
 };
 
-const ExpandableCustomField = ({ field: f, isLong, actionHref, actionIcon, onUpdate, onToggleHighlight }) => {
+/**
+ * Retourne true si le label d'un customField correspond à un doublon
+ * de champ principal (ex: "Téléphone 2", "Email 3", "Contact 2", "Site web 2"…)
+ * Ces champs sont affichés dans FieldGroup, pas dans la section "Infos complémentaires".
+ */
+function isMainFieldDuplicate(label) {
+    const MAIN_BASES = ["téléphone", "telephone", "email", "contact", "contact rh", "site web", "site", "lien offre"];
+    const normalized = label.toLowerCase().trim();
+    return MAIN_BASES.some((base) =>
+        new RegExp("^" + base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\d+$").test(normalized)
+    );
+}
+
+const ExpandableCustomField = ({ field: f, isLong, actionHref, actionIcon, onUpdate, onToggleHighlight, autoFocus = false, onFocused }) => {
     const [expanded, setExpanded] = useState(false);
+    const inputRef = useRef(null);
     const val = f.value || "";
     const isPhone = actionHref?.startsWith("tel:");
+
+    // Auto-focus quand le champ vient d'être créé via le bouton "+"
+    useEffect(() => {
+        if (autoFocus && inputRef.current) {
+            inputRef.current.focus();
+            onFocused?.();
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [autoFocus]);
 
     return (
         <div
@@ -1025,10 +1319,11 @@ const ExpandableCustomField = ({ field: f, isLong, actionHref, actionIcon, onUpd
                     />
                 ) : (
                     <Input
+                        ref={inputRef}
                         value={f.value}
                         onChange={(e) => onUpdate(e.target.value)}
                         placeholder="—"
-                        className="h-8 text-sm"
+                        className={`h-8 text-sm transition-all ${autoFocus ? "ring-2 ring-primary border-primary" : ""}`}
                     />
                 )}
             </div>
@@ -1113,3 +1408,153 @@ const Field = ({
         </div>
     </div>
 );
+
+/**
+ * FieldGroup — champ principal + ses doublons (Téléphone 2, Email 2…)
+ * affichés comme des Field normaux juste en dessous.
+ * Un icône "+" discret à côté du label permet d'en ajouter un.
+ */
+const FieldGroup = ({
+    icon: Icon,
+    label,
+    baseLabel,
+    value,
+    onChange,
+    testId,
+    type = "text",
+    action,
+    customFields,
+    lastAddedFieldLabel,
+    onClearLastAdded,
+    onAdd,
+    onUpdateCf,
+    onDeleteCf,
+}) => {
+    const base = baseLabel.toLowerCase();
+    const dupes = (customFields || []).filter((f) =>
+        f.label.toLowerCase().match(
+            new RegExp("^" + base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\d+$")
+        )
+    );
+    const nextNum = dupes.length + 2;
+
+    const getAction = (val) => {
+        if (!val) return null;
+        const isPhone = /^[+\d\s.\-()]{7,}$/.test(val) && val.replace(/\D/g, "").length >= 7;
+        const isEmail = val.includes("@") && val.includes(".");
+        const isUrl = /^https?:\/\//i.test(val) || /^www\./i.test(val);
+        if (isPhone) return { href: "tel:" + val.replace(/[^+\d]/g, ""), icon: <PhoneCall size={15} /> };
+        if (isEmail) return { href: "mailto:" + val.trim(), icon: <ExternalLink size={15} /> };
+        if (isUrl) return { href: val.startsWith("http") ? val : "https://" + val, target: "_blank", icon: <ExternalLink size={15} /> };
+        return null;
+    };
+
+    return (
+        <div className="space-y-1.5">
+            {/* Champ principal */}
+            <div>
+                <div className="flex items-center gap-1 mb-1">
+                    <Label className="text-xs text-muted-foreground flex-1">{label}</Label>
+                    <button
+                        type="button"
+                        onClick={() => onAdd(baseLabel + " " + nextNum)}
+                        title={"Ajouter " + baseLabel + " " + nextNum}
+                        className="w-5 h-5 flex items-center justify-center rounded text-muted-foreground/40 hover:text-primary hover:bg-primary/10 transition-colors"
+                    >
+                        <Plus size={12} strokeWidth={2.5} />
+                    </button>
+                </div>
+                <div className="relative flex items-center gap-1.5">
+                    <div className="relative flex-1">
+                        <Icon size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+                        <Input
+                            data-testid={testId}
+                            type={type}
+                            value={value || ""}
+                            onChange={(e) => onChange(e.target.value)}
+                            className="pl-9 h-10"
+                        />
+                    </div>
+                    {action && value && (
+                        <a
+                            href={action.href}
+                            target={action.target}
+                            rel={action.target === "_blank" ? "noreferrer noopener" : undefined}
+                            data-testid={action.testId}
+                            aria-label={action.label}
+                            title={action.label}
+                            className="shrink-0 w-10 h-10 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 flex items-center justify-center transition-colors"
+                        >
+                            {action.icon}
+                        </a>
+                    )}
+                </div>
+            </div>
+
+            {/* Champs dupliqués — même look qu'un Field normal */}
+            {dupes.map((f) => (
+                <DupeField
+                    key={f.id}
+                    icon={Icon}
+                    field={f}
+                    type={type}
+                    action={getAction(f.value)}
+                    autoFocus={lastAddedFieldLabel === f.label}
+                    onFocused={onClearLastAdded}
+                    onUpdate={(v) => onUpdateCf(f.id, v)}
+                    onDelete={() => onDeleteCf(f.id)}
+                />
+            ))}
+        </div>
+    );
+};
+
+/** Ligne dupliquée — même rendu que Field, + bouton X au hover pour supprimer */
+const DupeField = ({ icon: Icon, field: f, type = "text", action, autoFocus, onFocused, onUpdate, onDelete }) => {
+    const inputRef = useRef(null);
+
+    useEffect(() => {
+        if (autoFocus && inputRef.current) {
+            inputRef.current.focus();
+            onFocused && onFocused();
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [autoFocus]);
+
+    return (
+        <div className="group/dupe">
+            <Label className="text-xs text-muted-foreground mb-1 block">{f.label}</Label>
+            <div className="relative flex items-center gap-1.5">
+                <div className="relative flex-1">
+                    <Icon size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+                    <Input
+                        ref={inputRef}
+                        type={type}
+                        value={f.value || ""}
+                        onChange={(e) => onUpdate(e.target.value)}
+                        placeholder="—"
+                        className={"pl-9 h-10" + (autoFocus ? " ring-2 ring-primary" : "")}
+                    />
+                </div>
+                {action && f.value && (
+                    <a
+                        href={action.href}
+                        target={action.target}
+                        rel={action.target === "_blank" ? "noreferrer noopener" : undefined}
+                        className="shrink-0 w-10 h-10 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 flex items-center justify-center transition-colors"
+                    >
+                        {action.icon}
+                    </a>
+                )}
+                <button
+                    type="button"
+                    onClick={onDelete}
+                    title={"Supprimer " + f.label}
+                    className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground/20 hover:text-rose-500 hover:bg-rose-500/10 transition-colors opacity-0 group-hover/dupe:opacity-100"
+                >
+                    <X size={13} strokeWidth={2} />
+                </button>
+            </div>
+        </div>
+    );
+};

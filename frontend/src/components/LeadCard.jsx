@@ -54,7 +54,7 @@ function buildVisibleSet(cardFields) {
         savedMap.has(def.key) ? savedMap.get(def.key) : def
     );
     saved.forEach((f) => {
-        if (f.key.startsWith("extra:") && !merged.find((m) => m.key === f.key))
+        if ((f.key.startsWith("extra:") || f.key.startsWith("cf:")) && !merged.find((m) => m.key === f.key))
             merged.push(f);
     });
     return new Set(merged.filter((f) => f.visible).map((f) => f.key));
@@ -187,7 +187,15 @@ export const LeadCard = memo(({
     const { dispatch } = useCrm();
     const visible = getVisibleSet(workspace.cardFields);
     const isJobs = workspace.template === "jobs";
-    const fieldOrder = workspace.cardFields?.filter(f => f.visible).map(f => f.key) ?? [];
+
+    // fieldOrder = toutes les clés visibles dans l'ordre exact de cardFields
+    // Si cardFields est vide/absent, fallback sur l'ordre par défaut
+    const fieldOrder = (() => {
+        if (!workspace.cardFields || workspace.cardFields.length === 0) {
+            return ["phone", "email", "website"];
+        }
+        return workspace.cardFields.filter((f) => f.visible).map((f) => f.key);
+    })();
 
     const colColor = getColumnColor(column);
     const [reminderOpen, setReminderOpen] = useState(false);
@@ -316,40 +324,73 @@ export const LeadCard = memo(({
         </div>
     );
 
-    /* ── Build field rows in order ── */
+    /* ── Build field rows in order — respecte exactement l'ordre de cardFields ── */
     const renderFields = () => {
         const rows = [];
+        // On itère sur fieldOrder qui est déjà dans l'ordre exact choisi par l'user
+        // (incluant les extra:, cf:, et champs fixes dans n'importe quel ordre)
+        const rendered = new Set(); // évite les doublons si un cf: est déjà injecté par son parent
 
-        const addField = (key) => {
-            if (key === "phone" && visible.has("phone") && lead.phone) {
-                rows.push(
-                    <div key="phone" className="group/row flex items-baseline gap-0">
-                        <span className="text-[12.5px] text-foreground/80">{lead.phone}</span>
-                        <CopyBtn value={lead.phone} />
-                    </div>
-                );
-            } else if (key === "email" && visible.has("email") && lead.email) {
-                rows.push(
-                    <div key="email" className="group/row flex items-baseline gap-0 min-w-0">
-                        <a href={`mailto:${lead.email}`} onClick={(e) => e.stopPropagation()}
-                            className="text-primary hover:underline text-[12.5px] truncate min-w-0">{lead.email}</a>
-                        <CopyBtn value={lead.email} />
-                    </div>
-                );
-            } else if (key === "website" && visible.has("website") && lead.website) {
-                const href = detectHref(lead.website) ?? `https://${lead.website}`;
-                rows.push(
-                    <div key="website" className="group/row flex items-baseline gap-0 min-w-0">
-                        <a href={href} target="_blank" rel="noreferrer noopener"
-                            onClick={(e) => e.stopPropagation()}
-                            className="text-primary hover:underline text-[12.5px] truncate min-w-0">{lead.website}</a>
-                        <CopyBtn value={lead.website} />
-                    </div>
-                );
-            } else if (key.startsWith("extra:")) {
+        for (const key of fieldOrder) {
+            if (rendered.has(key)) continue;
+
+            // ── Champ fixe : phone ──────────────────────────────────────────
+            if (key === "phone") {
+                if (lead.phone) {
+                    rows.push(
+                        <div key="phone" className="group/row flex items-baseline gap-0">
+                            <span className="text-[12.5px] text-foreground/80">{lead.phone}</span>
+                            <CopyBtn value={lead.phone} />
+                        </div>
+                    );
+                }
+                // Injecter les doublons cf:Téléphone N s'ils sont juste après dans fieldOrder
+                // (gérés ci-dessous par le cas cf:)
+            }
+            // ── Champ fixe : email ──────────────────────────────────────────
+            else if (key === "email") {
+                if (lead.email) {
+                    rows.push(
+                        <div key="email" className="group/row flex items-baseline gap-0 min-w-0">
+                            <a href={`mailto:${lead.email}`} onClick={(e) => e.stopPropagation()}
+                                className="text-primary hover:underline text-[12.5px] truncate min-w-0">{lead.email}</a>
+                            <CopyBtn value={lead.email} />
+                        </div>
+                    );
+                }
+            }
+            // ── Champ fixe : website ────────────────────────────────────────
+            else if (key === "website") {
+                if (lead.website) {
+                    const href = detectHref(lead.website) ?? `https://${lead.website}`;
+                    rows.push(
+                        <div key="website" className="group/row flex items-baseline gap-0 min-w-0">
+                            <a href={href} target="_blank" rel="noreferrer noopener"
+                                onClick={(e) => e.stopPropagation()}
+                                className="text-primary hover:underline text-[12.5px] truncate min-w-0">{lead.website}</a>
+                            <CopyBtn value={lead.website} />
+                        </div>
+                    );
+                }
+            }
+            // ── Champ fixe : contact ────────────────────────────────────────
+            else if (key === "contact") {
+                // contact est affiché séparément en header — on le skip ici sauf si explicitement dans fieldOrder
+                // on le rend quand même pour que l'ordre soit respecté
+                if (lead.contact) {
+                    rows.push(
+                        <div key="contact" className="group/row flex items-baseline gap-0 min-w-0">
+                            <span className="text-[12.5px] text-muted-foreground truncate min-w-0">{lead.contact}</span>
+                            <CopyBtn value={lead.contact} />
+                        </div>
+                    );
+                }
+            }
+            // ── Champ importé extra: ────────────────────────────────────────
+            else if (key.startsWith("extra:")) {
                 const ek = key.slice(6);
                 const v = lead.extra?.[ek];
-                if (v && visible.has(key)) {
+                if (v) {
                     const href = detectHref(String(v));
                     rows.push(
                         <div key={key} className="group/row flex items-baseline gap-0 min-w-0">
@@ -362,13 +403,41 @@ export const LeadCard = memo(({
                     );
                 }
             }
-        };
-
-        if (fieldOrder.length > 0) {
-            fieldOrder.forEach(addField);
-        } else {
-            ["phone", "email", "website"].forEach(addField);
+            // ── Doublon de champ principal cf: ──────────────────────────────
+            else if (key.startsWith("cf:")) {
+                const label = key.slice(3); // ex: "Téléphone 2"
+                const cf = (lead.customFields || []).find((f) => f.label === label);
+                if (cf && cf.value) {
+                    const href = detectHref(cf.value);
+                    const isPhone = !href && /^[+\d\s.\-()]{7,}$/.test(cf.value) && cf.value.replace(/\D/g, "").length >= 7;
+                    const isEmail = !href && cf.value.includes("@") && cf.value.includes(".");
+                    rows.push(
+                        <div key={key} className="group/row flex items-baseline gap-0 min-w-0">
+                            {href ? (
+                                <a href={href} target="_blank" rel="noreferrer noopener"
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="text-primary hover:underline text-[12.5px] truncate min-w-0">{cf.value}</a>
+                            ) : isPhone ? (
+                                <a href={`tel:${cf.value.replace(/[^+\d]/g, "")}`}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="text-[12.5px] text-foreground/80 truncate min-w-0">{cf.value}</a>
+                            ) : isEmail ? (
+                                <a href={`mailto:${cf.value}`}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="text-primary hover:underline text-[12.5px] truncate min-w-0">{cf.value}</a>
+                            ) : (
+                                <span className="text-[12.5px] text-foreground/80 truncate min-w-0">{cf.value}</span>
+                            )}
+                            <CopyBtn value={cf.value} />
+                        </div>
+                    );
+                }
+                rendered.add(key);
+            }
+            // ── Toute autre clé (champs spéciaux comme lastNote, nextAction…) ─
+            // Ces champs sont gérés séparément dans le JSX principal, on les ignore ici
         }
+
         return rows;
     };
 
@@ -410,7 +479,36 @@ export const LeadCard = memo(({
                                 {lead.company}
                             </h4>
                             {/* Badges urgence — top right */}
-                            <div className="flex items-center gap-1 shrink-0 mt-0.5">
+                            <div className="flex items-center gap-1 shrink-0 mt-0.5 flex-wrap justify-end">
+                                {/* Badge relance : numéro + canal */}
+                                {(lead.relances || []).length > 0 && (() => {
+                                    const relances = lead.relances;
+                                    const num = relances.length;
+                                    // Couleurs par étape
+                                    const COLORS = [
+                                        "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300",
+                                        "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+                                        "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
+                                        "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+                                        "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300",
+                                        "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300",
+                                        "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
+                                    ];
+                                    const colorClass = COLORS[Math.min(num - 1, COLORS.length - 1)];
+                                    const lastCanal = relances[relances.length - 1]?.canal || "";
+                                    const CANAL_EMOJI = { "Téléphone": "📞", "Email": "✉️", "SMS": "💬", "LinkedIn": "💼", "WhatsApp": "📱", "Courrier": "📮", "Autre": "🔁" };
+                                    const emoji = CANAL_EMOJI[lastCanal] || "🔁";
+                                    return (
+                                        <div
+                                            onClick={(e) => e.stopPropagation()}
+                                            title={`${num} relance${num > 1 ? "s" : ""} · Dernier canal : ${lastCanal}`}
+                                            className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold ${colorClass}`}
+                                        >
+                                            <span className="text-[9px]">{emoji}</span>
+                                            <span>R{num}</span>
+                                        </div>
+                                    );
+                                })()}
                                 {visible.has("followupBadge") && followup && (
                                     <div onClick={(e) => e.stopPropagation()}
                                         className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${

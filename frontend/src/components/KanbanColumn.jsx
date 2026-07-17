@@ -240,10 +240,16 @@ export const KanbanColumn = ({
     }, [editing]);
     useEffect(() => setName(column.name), [column.name]);
 
-    // Notifie le parent (KanbanBoard) de l'ordre trié réel — utilisé par le mode rapide
+    // Notifie le parent (KanbanBoard) de l'ordre trié réel — utilisé par le mode rapide.
+    // On compare les IDs pour éviter des notifications parasites dues aux re-renders
+    // provoqués par CardScaleWrapper (ResizeObserver → setState → re-render).
+    const sortedIdsRef = useRef(null);
     useEffect(() => {
+        const ids = sortedLeads.map((l) => l.id).join(",");
+        if (ids === sortedIdsRef.current) return; // même ordre, pas la peine
+        sortedIdsRef.current = ids;
         onSortedLeadsChange?.(sortedLeads);
-    }, [sortedLeads]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [sortedLeads, onSortedLeadsChange]);
 
     // Mesure la hauteur réelle du contenu pour animer le fond
     useEffect(() => {

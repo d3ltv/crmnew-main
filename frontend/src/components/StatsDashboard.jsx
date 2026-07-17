@@ -1,10 +1,11 @@
 import React, { useMemo, useState } from "react";
 import { useCrm } from "@/context/CrmContext";
-import { computeWorkspaceStats, aggregateStats, formatDuration } from "@/lib/statsUtils";
+import { computeWorkspaceStats, aggregateStats, formatDuration, computeCallStats } from "@/lib/statsUtils";
 import {
     Users, TrendingUp, TrendingDown, Clock, CheckCircle2,
     XCircle, MessageSquare, AlertTriangle, Activity, Timer,
-    BarChart3, ChevronDown, Trophy, Euro,
+    BarChart3, ChevronDown, Trophy, Euro, Phone, PhoneOff,
+    PhoneCall, Flame, Star,
 } from "lucide-react";
 
 // ---------- Helpers ----------
@@ -242,6 +243,338 @@ const Section = ({ title, children }) => (
     </div>
 );
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ── Call Analytics Components ────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Heatmap par heure — barre colorée selon le taux de décrochage */
+const HourHeatmap = ({ byHour }) => {
+    const [tooltip, setTooltip] = useState(null);
+    // Afficher seulement 7h–21h par défaut (les heures utiles)
+    const slots = byHour.filter((h) => h.hour >= 7 && h.hour <= 21);
+    const maxTotal = Math.max(...slots.map((h) => h.total), 1);
+
+    return (
+        <div className="space-y-2">
+            <div className="flex items-end gap-1 relative" style={{ height: 80 }}>
+                {slots.map((h) => {
+                    const heightPct = h.total > 0 ? (h.total / maxTotal) * 100 : 0;
+                    // Couleur selon taux : rouge → orange → vert
+                    const rate = h.rate ?? 0;
+                    const hue = Math.round(rate * 1.2); // 0→rouge, 100→vert (120)
+                    const barColor = h.total === 0
+                        ? "hsl(var(--secondary))"
+                        : `hsl(${hue}, 65%, 48%)`;
+                    return (
+                        <div
+                            key={h.hour}
+                            className="flex-1 flex flex-col items-center justify-end gap-1 cursor-default"
+                            onMouseEnter={() => setTooltip(h)}
+                            onMouseLeave={() => setTooltip(null)}
+                        >
+                            <div
+                                className="w-full rounded-t-sm transition-all duration-300"
+                                style={{
+                                    height: `${heightPct}%`,
+                                    minHeight: h.total > 0 ? 4 : 0,
+                                    backgroundColor: barColor,
+                                    opacity: h.total === 0 ? 0.25 : 1,
+                                }}
+                            />
+                        </div>
+                    );
+                })}
+            </div>
+            {/* Labels heures */}
+            <div className="flex gap-1">
+                {slots.map((h) => (
+                    <div key={h.hour} className="flex-1 text-center text-[9px] text-muted-foreground tabular-nums">
+                        {h.hour}h
+                    </div>
+                ))}
+            </div>
+            {/* Tooltip flottant */}
+            {tooltip && tooltip.total > 0 && (
+                <div className="mt-1 text-xs text-center text-foreground bg-card border border-border rounded-xl px-3 py-2 shadow-sm">
+                    <span className="font-semibold">{tooltip.hour}h00</span>
+                    {" · "}
+                    {tooltip.total} appel{tooltip.total > 1 ? "s" : ""}
+                    {" · "}
+                    <span className="font-semibold" style={{ color: tooltip.rate !== null ? `hsl(${Math.round(tooltip.rate * 1.2)}, 65%, 45%)` : undefined }}>
+                        {tooltip.rate !== null ? `${tooltip.rate.toFixed(0)} % décrochés` : "—"}
+                    </span>
+                </div>
+            )}
+            {/* Légende */}
+            <div className="flex items-center justify-between text-[10px] text-muted-foreground mt-1">
+                <span className="flex items-center gap-1">
+                    <span className="inline-block w-3 h-2 rounded-sm" style={{ backgroundColor: "hsl(0,65%,48%)" }} />
+                    Faible décrochage
+                </span>
+                <span className="flex items-center gap-1">
+                    <span className="inline-block w-3 h-2 rounded-sm" style={{ backgroundColor: "hsl(120,65%,48%)" }} />
+                    Bon décrochage
+                </span>
+            </div>
+        </div>
+    );
+};
+
+/** Barres par jour de semaine */
+const DayOfWeekBars = ({ byDayOfWeek }) => {
+    // Exclure dimanche si aucun appel
+    const slots = byDayOfWeek.filter((d) => d.day !== 0 || d.total > 0);
+    const maxTotal = Math.max(...slots.map((d) => d.total), 1);
+
+    return (
+        <div className="space-y-2">
+            {slots.map((d) => {
+                const rate = d.rate ?? 0;
+                const hue = Math.round(rate * 1.2);
+                const barColor = d.total === 0 ? "hsl(var(--secondary))" : `hsl(${hue}, 65%, 48%)`;
+                return (
+                    <div key={d.day} className="flex items-center gap-3">
+                        <span className="text-xs text-muted-foreground w-8 shrink-0 font-medium">{d.label}</span>
+                        <div className="flex-1 h-5 rounded-full bg-secondary overflow-hidden relative">
+                            <div
+                                className="h-full rounded-full transition-all duration-500"
+                                style={{
+                                    width: `${(d.total / maxTotal) * 100}%`,
+                                    backgroundColor: barColor,
+                                    opacity: d.total === 0 ? 0.3 : 1,
+                                }}
+                            />
+                        </div>
+                        <div className="text-right w-28 shrink-0 flex items-center justify-end gap-2">
+                            <span className="text-xs text-muted-foreground tabular-nums">{d.total} appel{d.total > 1 ? "s" : ""}</span>
+                            {d.total > 0 && (
+                                <span
+                                    className="text-xs font-semibold tabular-nums rounded-full px-1.5 py-0.5"
+                                    style={{
+                                        color: `hsl(${hue}, 65%, 40%)`,
+                                        backgroundColor: `hsl(${hue}, 65%, 96%)`,
+                                    }}
+                                >
+                                    {rate.toFixed(0)} %
+                                </span>
+                            )}
+                        </div>
+                    </div>
+                );
+            })}
+        </div>
+    );
+};
+
+/** Mini sparkline SVG pour les 30 derniers jours */
+const CallSparkline = ({ last30Days }) => {
+    const [hovered, setHovered] = useState(null);
+    const maxTotal = Math.max(...last30Days.map((d) => d.total), 1);
+    const W = 560, H = 80, PAD = { top: 8, right: 8, bottom: 28, left: 8 };
+    const innerW = W - PAD.left - PAD.right;
+    const innerH = H - PAD.top - PAD.bottom;
+    const BAR_W = Math.max(2, Math.floor(innerW / last30Days.length) - 2);
+
+    return (
+        <div className="relative w-full" style={{ aspectRatio: `${W}/${H}` }}>
+            <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-full" onMouseLeave={() => setHovered(null)}>
+                {last30Days.map((d, i) => {
+                    const x = PAD.left + (i / last30Days.length) * innerW + (innerW / last30Days.length - BAR_W) / 2;
+                    const totalH = (d.total / maxTotal) * innerH;
+                    const answeredH = d.total > 0 ? (d.answered / d.total) * totalH : 0;
+                    const rate = d.rate ?? 0;
+                    const hue = Math.round(rate * 1.2);
+
+                    // Label date tous les 7 jours
+                    const showLabel = i === 0 || i === 14 || i === last30Days.length - 1;
+                    const labelDate = new Date(d.date);
+                    const labelStr = labelDate.toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+
+                    return (
+                        <g key={d.date}>
+                            {/* Barre totale (grisée) */}
+                            {d.total > 0 && (
+                                <rect
+                                    x={x} y={PAD.top + innerH - totalH}
+                                    width={BAR_W} height={totalH}
+                                    fill="hsl(var(--secondary))"
+                                    rx={2}
+                                />
+                            )}
+                            {/* Barre décrochés (colorée) */}
+                            {d.answered > 0 && (
+                                <rect
+                                    x={x} y={PAD.top + innerH - answeredH}
+                                    width={BAR_W} height={answeredH}
+                                    fill={`hsl(${hue}, 65%, 48%)`}
+                                    rx={2}
+                                />
+                            )}
+                            {/* Zone hover invisible */}
+                            <rect
+                                x={x - 2} y={PAD.top}
+                                width={BAR_W + 4} height={innerH}
+                                fill="transparent"
+                                onMouseEnter={() => setHovered({ ...d, x: x + BAR_W / 2 })}
+                            />
+                            {showLabel && (
+                                <text x={x + BAR_W / 2} y={H - 4} textAnchor="middle" fontSize="9" fill="hsl(var(--muted-foreground))">
+                                    {labelStr}
+                                </text>
+                            )}
+                        </g>
+                    );
+                })}
+
+                {/* Tooltip */}
+                {hovered && hovered.total > 0 && (() => {
+                    const tx = Math.min(Math.max(hovered.x, 55), W - 55);
+                    const labelDate = new Date(hovered.date);
+                    const labelStr = labelDate.toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" });
+                    const rate = hovered.rate ?? 0;
+                    const hue = Math.round(rate * 1.2);
+                    return (
+                        <g>
+                            <rect x={tx - 52} y={4} width={104} height={38} rx="6" fill="hsl(var(--card))" stroke="hsl(var(--border))" strokeWidth="1" />
+                            <text x={tx} y={18} textAnchor="middle" fontSize="10" fontWeight="600" fill="hsl(var(--foreground))">{labelStr}</text>
+                            <text x={tx} y={34} textAnchor="middle" fontSize="9.5" fill={`hsl(${hue}, 65%, 40%)`}>
+                                {hovered.answered}/{hovered.total} décrochés ({rate.toFixed(0)} %)
+                            </text>
+                        </g>
+                    );
+                })()}
+            </svg>
+
+            {/* Légende */}
+            <div className="flex items-center gap-4 justify-center mt-1 text-[10px] text-muted-foreground">
+                <span className="flex items-center gap-1.5">
+                    <span className="inline-block w-3 h-2.5 rounded-sm bg-secondary" />
+                    Total appels
+                </span>
+                <span className="flex items-center gap-1.5">
+                    <span className="inline-block w-3 h-2.5 rounded-sm" style={{ backgroundColor: "hsl(90,65%,48%)" }} />
+                    Décrochés
+                </span>
+            </div>
+        </div>
+    );
+};
+
+/** Composant principal de la section appels */
+const CallStatsSection = ({ callStats }) => {
+    const { totalCalls, totalAnswered, globalAnswerRate, byHour, byDayOfWeek, last30Days, bestHour, bestDay, streak } = callStats;
+
+    if (totalCalls === 0) {
+        return (
+            <div className="rounded-2xl border border-dashed border-border p-6 text-center">
+                <Phone size={20} className="mx-auto text-muted-foreground/40 mb-2" />
+                <p className="text-sm text-muted-foreground">Aucun appel enregistré. Les statistiques s'afficheront après vos premiers appels.</p>
+            </div>
+        );
+    }
+
+    const answerRateColor = globalAnswerRate === null ? "" :
+        globalAnswerRate >= 50 ? "text-emerald-600 dark:text-emerald-400" :
+        globalAnswerRate >= 25 ? "text-amber-700 dark:text-amber-400" :
+        "text-rose-600 dark:text-rose-400";
+
+    return (
+        <div className="space-y-4">
+            {/* KPI tiles */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <Tile
+                    icon={PhoneCall}
+                    label="Total appels"
+                    value={totalCalls}
+                    sub="Tous appels confondus"
+                    accent
+                />
+                <Tile
+                    icon={Phone}
+                    label="Décrochés"
+                    value={totalAnswered}
+                    sub={`${(totalCalls - totalAnswered)} non répondus`}
+                    green
+                />
+                <Tile
+                    icon={TrendingUp}
+                    label="Taux de décrochage"
+                    value={globalAnswerRate !== null ? `${globalAnswerRate.toFixed(1)} %` : "—"}
+                    sub="Sur l'ensemble des appels"
+                    green={globalAnswerRate >= 50}
+                    warn={globalAnswerRate !== null && globalAnswerRate < 25}
+                />
+                <Tile
+                    icon={Flame}
+                    label="Jours consécutifs"
+                    value={streak}
+                    sub="Série d'appels en cours"
+                    accent={streak >= 3}
+                />
+            </div>
+
+            {/* Meilleures créneaux */}
+            {(bestHour || bestDay) && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {bestHour && (
+                        <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-4 flex items-start gap-3">
+                            <Star size={16} className="text-emerald-500 shrink-0 mt-0.5" />
+                            <div>
+                                <div className="text-[11px] uppercase tracking-wider text-emerald-600 dark:text-emerald-400 font-semibold">Meilleure heure</div>
+                                <div className="text-xl font-bold mt-0.5">{bestHour.hour}h00 – {bestHour.hour + 1}h00</div>
+                                <div className="text-xs text-muted-foreground mt-0.5">
+                                    {bestHour.rate.toFixed(0)} % de décrochage · {bestHour.total} appels
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    {bestDay && (
+                        <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-4 flex items-start gap-3">
+                            <Star size={16} className="text-emerald-500 shrink-0 mt-0.5" />
+                            <div>
+                                <div className="text-[11px] uppercase tracking-wider text-emerald-600 dark:text-emerald-400 font-semibold">Meilleur jour</div>
+                                <div className="text-xl font-bold mt-0.5">{bestDay.label}</div>
+                                <div className="text-xs text-muted-foreground mt-0.5">
+                                    {bestDay.rate.toFixed(0)} % de décrochage · {bestDay.total} appels
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* Heatmap heures */}
+            <div className="rounded-2xl border border-border bg-card shadow-card p-4">
+                <div className="flex items-center justify-between mb-3">
+                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Décrochage par heure (7h–21h)</span>
+                    <span className="text-xs text-muted-foreground">Hauteur = volume · Couleur = taux</span>
+                </div>
+                <HourHeatmap byHour={byHour} />
+            </div>
+
+            {/* Barres par jour de semaine */}
+            <div className="rounded-2xl border border-border bg-card shadow-card p-4">
+                <div className="mb-3">
+                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Décrochage par jour de la semaine</span>
+                </div>
+                <DayOfWeekBars byDayOfWeek={byDayOfWeek} />
+            </div>
+
+            {/* Tendance 30 jours */}
+            <div className="rounded-2xl border border-border bg-card shadow-card p-4">
+                <div className="flex items-center justify-between mb-3">
+                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Activité sur 30 jours</span>
+                    <span className="text-xs text-muted-foreground">
+                        {last30Days.reduce((s, d) => s + d.total, 0)} appels ·{" "}
+                        {last30Days.reduce((s, d) => s + d.answered, 0)} décrochés
+                    </span>
+                </div>
+                <CallSparkline last30Days={last30Days} />
+            </div>
+        </div>
+    );
+};
+
 // ---------- Main component ----------
 export const StatsDashboard = () => {
     const { state } = useCrm();
@@ -258,6 +591,15 @@ export const StatsDashboard = () => {
         () => aggregateStats(statsPerWs.map((s) => s.stats)),
         [statsPerWs]
     );
+
+    // Call stats — calculées sur le workspace sélectionné ou sur tous
+    const callStats = useMemo(() => {
+        const wsList = view === "total"
+            ? workspaces
+            : workspaces.filter((ws) => ws.id === view);
+        return computeCallStats(wsList);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [state.workspaces, view]);
 
     const current = view === "total"
         ? totalStats
@@ -393,6 +735,11 @@ export const StatsDashboard = () => {
                             </div>
                         </Section>
                     </div>
+
+                    {/* Call analytics section */}
+                    <Section title="Activité téléphonique">
+                        <CallStatsSection callStats={callStats} />
+                    </Section>
 
                     {/* Revenue & pricing section */}
                     {current.dealsWithValueCount > 0 && (

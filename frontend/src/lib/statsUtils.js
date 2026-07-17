@@ -260,4 +260,172 @@ export function aggregateStats(statsList) {
     };
 }
 
+/**
+ * Extrait toutes les notes d'appel de tous les leads de tous les workspaces fournis.
+ * Retourne un tableau de { at: Date, answered: boolean, workspaceId, leadId, company }.
+ *
+ * Détection :
+ *   - "📞" dans le texte → appel décroché (answered = true)
+ *   - "📵" dans le texte → pas de réponse (answered = false)
+ */
+function extractCallEvents(workspaces) {
+    const events = [];
+    for (const ws of workspaces) {
+        for (const lead of Object.values(ws.leads || {})) {
+            for (const note of lead.notes || []) {
+                const text = note.text || "";
+                const isCall = text.includes("📞") || text.includes("📵");
+                if (!isCall) continue;
+                const answered = text.includes("📞");
+                const at = note.at ? new Date(note.at) : null;
+                if (!at || isNaN(at)) continue;
+                events.push({
+                    at,
+                    answered,
+                    workspaceId: ws.id,
+                    leadId: lead.id,
+                    company: lead.company || "",
+                });
+            }
+        }
+    }
+    return events;
+}
+
+/**
+ * Calcule les statistiques d'appels avancées à partir des workspaces.
+ *
+ * Retourne :
+ *   - totalCalls        : nombre total d'appels
+ *   - totalAnswered     : nombre de décrochés
+ *   - globalAnswerRate  : taux global de décrochage (0–100)
+ *   - byHour            : [{hour, total, answered, rate}] × 24
+ *   - byDayOfWeek       : [{day (0=Dim…6=Sam), label, total, answered, rate}] × 7
+ *   - byDay             : [{date (YYYY-MM-DD), total, answered, rate}] — 90 derniers jours avec activité
+ *   - last30Days        : [{date, total, answered, rate}] — 30 derniers jours calendaires (y.c. 0)
+ *   - bestHour          : {hour, rate, total} — heure avec le meilleur taux (min 3 appels)
+ *   - bestDay           : {day, label, rate, total} — jour de semaine avec le meilleur taux
+ *   - streak            : nombre de jours consécutifs avec au moins 1 appel (jusqu'à aujourd'hui)
+ */
+export function computeCallStats(workspaces) {
+    const events = extractCallEvents(workspaces);
+
+    const total = events.length;
+    const answered = events.filter((e) => e.answered).length;
+    const globalAnswerRate = total > 0 ? (answered / total) * 100 : null;
+
+    // ── Par heure (0–23) ──────────────────────────────────────────────────────
+    const byHour = Array.from({ length: 24 }, (_, h) => {
+        const calls = events.filter((e) => e.at.getHours() === h);
+        const ans   = calls.filter((e) => e.answered).length;
+        return {
+            hour: h,
+            total: calls.length,
+            answered: ans,
+            rate: calls.length > 0 ? (ans / calls.length) * 100 : null,
+        };
+    });
+
+    // ── Par jour de semaine ────────────────────────────────────────────────────
+    const DAY_LABELS = ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"];
+    const byDayOfWeek = Array.from({ length: 7 }, (_, d) => {
+        const calls = events.filter((e) => e.at.getDay() === d);
+        const ans   = calls.filter((e) => e.answered).length;
+        return {
+            day: d,
+            label: DAY_LABELS[d],
+            total: calls.length,
+            answered: ans,
+            rate: calls.length > 0 ? (ans / calls.length) * 100 : null,
+        };
+    });
+
+    // ── Par date (YYYY-MM-DD) ─────────────────────────────────────────────────
+    const dateMap = new Map();
+    for (const e of events) {
+        const key = e.at.toISOString().slice(0, 10);
+        if (!dateMap.has(key)) dateMap.set(key, { total: 0, answered: 0 });
+        dateMap.get(key).total++;
+        if (e.answered) dateMap.get(key).answered++;
+    }
+    const byDay = [...dateMap.entries()]
+        .map(([date, { total: t, answered: a }]) => ({
+            date,
+            total: t,
+            answered: a,
+            rate: t > 0 ? (a / t) * 100 : null,
+        }))
+        .sort((a, b) => a.date.localeCompare(b.date));
+
+    // ── 30 derniers jours calendaires (rempli avec 0 pour les jours sans appel) ─
+    const last30Days = [];
+    const today = new Date();
+    for (let i = 29; i >= 0; i--) {
+        const d = new Date(today);
+        d.setDate(d.getDate() - i);
+        const key = d.toISOString().slice(0, 10);
+        const entry = dateMap.get(key);
+        last30Days.push({
+            date: key,
+            total: entry?.total || 0,
+            answered: entry?.answered || 0,
+            rate: entry ? (entry.answered / entry.total) * 100 : null,
+        });
+    }
+
+    // ── Meilleure heure (min 3 appels, taux le plus élevé) ─────────────────────
+    const bestHourEntry = byHour
+        .filter((h) => h.total >= 3 && h.rate !== null)
+        .sort((a, b) => b.rate - a.rate)[0] || null;
+    const bestHour = bestHourEntry
+        ? { hour: bestHourEntry.hour, rate: bestHourEntry.rate, total: bestHourEntry.total }
+        : null;
+
+    // ── Meilleur jour de semaine (min 3 appels) ────────────────────────────────
+    const bestDayEntry = byDayOfWeek
+        .filter((d) => d.total >= 3 && d.rate !== null)
+        .sort((a, b) => b.rate - a.rate)[0] || null;
+    const bestDay = bestDayEntry
+        ? { day: bestDayEntry.day, label: bestDayEntry.label, rate: bestDayEntry.rate, total: bestDayEntry.total }
+        : null;
+
+    // ── Streak : jours consécutifs avec appels (jusqu'à aujourd'hui) ──────────
+    let streak = 0;
+    const todayKey = today.toISOString().slice(0, 10);
+    let checkDate = new Date(today);
+    while (true) {
+        const key = checkDate.toISOString().slice(0, 10);
+        if (dateMap.has(key)) {
+            streak++;
+            checkDate.setDate(checkDate.getDate() - 1);
+        } else if (key === todayKey) {
+            // Aujourd'hui sans appel — on remonte quand même pour voir hier
+            checkDate.setDate(checkDate.getDate() - 1);
+            const yesterdayKey = checkDate.toISOString().slice(0, 10);
+            if (dateMap.has(yesterdayKey)) {
+                checkDate = new Date(today);
+                checkDate.setDate(checkDate.getDate() - 1);
+                continue;
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    return {
+        totalCalls: total,
+        totalAnswered: answered,
+        globalAnswerRate,
+        byHour,
+        byDayOfWeek,
+        byDay,
+        last30Days,
+        bestHour,
+        bestDay,
+        streak,
+    };
+}
+
 export { formatDuration };
