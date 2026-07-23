@@ -22,7 +22,7 @@ import {
 } from "@/constants/columnPatterns";
 
 export const WorkspacePage = () => {
-    const { state, dispatch } = useCrm();
+    const { state, dispatch, restoreEpoch } = useCrm();
     const workspace = state.workspaces[state.currentId];
     const [filter, setFilter] = useState("");
     const [activeFilters, setActiveFilters] = useState([]);
@@ -35,6 +35,11 @@ export const WorkspacePage = () => {
     const handleViewChange = (v) => {
         setView(v);
         try { localStorage.setItem("crm_view", v); } catch {}
+        // Mode rapide = Kanban uniquement — éviter un badge fantôme hors vue kanban
+        if (v !== "kanban") {
+            setQuickMode(false);
+            setQuickCount(0);
+        }
     };
     // Sidebar : pliée par défaut, état persisté en localStorage
     const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -51,6 +56,7 @@ export const WorkspacePage = () => {
     const [quickMode, setQuickMode] = useState(false);
     const [quickCount, setQuickCount] = useState(0);
     const prevColumnsRef = useRef({});
+    const prevRestoreEpochRef = useRef(restoreEpoch);
     const [pendingOpenColumnId, setPendingOpenColumnId] = useState(null);
     const prevLeadIdsRef = useRef(null);
     // Leads déplacés automatiquement depuis CallNoteModal (avec RDV déjà défini)
@@ -59,10 +65,30 @@ export const WorkspacePage = () => {
 
     useEffect(() => {
         prevColumnsRef.current = {};
+        // Reset mode rapide au changement d'espace
+        setQuickMode(false);
+        setQuickCount(0);
     }, [state.currentId]);
 
     useEffect(() => {
         if (!workspace) return;
+
+        // Undo/redo (ou restore backup) : resynchroniser le suivi des colonnes
+        // SANS rouvrir de modal — une note rouverte écraserait des données non pertinentes.
+        const isRestore = restoreEpoch !== prevRestoreEpochRef.current;
+        prevRestoreEpochRef.current = restoreEpoch;
+        if (isRestore) {
+            const next = {};
+            for (const l of Object.values(workspace.leads)) {
+                next[l.id] = l.columnId;
+            }
+            prevColumnsRef.current = next;
+            setCallNoteLeadId(null);
+            setWonLeadId(null);
+            setMeetingLeadId(null);
+            return;
+        }
+
         const prev = prevColumnsRef.current;
         const next = {};
         for (const l of Object.values(workspace.leads)) {
@@ -103,7 +129,7 @@ export const WorkspacePage = () => {
         }
         // Remplacer entièrement la ref — élimine les entrées des leads supprimés
         prevColumnsRef.current = next;
-    }, [workspace?.leads, workspace?.columns]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [workspace?.leads, workspace?.columns, restoreEpoch]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Ouvrir automatiquement le panel sur le lead nouvellement créé
     useEffect(() => {
@@ -117,6 +143,25 @@ export const WorkspacePage = () => {
             prevLeadIdsRef.current = null;
         }
     }, [workspace?.leads, pendingOpenColumnId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Ouvrir un lead depuis le dashboard (alertes stats)
+    useEffect(() => {
+        if (!workspace) return;
+        try {
+            const raw = sessionStorage.getItem("crm_pending_lead");
+            if (!raw) return;
+            const { workspaceId, leadId } = JSON.parse(raw);
+            if (workspaceId !== workspace.id) return;
+            if (!workspace.leads[leadId]) {
+                sessionStorage.removeItem("crm_pending_lead");
+                return;
+            }
+            setOpenLeadId(leadId);
+            sessionStorage.removeItem("crm_pending_lead");
+        } catch {
+            try { sessionStorage.removeItem("crm_pending_lead"); } catch { /* ignore */ }
+        }
+    }, [workspace?.id, workspace?.leads]); // eslint-disable-line react-hooks/exhaustive-deps
 
     if (!workspace) return null;
 
@@ -180,7 +225,10 @@ export const WorkspacePage = () => {
                     onViewChange={handleViewChange}
                     quickMode={quickMode}
                     quickCount={quickCount}
-                    onStopQuickMode={() => setQuickMode(false)}
+                    onStopQuickMode={() => {
+                        setQuickMode(false);
+                        setQuickCount(0);
+                    }}
                 />
 
                 {leadCount === 0 && (

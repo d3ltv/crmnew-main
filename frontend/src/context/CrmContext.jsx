@@ -312,6 +312,7 @@ const NON_UNDOABLE = new Set([
     "RESTORE_LAST_DELETED",
     "CLEAR_LAST_DELETED",
     "UNDO",
+    "RESTORE_SNAPSHOT",
     "TOGGLE_SIDEBAR_FOLDER",
 ]);
 
@@ -1598,6 +1599,10 @@ export function CrmProvider({ children }) {
     const stateRef = useRef(state);
     stateRef.current = state;
 
+    // Compteur incrémenté à chaque undo/redo — les UI s'en servent pour
+    // ne pas rouvrir de modals (note d'appel, etc.) sur un restore.
+    const [restoreEpoch, setRestoreEpoch] = useState(0);
+
     // Wrapped dispatch: pousse { before, after } sur le undo stack de façon synchrone
     const dispatch = useCallback(
         (action) => {
@@ -1628,6 +1633,7 @@ export function CrmProvider({ children }) {
             entry,
         ];
         rawDispatch({ type: "RESTORE_SNAPSHOT", snapshot: entry.before });
+        setRestoreEpoch((n) => n + 1);
         return true;
     }, [rawDispatch]);
 
@@ -1642,6 +1648,7 @@ export function CrmProvider({ children }) {
             entry,
         ];
         rawDispatch({ type: "RESTORE_SNAPSHOT", snapshot: entry.after });
+        setRestoreEpoch((n) => n + 1);
         return true;
     }, [rawDispatch]);
 
@@ -1802,6 +1809,7 @@ export function CrmProvider({ children }) {
                     const parsed = JSON.parse(jsonString);
                     if (!parsed || !parsed.workspaces) throw new Error("Format invalide");
                     rawDispatch({ type: "RESTORE_SNAPSHOT", snapshot: parsed });
+                    setRestoreEpoch((n) => n + 1);
                     import("sonner").then(({ toast }) =>
                         toast.success("Backup restauré avec succès", { duration: 3000 })
                     );
@@ -1818,8 +1826,8 @@ export function CrmProvider({ children }) {
 
     // Objet final du contexte — state change à chaque dispatch, mais stableApi reste identique
     const api = useMemo(
-        () => ({ state, storageError, ...stableApi }),
-        [state, storageError, stableApi],
+        () => ({ state, storageError, restoreEpoch, ...stableApi }),
+        [state, storageError, restoreEpoch, stableApi],
     );
 
     return <CrmContext.Provider value={api}>{children}</CrmContext.Provider>;

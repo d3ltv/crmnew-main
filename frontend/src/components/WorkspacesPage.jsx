@@ -64,21 +64,28 @@ const GlobalKPIs = ({ workspaces }) => {
         return { totalLeads, totalPipeline, totalOverdue, spaces: workspaces.length };
     }, [workspaces]);
 
+    const items = [
+        { label: "Espaces", value: stats.spaces },
+        { label: "Leads total", value: stats.totalLeads },
+        { label: "Pipeline", value: stats.totalPipeline > 0 ? fmt(stats.totalPipeline) : "—" },
+        {
+            label: "Relances dues",
+            value: stats.totalOverdue || "0",
+            tone: stats.totalOverdue > 0 ? "danger" : "neutral",
+        },
+    ];
+
     return (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8">
-            {[
-                { icon: <LayoutGrid size={16} className="text-primary" />, label: "Espaces", value: stats.spaces, bg: "bg-primary/8" },
-                { icon: <Users size={16} className="text-blue-500" />, label: "Leads total", value: stats.totalLeads, bg: "bg-blue-500/8" },
-                { icon: <Trophy size={16} className="text-emerald-500" />, label: "Pipeline", value: stats.totalPipeline > 0 ? fmt(stats.totalPipeline) : "—", bg: "bg-emerald-500/8" },
-                { icon: <Zap size={16} className="text-rose-500" />, label: "Relances dues", value: stats.totalOverdue || "0", bg: "bg-rose-500/8" },
-            ].map((kpi) => (
-                <div key={kpi.label} className={`rounded-xl border border-border bg-card p-4 flex items-center gap-3`}>
-                    <div className={`w-9 h-9 rounded-xl ${kpi.bg} flex items-center justify-center shrink-0`}>
-                        {kpi.icon}
+            {items.map((kpi) => (
+                <div key={kpi.label} className="rounded-xl bg-[#FAFAFA] dark:bg-white/[0.04] p-4">
+                    <div className="text-[11px] uppercase tracking-[0.06em] font-medium text-muted-foreground/80">
+                        {kpi.label}
                     </div>
-                    <div>
-                        <div className="text-[11px] text-muted-foreground font-medium">{kpi.label}</div>
-                        <div className="text-[18px] font-bold text-foreground leading-tight">{kpi.value}</div>
+                    <div className={`text-[22px] font-semibold tracking-tight leading-tight mt-1.5 tabular-nums ${
+                        kpi.tone === "danger" ? "text-rose-600 dark:text-rose-400" : "text-foreground"
+                    }`}>
+                        {kpi.value}
                     </div>
                 </div>
             ))}
@@ -336,9 +343,9 @@ export const WorkspacesPage = () => {
 
                 {/* Titre + sous-titre */}
                 <div className="mb-6">
-                    <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
+                    <h2 className="text-[18px] font-semibold tracking-tight text-foreground">
                         Vos espaces
-                    </h1>
+                    </h2>
                     <p className="text-sm text-muted-foreground mt-1">
                         {workspaces.length} espace{workspaces.length > 1 ? "s" : ""} · Cliquez pour ouvrir
                     </p>
@@ -376,9 +383,11 @@ export const WorkspacesPage = () => {
                     </button>
                 </div>
 
-                {/* Stats détaillées */}
-                <div className="mt-10 pt-8 border-t border-border/60">
-                    <h2 className="text-[15px] font-semibold text-foreground mb-4">Statistiques détaillées</h2>
+                {/* Stats détaillées — section clairement séparée */}
+                <div className="mt-16 pt-0">
+                    <h2 className="text-[18px] font-semibold tracking-tight text-foreground mb-6">
+                        Statistiques détaillées
+                    </h2>
                     <StatsDashboard />
                 </div>
             </div>

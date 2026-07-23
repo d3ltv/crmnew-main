@@ -6,7 +6,15 @@ import { useCrm } from "@/context/CrmContext";
 import { formatDateTimeLong } from "@/lib/dateUtils";
 import { parseNote, diffWithLead, formatDetected, detectAppointment } from "@/lib/noteParser";
 
-export const CallNoteModal = ({ open, workspace, lead, onClose, onAutoMoved }) => {
+export const CallNoteModal = ({
+    open,
+    workspace,
+    lead,
+    onClose,
+    onAutoMoved,
+    /** Si fourni (mode rapide) : déplacer vers cette colonne uniquement à l'enregistrement, pas à l'ouverture */
+    pendingMoveToColumnId = null,
+}) => {
     const { dispatch } = useCrm();
     const [text, setText] = useState("");
     const [outcome, setOutcome] = useState(null); // 'reached' | 'noanswer' | null
@@ -53,7 +61,7 @@ export const CallNoteModal = ({ open, workspace, lead, onClose, onAutoMoved }) =
         document.addEventListener("keydown", onKey);
         return () => document.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open, text, outcome]);
+    }, [open, text, outcome, pendingMoveToColumnId]);
 
     // ── Analyse du texte en temps réel ───────────────────────────────────────
     const detected = useMemo(() => parseNote(text), [text]);
@@ -79,6 +87,21 @@ export const CallNoteModal = ({ open, workspace, lead, onClose, onAutoMoved }) =
         const finalOutcome = outcome ?? "noanswer";
         const content = text.trim();
 
+        // ── 0. Mode rapide : déplacer vers Contacté seulement à l'enregistrement
+        //    (Échap / Passer ne déplacent pas — le lead reste dans sa colonne)
+        let effectiveColumnId = lead.columnId;
+        if (pendingMoveToColumnId && lead.columnId !== pendingMoveToColumnId) {
+            onAutoMoved?.(lead.id);
+            dispatch({
+                type: "MOVE_LEAD_ORDERED",
+                workspaceId: workspace.id,
+                leadId: lead.id,
+                toColumnId: pendingMoveToColumnId,
+                toIndex: null,
+            });
+            effectiveColumnId = pendingMoveToColumnId;
+        }
+
         // ── 1. Sauvegarder la note ──────────────────────────────────────────
         const noteText = finalOutcome === "reached"
             ? (content ? `📞 Joint · ${content}` : "📞 Joint")
@@ -102,8 +125,8 @@ export const CallNoteModal = ({ open, workspace, lead, onClose, onAutoMoved }) =
 
         // ── 1b. Déplacement vers la colonne de rappel ─────────────────────
         const shouldMove = appointment
-            ? (autoFollowupColumn && lead.columnId !== autoFollowupColumn.id)
-            : (finalOutcome === "noanswer" && outcomeManual && autoFollowupColumn && lead.columnId !== autoFollowupColumn.id);
+            ? (autoFollowupColumn && effectiveColumnId !== autoFollowupColumn.id)
+            : (finalOutcome === "noanswer" && outcomeManual && autoFollowupColumn && effectiveColumnId !== autoFollowupColumn.id);
 
         if (shouldMove) {
             onAutoMoved?.(lead.id);
@@ -114,6 +137,7 @@ export const CallNoteModal = ({ open, workspace, lead, onClose, onAutoMoved }) =
                 toColumnId: autoFollowupColumn.id,
                 toIndex: null,
             });
+            effectiveColumnId = autoFollowupColumn.id;
         }
 
         // ── 2. Injecter les infos détectées dans le lead ─────────────────
@@ -143,7 +167,7 @@ export const CallNoteModal = ({ open, workspace, lead, onClose, onAutoMoved }) =
                 stage: nextStage,
                 dueAt,
                 startedAt: lead.autoFollowup?.startedAt || now,
-                columnId: lead.columnId,
+                columnId: effectiveColumnId,
                 overdue: false,
             };
             patch.nextAction = {

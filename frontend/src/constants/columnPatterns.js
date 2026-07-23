@@ -117,3 +117,94 @@ export function isLostCol(col) {
     if (!col) return false;
     return isLostColumn(col.name);
 }
+
+// ── Scoring pour le mode traitement rapide ───────────────────────────────────
+// Évite les faux positifs (ex. « Relance » auto-followup prise pour « Contacté »,
+// ou fallback silencieux sur la 1ʳᵉ colonne du board).
+
+/**
+ * Score d'une colonne comme cible « Nouveau ». -1 = pas candidate.
+ * @param {string} name
+ */
+export function scoreNouveauColumn(name = "") {
+    const n = name.toLowerCase().trim();
+    if (!n) return -1;
+    // Exact / quasi-exact
+    if (["nouveau", "nouveaux", "new"].includes(n)) return 100;
+    if (["prospect", "prospects"].includes(n)) return 90;
+    if (["candidature", "candidatures"].includes(n)) return 90;
+    if (["entrant", "entrants"].includes(n)) return 85;
+    if (!isNouveauColumn(n)) return -1;
+    // Éviter les noms qui sont clairement une colonne contacté
+    if (/contact[ée]s?/.test(n) || n.includes("contacted")) return -1;
+    return 50;
+}
+
+/**
+ * Score d'une colonne comme cible « Contacté ». -1 = pas candidate.
+ * Dépriorise fortement les colonnes rappel auto (« Relance »).
+ * @param {string} name
+ * @param {{ isAutoFollowup?: boolean }} [opts]
+ */
+export function scoreContactedColumn(name = "", { isAutoFollowup = false } = {}) {
+    const n = name.toLowerCase().trim();
+    if (!n) return -1;
+
+    // Matches forts
+    if (["contacté", "contacte", "contactés", "contactes", "contacted"].includes(n)) return 100;
+    if (n === "contact") return 95;
+    if (/contact[ée]s?/.test(n)) return 90;
+    if (n.includes("contact") && !isNouveauColumn(n)) return 70;
+
+    // « Appel » — moyen
+    if (["appel", "appels"].includes(n) || /appel[ée]/.test(n)) return 60;
+    if (n.includes("call")) return 55;
+
+    // « Relance » — faible (souvent la colonne rappel auto)
+    if (n.includes("relance")) return isAutoFollowup ? 8 : 20;
+
+    if (!isContactedColumn(n)) return -1;
+    if (isAutoFollowup) return 12;
+    return 35;
+}
+
+/**
+ * Meilleure colonne « Nouveau » pour le mode rapide, ou null.
+ * Pas de fallback sur la 1ʳᵉ colonne du board.
+ * @param {string[]} columnOrder
+ * @param {Record<string, { name?: string }>} columns
+ */
+export function findBestNouveauColumnId(columnOrder, columns) {
+    let bestId = null;
+    let bestScore = -1;
+    for (const cid of columnOrder) {
+        const score = scoreNouveauColumn(columns[cid]?.name);
+        if (score > bestScore) {
+            bestScore = score;
+            bestId = cid;
+        }
+    }
+    return bestScore >= 0 ? bestId : null;
+}
+
+/**
+ * Meilleure colonne « Contacté » pour le mode rapide, ou null.
+ * Exclut la colonne Nouveau si elle était aussi matchée par erreur.
+ * @param {string[]} columnOrder
+ * @param {Record<string, { name?: string, autoFollowup?: boolean }>} columns
+ * @param {string | null} [excludeId]
+ */
+export function findBestContactedColumnId(columnOrder, columns, excludeId = null) {
+    let bestId = null;
+    let bestScore = -1;
+    for (const cid of columnOrder) {
+        if (cid === excludeId) continue;
+        const col = columns[cid];
+        const score = scoreContactedColumn(col?.name, { isAutoFollowup: !!col?.autoFollowup });
+        if (score > bestScore) {
+            bestScore = score;
+            bestId = cid;
+        }
+    }
+    return bestScore >= 0 ? bestId : null;
+}

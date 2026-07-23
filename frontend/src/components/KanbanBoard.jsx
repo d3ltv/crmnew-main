@@ -2,20 +2,16 @@ import React, { useState, useMemo, useCallback, useEffect, useRef } from "react"
 import { useCrm } from "@/context/CrmContext";
 import { KanbanColumn } from "./KanbanColumn";
 import { CallNoteModal } from "./CallNoteModal";
-import { Plus, Zap, X } from "lucide-react";
-import {
-    Popover,
-    PopoverContent,
-    PopoverTrigger,
-} from "@/components/ui/popover";
+import { Plus } from "lucide-react";
+import { toast } from "sonner";
 import {
     isContactedColumn,
-    isNouveauColumn,
+    findBestNouveauColumnId,
+    findBestContactedColumnId,
 } from "@/constants/columnPatterns";
 
-// Wrappers acceptant un objet colonne { name } — interface locale du composant
+// Wrapper local — colonnes "contacté" pour le tri stale
 const isContactedCol = (name = "") => isContactedColumn(name);
-const isNouveauCol   = (name = "") => isNouveauColumn(name);
 
 export const KanbanBoard = ({
     workspace,
@@ -29,7 +25,7 @@ export const KanbanBoard = ({
     onQuickModeChange,
     onAutoMoved,
 }) => {
-    const { dispatch } = useCrm();
+    const { dispatch, restoreEpoch } = useCrm();
 
     const [dragState, setDragState] = useState(null);
     const [draggingColumnId, setDraggingColumnId] = useState(null);
@@ -39,13 +35,19 @@ export const KanbanBoard = ({
     // --- Mode traitement rapide — état géré ici, exposé au parent ---
     const [quickMode, setQuickMode] = useState(false);
     const [quickIndex, setQuickIndex] = useState(0);
-    const [quickNoteLead, setQuickNoteLead] = useState(null);
+    // Stocker l'ID uniquement — le lead est relu depuis workspace.leads (évite objet stale)
+    const [quickNoteLeadId, setQuickNoteLeadId] = useState(null);
 
-    // Sync avec prop parent (stop depuis TopBar)
+    // Undo/redo : fermer la note sans la rouvrir (données non pertinentes après restore)
+    useEffect(() => {
+        setQuickNoteLeadId(null);
+    }, [restoreEpoch]);
+
+    // Sync avec prop parent (stop depuis TopBar / changement de vue)
     useEffect(() => {
         if (quickModeProp === false && quickMode) {
             setQuickMode(false);
-            setQuickNoteLead(null);
+            setQuickNoteLeadId(null);
         }
     }, [quickModeProp]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -164,20 +166,33 @@ export const KanbanBoard = ({
         return m;
     }, [filtered, workspace.columnOrder, workspace.leadOrder, workspace.columns]);
 
-    // --- Colonnes détectées pour le mode rapide ---
-    const nouveauColId = useMemo(() =>
-        workspace.columnOrder.find((cid) => isNouveauCol(workspace.columns[cid]?.name))
-        || workspace.columnOrder[0],
-    [workspace.columnOrder, workspace.columns]);
+    // --- Colonnes détectées pour le mode rapide (scoring, pas de fallback silencieux) ---
+    const nouveauColId = useMemo(
+        () => findBestNouveauColumnId(workspace.columnOrder, workspace.columns),
+        [workspace.columnOrder, workspace.columns]
+    );
 
-    const contactedColId = useMemo(() =>
-        workspace.columnOrder.find((cid) => isContactedCol(workspace.columns[cid]?.name)),
-    [workspace.columnOrder, workspace.columns]);
+    const contactedColId = useMemo(
+        () => findBestContactedColumnId(workspace.columnOrder, workspace.columns, nouveauColId),
+        [workspace.columnOrder, workspace.columns, nouveauColId]
+    );
+
+    // Lead frais depuis le state CRM (columnId à jour après MOVE)
+    const quickNoteLead = quickNoteLeadId ? (workspace.leads[quickNoteLeadId] ?? null) : null;
+
+    // Si le lead a disparu (suppression) pendant la note — nettoyer l'ID
+    useEffect(() => {
+        if (quickNoteLeadId && !workspace.leads[quickNoteLeadId]) {
+            setQuickNoteLeadId(null);
+        }
+    }, [quickNoteLeadId, workspace.leads]);
 
     // Leads de la colonne "Nouveau" dans l'ordre affiché (tri local de KanbanColumn inclus)
     // Mis à jour exclusivement par handleNouveauSortedLeads depuis KanbanColumn.
     // On initialise avec byColumn pour avoir quelque chose dès le premier render.
-    const [nouveauLeads, setNouveauLeads] = useState(() => byColumn[nouveauColId] || []);
+    const [nouveauLeads, setNouveauLeads] = useState(() =>
+        (nouveauColId && byColumn[nouveauColId]) || []
+    );
 
     // Clamp quickIndex quand la liste change (évite la sélection "aléatoire")
     useEffect(() => {
@@ -185,14 +200,33 @@ export const KanbanBoard = ({
         setQuickIndex((i) => Math.min(i, Math.max(0, nouveauLeads.length - 1)));
     }, [quickMode, nouveauLeads.length]);
 
+    // Compteur = leads restants dans Nouveau (déjà à jour après un MOVE)
+    useEffect(() => {
+        if (!quickMode) return;
+        // Pendant la note, ne pas couper le mode même si la file est vide (lead en cours de note)
+        if (quickNoteLeadId) {
+            onQuickModeChange?.(true, nouveauLeads.length);
+            return;
+        }
+        if (nouveauLeads.length === 0) {
+            setQuickMode(false);
+            onCloseLead?.();
+            onQuickModeChange?.(false, 0);
+            return;
+        }
+        onQuickModeChange?.(true, nouveauLeads.length);
+    }, [quickMode, nouveauLeads.length, quickNoteLeadId]); // eslint-disable-line react-hooks/exhaustive-deps
+
     // Lead actuellement focusé en mode rapide
     const focusedLead = quickMode ? (nouveauLeads[quickIndex] ?? null) : null;
 
     // Refs pour accéder aux valeurs courantes dans le handler clavier (closure stable)
     const focusedLeadRef = useRef(null);
     const openLeadIdRef = useRef(null);
+    const quickNoteLeadIdRef = useRef(null);
     useEffect(() => { focusedLeadRef.current = focusedLead; }, [focusedLead]);
     useEffect(() => { openLeadIdRef.current = openLeadId; }, [openLeadId]);
+    useEffect(() => { quickNoteLeadIdRef.current = quickNoteLeadId; }, [quickNoteLeadId]);
 
     // Fermer le panel spacebar si le lead focusé change
     useEffect(() => {
@@ -201,36 +235,44 @@ export const KanbanBoard = ({
 
     // Démarrer le mode rapide
     const startQuickMode = useCallback(() => {
+        if (!nouveauColId) {
+            toast.error("Aucune colonne « Nouveau » trouvée", {
+                description: "Renommez une colonne (Nouveau, Prospect, Candidature…).",
+            });
+            return;
+        }
+        if (!contactedColId) {
+            toast.error("Aucune colonne « Contacté » trouvée", {
+                description: "Le mode rapide a besoin d'une colonne Contacté / Contact pour y déplacer les leads.",
+            });
+            return;
+        }
         setQuickIndex(0);
         setQuickMode(true);
         onQuickModeChange?.(true, nouveauLeads.length);
-    }, [nouveauLeads.length, onQuickModeChange]);
+    }, [nouveauColId, contactedColId, nouveauLeads.length, onQuickModeChange]);
 
     const stopQuickMode = useCallback(() => {
         setQuickMode(false);
-        setQuickNoteLead(null);
+        setQuickNoteLeadId(null);
         onCloseLead?.();
         onQuickModeChange?.(false, 0);
     }, [onCloseLead, onQuickModeChange]);
 
-    // Déplacer le lead focusé vers "Contacté" + ouvrir la note
+    // Ouvrir la note sur le lead focusé SANS le déplacer.
+    // Le move vers Contacté se fait à l'enregistrement (Cmd+Entrée / Enregistrer).
+    // Échap / Passer laisse le lead dans Nouveau.
     const processCurrentLead = useCallback(() => {
         const lead = nouveauLeads[quickIndex];
-        if (!lead || !contactedColId) return;
-        // Signaler à WorkspacePage de ne pas ouvrir un 2e CallNoteModal
-        // pour ce lead (le KanbanBoard l'ouvre déjà via setQuickNoteLead)
-        onAutoMoved?.(lead.id);
-        dispatch({
-            type: "MOVE_LEAD_ORDERED",
-            workspaceId: workspace.id,
-            leadId: lead.id,
-            toColumnId: contactedColId,
-            toIndex: null,
-        });
-        setQuickNoteLead(lead);
-        // Ne pas avancer l'index ici — la liste se raccourcit automatiquement
-        // Le quickIndex reste 0 donc le prochain lead "monte"
-    }, [nouveauLeads, quickIndex, contactedColId, dispatch, workspace.id, onAutoMoved]);
+        if (!lead) return;
+        if (!contactedColId) {
+            toast.error("Aucune colonne « Contacté » trouvée", {
+                description: "Renommez une colonne pour inclure « Contacté » ou « Contact ».",
+            });
+            return;
+        }
+        setQuickNoteLeadId(lead.id);
+    }, [nouveauLeads, quickIndex, contactedColId]);
 
     // Clavier global en mode rapide
     useEffect(() => {
@@ -238,36 +280,48 @@ export const KanbanBoard = ({
         const handler = (e) => {
             // Ignorer si on tape dans un input/textarea
             if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+
+            // Modal note ouvert : bloquer nav / → ; laisser Esc au CallNoteModal
+            if (quickNoteLeadIdRef.current) {
+                if (e.key === "Escape") {
+                    // Ne pas stopPropagation — CallNoteModal ferme uniquement le modal
+                    return;
+                }
+                if (
+                    e.key === "ArrowRight" || e.key === "ArrowDown" ||
+                    e.key === "ArrowUp" || e.key === "ArrowLeft" || e.key === " "
+                ) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
+                return;
+            }
+
             if (
                 e.key === "ArrowRight" || e.key === "ArrowDown" ||
                 e.key === "ArrowUp"    || e.key === "ArrowLeft"
             ) {
                 // Capturer en phase capture pour court-circuiter Radix DropdownMenu
-                // qui intercepte ArrowDown/ArrowUp pour ouvrir ses menus
                 e.preventDefault();
                 e.stopPropagation();
                 if (e.key === "ArrowRight") {
                     processCurrentLead();
                 } else if (e.key === "ArrowDown") {
-                    setQuickIndex((i) => Math.min(i + 1, nouveauLeads.length - 1));
+                    setQuickIndex((i) => Math.min(i + 1, Math.max(0, nouveauLeads.length - 1)));
                 } else if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
                     setQuickIndex((i) => Math.max(i - 1, 0));
                 }
             } else if (e.key === " ") {
-                // Spacebar : ouvrir/fermer le panel de détail du lead focusé
                 e.preventDefault();
                 e.stopPropagation();
                 const focused = focusedLeadRef.current;
                 const currentOpen = openLeadIdRef.current;
                 if (focused && currentOpen === focused.id) {
-                    // Déjà ouvert sur ce lead → fermer
                     onCloseLead?.();
                 } else if (focused) {
-                    // Ouvrir le panel sur le lead focusé
                     onOpenLead?.(focused);
                 }
             } else if (e.key === "Escape") {
-                // Si le panel est ouvert, fermer d'abord le panel
                 if (openLeadIdRef.current !== null) {
                     e.preventDefault();
                     e.stopPropagation();
@@ -277,29 +331,32 @@ export const KanbanBoard = ({
                 }
             }
         };
-        // useCapture: true — intercepte avant Radix UI
         document.addEventListener("keydown", handler, true);
         return () => document.removeEventListener("keydown", handler, true);
-    }, [quickMode, processCurrentLead, nouveauLeads.length, stopQuickMode]);
+    }, [quickMode, processCurrentLead, nouveauLeads.length, stopQuickMode, onCloseLead, onOpenLead]);
 
     // Scroll automatique vers la carte focusée
     useEffect(() => {
-        if (!quickMode || !focusedLead) return;
+        if (!quickMode || !focusedLead || quickNoteLeadId) return;
         const el = document.querySelector(`[data-testid="lead-card-${focusedLead.id}"]`);
         if (el) {
             el.scrollIntoView({ block: "nearest", behavior: "smooth" });
         }
-    }, [quickMode, focusedLead?.id]);
+    }, [quickMode, focusedLead?.id, quickNoteLeadId]);
 
     // Callback reçu depuis KanbanColumn quand la liste triée change
-    // — garde nouveauLeads synchronisé avec l'ordre affiché à l'écran
     const handleNouveauSortedLeads = useCallback((sorted) => {
         setNouveauLeads(sorted);
     }, []);
+
+    // Fermeture du modal note — le lead est déjà hors de Nouveau ; length = restants réels
     const handleQuickNoteClose = useCallback(() => {
-        setQuickNoteLead(null);
-        if (nouveauLeads.length <= 1) stopQuickMode();
-        else onQuickModeChange?.(true, Math.max(0, nouveauLeads.length - 1));
+        setQuickNoteLeadId(null);
+        if (nouveauLeads.length === 0) {
+            stopQuickMode();
+        } else {
+            onQuickModeChange?.(true, nouveauLeads.length);
+        }
     }, [nouveauLeads.length, stopQuickMode, onQuickModeChange]);
 
     // --- Lead drag handlers ---
@@ -441,8 +498,8 @@ export const KanbanBoard = ({
                         onAddLead={() => onAddLead(cid)}
                         quickMode={quickMode && cid === nouveauColId}
                         quickFocusedLeadId={focusedLead?.id}
-                        onStartQuickMode={cid === nouveauColId ? startQuickMode : undefined}
-                        onSortedLeadsChange={cid === nouveauColId ? handleNouveauSortedLeads : undefined}
+                        onStartQuickMode={nouveauColId && cid === nouveauColId ? startQuickMode : undefined}
+                        onSortedLeadsChange={nouveauColId && cid === nouveauColId ? handleNouveauSortedLeads : undefined}
                         onRename={(newName) =>
                             dispatch({
                                 type: "RENAME_COLUMN",
@@ -526,11 +583,12 @@ export const KanbanBoard = ({
                 </div>
             </div>
 
-            {/* Modal note d'appel rapide */}
+            {/* Modal note d'appel rapide — move vers Contacté uniquement à l'enregistrement */}
             <CallNoteModal
                 open={!!quickNoteLead}
                 lead={quickNoteLead}
                 workspace={workspace}
+                pendingMoveToColumnId={contactedColId}
                 onAutoMoved={onAutoMoved}
                 onClose={handleQuickNoteClose}
             />
