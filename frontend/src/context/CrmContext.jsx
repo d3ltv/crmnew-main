@@ -17,6 +17,13 @@ import {
     isWonColumn,
     isMeetingColumn,
 } from "@/constants/columnPatterns";
+import {
+    ensureSidebar,
+    makeFolderId,
+    moveSidebarItem,
+    navIdForWorkspace,
+    workspaceOrderFromSidebar,
+} from "@/lib/sidebarNav";
 
 // ---------- Utilities ----------
 const uid = () =>
@@ -214,6 +221,8 @@ function loadState() {
                 if (ws.cardScale === undefined) ws.cardScale = 1;
             });
         }
+        // Migrer / synchroniser la nav latérale (dossiers, icônes, ordre)
+        parsed.sidebar = ensureSidebar(parsed);
         return parsed;
     } catch {
         // Données principales corrompues — essayer le backup avant d'abandonner
@@ -303,6 +312,7 @@ const NON_UNDOABLE = new Set([
     "RESTORE_LAST_DELETED",
     "CLEAR_LAST_DELETED",
     "UNDO",
+    "TOGGLE_SIDEBAR_FOLDER",
 ]);
 
 // ---------- Undo/Redo stack — snapshots complets légers ----------
@@ -321,7 +331,14 @@ function stripTransient(state) {
 
 function statesAreEqual(a, b) {
     if (a === b) return true;
-    if (a.order !== b.order || a.currentId !== b.currentId || a.theme !== b.theme) return false;
+    if (
+        a.order !== b.order ||
+        a.currentId !== b.currentId ||
+        a.theme !== b.theme ||
+        a.sidebar !== b.sidebar
+    ) {
+        return false;
+    }
     if (a.workspaces === b.workspaces) return true;
     const aIds = Object.keys(a.workspaces);
     const bIds = Object.keys(b.workspaces);
@@ -336,6 +353,7 @@ function statesAreEqual(a, b) {
 const initialState = {
     workspaces: {},
     order: [],
+    sidebar: { items: {}, rootOrder: [] },
     currentId: null,
     theme: "light",
     leadPanelMode: "side", // "side" | "modal"
@@ -354,11 +372,26 @@ function reducer(state, action) {
 
         case "CREATE_WORKSPACE": {
             const ws = makeWorkspace(action.name, action.sector, action.template || "crm");
+            const sidebar = ensureSidebar(state);
+            const navId = navIdForWorkspace(ws.id);
             return {
                 ...state,
                 workspaces: { ...state.workspaces, [ws.id]: ws },
                 order: [...state.order, ws.id],
                 currentId: ws.id,
+                sidebar: {
+                    items: {
+                        ...sidebar.items,
+                        [navId]: {
+                            id: navId,
+                            type: "workspace",
+                            workspaceId: ws.id,
+                            parentId: null,
+                            icon: null,
+                        },
+                    },
+                    rootOrder: [...sidebar.rootOrder, navId],
+                },
             };
         }
         case "SELECT_WORKSPACE":
@@ -367,10 +400,10 @@ function reducer(state, action) {
         case "DELETE_WORKSPACE": {
             const { [action.id]: _removed, ...rest } = state.workspaces;
             const newOrder = state.order.filter((x) => x !== action.id);
+            const next = { ...state, workspaces: rest, order: newOrder };
             return {
-                ...state,
-                workspaces: rest,
-                order: newOrder,
+                ...next,
+                sidebar: ensureSidebar(next),
                 currentId:
                     state.currentId === action.id
                         ? newOrder[0] || null
@@ -386,6 +419,117 @@ function reducer(state, action) {
                     ...state.workspaces,
                     [action.id]: { ...ws, name: action.name },
                 },
+            };
+        }
+
+        case "CREATE_SIDEBAR_FOLDER": {
+            const sidebar = ensureSidebar(state);
+            const id = action.id || makeFolderId();
+            const name = (action.name || "Nouveau dossier").trim() || "Nouveau dossier";
+            return {
+                ...state,
+                sidebar: {
+                    items: {
+                        ...sidebar.items,
+                        [id]: {
+                            id,
+                            type: "folder",
+                            name,
+                            parentId: null,
+                            collapsed: false,
+                            icon: null,
+                            childOrder: [],
+                        },
+                    },
+                    rootOrder: [id, ...sidebar.rootOrder],
+                },
+            };
+        }
+        case "RENAME_SIDEBAR_FOLDER": {
+            const sidebar = ensureSidebar(state);
+            const folder = sidebar.items[action.id];
+            if (!folder || folder.type !== "folder") return state;
+            const name = (action.name || "").trim();
+            if (!name) return state;
+            return {
+                ...state,
+                sidebar: {
+                    ...sidebar,
+                    items: {
+                        ...sidebar.items,
+                        [action.id]: { ...folder, name },
+                    },
+                },
+            };
+        }
+        case "DELETE_SIDEBAR_FOLDER": {
+            const sidebar = ensureSidebar(state);
+            const folder = sidebar.items[action.id];
+            if (!folder || folder.type !== "folder") return state;
+            const { [action.id]: _removed, ...restItems } = sidebar.items;
+            // Dégrouper : remonter les enfants à la place du dossier
+            const children = folder.childOrder || [];
+            children.forEach((cid) => {
+                if (restItems[cid]) {
+                    restItems[cid] = { ...restItems[cid], parentId: null };
+                }
+            });
+            const rootOrder = [];
+            sidebar.rootOrder.forEach((id) => {
+                if (id === action.id) rootOrder.push(...children);
+                else rootOrder.push(id);
+            });
+            return {
+                ...state,
+                sidebar: { items: restItems, rootOrder },
+            };
+        }
+        case "TOGGLE_SIDEBAR_FOLDER": {
+            const sidebar = ensureSidebar(state);
+            const folder = sidebar.items[action.id];
+            if (!folder || folder.type !== "folder") return state;
+            return {
+                ...state,
+                sidebar: {
+                    ...sidebar,
+                    items: {
+                        ...sidebar.items,
+                        [action.id]: {
+                            ...folder,
+                            collapsed: action.collapsed ?? !folder.collapsed,
+                        },
+                    },
+                },
+            };
+        }
+        case "SET_SIDEBAR_ITEM_ICON": {
+            const sidebar = ensureSidebar(state);
+            const item = sidebar.items[action.id];
+            if (!item) return state;
+            return {
+                ...state,
+                sidebar: {
+                    ...sidebar,
+                    items: {
+                        ...sidebar.items,
+                        [action.id]: { ...item, icon: action.icon ?? null },
+                    },
+                },
+            };
+        }
+        case "REORDER_SIDEBAR_ITEM": {
+            const sidebar = ensureSidebar(state);
+            const next = moveSidebarItem(
+                sidebar,
+                action.itemId,
+                action.toParentId ?? null,
+                action.toIndex ?? 0,
+            );
+            if (next === sidebar) return state;
+            return {
+                ...state,
+                sidebar: next,
+                order: workspaceOrderFromSidebar(next),
             };
         }
 
@@ -1411,9 +1555,11 @@ function reducer(state, action) {
             return updateWs(state, ws.id, { leads: newLeads });
         }
 
-        case "RESTORE_SNAPSHOT":
+        case "RESTORE_SNAPSHOT": {
             // Full state restore for undo — keep lastDeleted cleared
-            return { ...action.snapshot, lastDeleted: null };
+            const restored = { ...action.snapshot, lastDeleted: null };
+            return { ...restored, sidebar: ensureSidebar(restored) };
+        }
 
         default:
             return state;
@@ -1436,7 +1582,9 @@ const CrmContext = createContext(null);
 export function CrmProvider({ children }) {
     const [state, rawDispatch] = useReducer(reducer, initialState, (base) => {
         const saved = loadState();
-        return saved ? { ...base, ...saved, lastDeleted: null } : base;
+        if (!saved) return base;
+        const merged = { ...base, ...saved, lastDeleted: null };
+        return { ...merged, sidebar: ensureSidebar(merged) };
     });
 
     // storageError : true si le dernier saveState a échoué (quota dépassé).

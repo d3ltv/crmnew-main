@@ -152,6 +152,11 @@ export const WorkspacePage = () => {
                         setSidebarCollapsed(next);
                         try { localStorage.setItem("sidebar_collapsed", String(next)); } catch {}
                     }}
+                onExpandSidebar={() => {
+                    if (!sidebarCollapsed) return;
+                    setSidebarCollapsed(false);
+                    try { localStorage.setItem("sidebar_collapsed", "false"); } catch {}
+                }}
             />
             <main className="flex-1 flex flex-col min-w-0 min-h-screen overflow-x-hidden">
                 {/* Alerte persistante si le quota localStorage est dépassé */}

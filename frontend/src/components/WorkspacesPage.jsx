@@ -10,6 +10,8 @@ import { CreateWorkspaceDialog } from "./CreateWorkspaceDialog";
 import { ThemeToggle } from "./ThemeToggle";
 import { StatsDashboard } from "./StatsDashboard";
 import { StorageErrorBanner } from "./StorageErrorBanner";
+import { SidebarIconDisplay } from "./SidebarIconPicker";
+import { navIdForWorkspace } from "@/lib/sidebarNav";
 import { getColumnColor } from "@/lib/columnColors";
 import {
     AlertDialog,
@@ -85,7 +87,7 @@ const GlobalKPIs = ({ workspaces }) => {
 };
 
 // ── Workspace card ───────────────────────────────────────────────────────────
-const WorkspaceCard = ({ ws, onOpen, onDelete, isRecent }) => {
+const WorkspaceCard = ({ ws, onOpen, onDelete, isRecent, icon }) => {
     const stats = useMemo(() => wsStats(ws), [ws]);
     const isJobs = ws.template === "jobs";
 
@@ -102,6 +104,8 @@ const WorkspaceCard = ({ ws, onOpen, onDelete, isRecent }) => {
         const color = getColumnColor(col);
         return { name: col.name, count, color };
     });
+
+    const fallbackAvatar = isJobs ? "💼" : (ws.name[0] || "?").toUpperCase();
 
     return (
         <div
@@ -127,7 +131,16 @@ const WorkspaceCard = ({ ws, onOpen, onDelete, isRecent }) => {
                 {/* Header */}
                 <div className="flex items-start gap-3 mb-4">
                     <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 text-white text-[18px] font-bold ${dominantColor.dot}`}>
-                        {isJobs ? "💼" : (ws.name[0] || "?").toUpperCase()}
+                        {icon ? (
+                            <SidebarIconDisplay
+                                icon={icon}
+                                size={20}
+                                className="text-white"
+                                fallback={<span>{fallbackAvatar}</span>}
+                            />
+                        ) : (
+                            fallbackAvatar
+                        )}
                     </div>
                     <div className="min-w-0 flex-1">
                         <h3 className="font-semibold text-[15px] text-foreground truncate">
@@ -344,6 +357,7 @@ export const WorkspacesPage = () => {
                             key={ws.id}
                             ws={ws}
                             isRecent={ws.id === recentId}
+                            icon={state.sidebar?.items?.[navIdForWorkspace(ws.id)]?.icon}
                             onOpen={() => dispatch({ type: "SELECT_WORKSPACE", id: ws.id })}
                             onDelete={() => setConfirmDel(ws)}
                         />
