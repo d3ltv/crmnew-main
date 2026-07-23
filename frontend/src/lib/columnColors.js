@@ -12,11 +12,11 @@ export const COLUMN_COLORS = {
         ring: "ring-neutral-400/30",
         colBg: "bg-neutral-200/70 dark:bg-[hsl(222,14%,12%)]",
         shadow: "rgba(163,163,163,0.45)",
-        // Fond teinté colonne (très léger) + accent bar en haut + liseré card
         colTint: "rgba(163,163,163,0.05)",
         colTintDark: "rgba(163,163,163,0.03)",
         accentBar: "rgba(163,163,163,0.35)",
         cardBorder: "rgba(163,163,163,0.14)",
+        lisere: "rgba(115,115,115,0.28)",
     },
     blue: {
         label: "Bleu",
@@ -31,6 +31,7 @@ export const COLUMN_COLORS = {
         colTintDark: "rgba(59,130,246,0.03)",
         accentBar: "rgba(59,130,246,0.45)",
         cardBorder: "rgba(59,130,246,0.14)",
+        lisere: "rgba(59,130,246,0.32)",
     },
     amber: {
         label: "Ambre",
@@ -45,6 +46,7 @@ export const COLUMN_COLORS = {
         colTintDark: "rgba(245,158,11,0.03)",
         accentBar: "rgba(245,158,11,0.5)",
         cardBorder: "rgba(245,158,11,0.15)",
+        lisere: "rgba(217,119,6,0.32)",
     },
     violet: {
         label: "Violet",
@@ -59,6 +61,7 @@ export const COLUMN_COLORS = {
         colTintDark: "rgba(139,92,246,0.03)",
         accentBar: "rgba(139,92,246,0.45)",
         cardBorder: "rgba(139,92,246,0.14)",
+        lisere: "rgba(124,58,237,0.3)",
     },
     sky: {
         label: "Ciel",
@@ -73,6 +76,7 @@ export const COLUMN_COLORS = {
         colTintDark: "rgba(14,165,233,0.03)",
         accentBar: "rgba(14,165,233,0.45)",
         cardBorder: "rgba(14,165,233,0.14)",
+        lisere: "rgba(2,132,199,0.32)",
     },
     teal: {
         label: "Turquoise",
@@ -87,6 +91,7 @@ export const COLUMN_COLORS = {
         colTintDark: "rgba(20,184,166,0.03)",
         accentBar: "rgba(20,184,166,0.45)",
         cardBorder: "rgba(20,184,166,0.14)",
+        lisere: "rgba(13,148,136,0.32)",
     },
     green: {
         label: "Vert",
@@ -101,6 +106,7 @@ export const COLUMN_COLORS = {
         colTintDark: "rgba(16,185,129,0.03)",
         accentBar: "rgba(16,185,129,0.45)",
         cardBorder: "rgba(16,185,129,0.14)",
+        lisere: "rgba(5,150,105,0.32)",
     },
     red: {
         label: "Rouge",
@@ -115,6 +121,7 @@ export const COLUMN_COLORS = {
         colTintDark: "rgba(244,63,94,0.03)",
         accentBar: "rgba(244,63,94,0.45)",
         cardBorder: "rgba(244,63,94,0.14)",
+        lisere: "rgba(225,29,72,0.32)",
     },
     pink: {
         label: "Rose",
@@ -129,6 +136,7 @@ export const COLUMN_COLORS = {
         colTintDark: "rgba(236,72,153,0.03)",
         accentBar: "rgba(236,72,153,0.45)",
         cardBorder: "rgba(236,72,153,0.14)",
+        lisere: "rgba(219,39,119,0.3)",
     },
 };
 

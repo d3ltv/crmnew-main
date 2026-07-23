@@ -1,8 +1,13 @@
 import React, { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import { useCrm } from "@/context/CrmContext";
 import { DEFAULT_CARD_FIELDS } from "@/context/CrmContext";
-import { GripVertical, Eye, EyeOff, PanelsLeftRight, Trash2, GalleryHorizontal } from "lucide-react";
+import { GripVertical, Eye, EyeOff, PanelsLeftRight, Trash2, GalleryHorizontal, AlertTriangle } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
+import {
+    RULE_DEFS,
+    normalizeInconsistencyConfig,
+    defaultInconsistencyConfig,
+} from "@/lib/inconsistencyRules";
 
 const MIN_WIDTH = 260;
 const MAX_WIDTH = 520;
@@ -40,6 +45,21 @@ export const CardFieldsPanel = ({ workspace }) => {
 
     const currentWidth = workspace.columnWidth ?? DEFAULT_WIDTH;
     const currentScale = workspace.cardScale ?? DEFAULT_SCALE;
+    const inconsistencyConfig = normalizeInconsistencyConfig(workspace.inconsistencyConfig);
+
+    const patchInconsistencyConfig = (partial) => {
+        const next = {
+            ...inconsistencyConfig,
+            ...partial,
+            enabled: { ...inconsistencyConfig.enabled, ...(partial.enabled || {}) },
+            thresholds: { ...inconsistencyConfig.thresholds, ...(partial.thresholds || {}) },
+        };
+        dispatch({
+            type: "SET_INCONSISTENCY_CONFIG",
+            workspaceId: workspace.id,
+            config: next,
+        });
+    };
 
     const extraKeys = useMemo(() => {
         const known = new Set(DEFAULT_CARD_FIELDS.map((f) => f.key));
@@ -256,7 +276,7 @@ export const CardFieldsPanel = ({ workspace }) => {
             </div>
 
             {/* Liste avec scroll et drag fluide */}
-            <div ref={listRef} className="max-h-[360px] overflow-y-auto py-1">
+            <div ref={listRef} className="max-h-[280px] overflow-y-auto py-1">
                 {fields.map((f, index) => (
                     <FieldRow
                         key={f.key}
@@ -271,12 +291,134 @@ export const CardFieldsPanel = ({ workspace }) => {
                 ))}
             </div>
 
+            {/* ── Incohérences prospection ── */}
+            <div className="px-4 pt-3 pb-3 border-t border-border/60 space-y-3" data-testid="inconsistency-config">
+                <div className="flex items-center gap-1.5 text-sm font-semibold">
+                    <AlertTriangle size={14} className="text-amber-600 shrink-0" />
+                    Incohérences prospection
+                </div>
+                <p className="text-[11px] text-muted-foreground leading-snug">
+                    Règles locales — aucune IA, uniquement les données du lead.
+                </p>
+
+                <div className="flex items-center justify-between gap-2">
+                    <span className="text-[12.5px] text-foreground">Afficher sur les cartes</span>
+                    <Switch
+                        checked={inconsistencyConfig.showOnCard}
+                        onCheckedChange={(v) => patchInconsistencyConfig({ showOnCard: v })}
+                        aria-label="Afficher les incohérences sur les cartes"
+                    />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                    <label className="space-y-1">
+                        <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                            Sans réponse (j)
+                        </span>
+                        <input
+                            type="number"
+                            min={1}
+                            max={90}
+                            value={inconsistencyConfig.thresholds.noAnswerDays}
+                            onChange={(e) => {
+                                const n = Number(e.target.value);
+                                if (!Number.isFinite(n)) return;
+                                patchInconsistencyConfig({ thresholds: { noAnswerDays: n } });
+                            }}
+                            className="w-full h-8 rounded-md border border-border bg-background px-2 text-[12.5px] tabular-nums"
+                        />
+                    </label>
+                    <label className="space-y-1">
+                        <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                            Trou contact (j)
+                        </span>
+                        <input
+                            type="number"
+                            min={1}
+                            max={365}
+                            value={inconsistencyConfig.thresholds.contactGapDays}
+                            onChange={(e) => {
+                                const n = Number(e.target.value);
+                                if (!Number.isFinite(n)) return;
+                                patchInconsistencyConfig({ thresholds: { contactGapDays: n } });
+                            }}
+                            className="w-full h-8 rounded-md border border-border bg-background px-2 text-[12.5px] tabular-nums"
+                        />
+                    </label>
+                    <label className="space-y-1">
+                        <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                            Prépa RDV (j ouvrés)
+                        </span>
+                        <input
+                            type="number"
+                            min={1}
+                            max={60}
+                            value={inconsistencyConfig.thresholds.rdvPrepDays}
+                            onChange={(e) => {
+                                const n = Number(e.target.value);
+                                if (!Number.isFinite(n)) return;
+                                patchInconsistencyConfig({ thresholds: { rdvPrepDays: n } });
+                            }}
+                            className="w-full h-8 rounded-md border border-border bg-background px-2 text-[12.5px] tabular-nums"
+                        />
+                    </label>
+                    <label className="space-y-1">
+                        <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                            Nouveau stale (j ouvrés)
+                        </span>
+                        <input
+                            type="number"
+                            min={1}
+                            max={60}
+                            value={inconsistencyConfig.thresholds.nouveauStaleDays}
+                            onChange={(e) => {
+                                const n = Number(e.target.value);
+                                if (!Number.isFinite(n)) return;
+                                patchInconsistencyConfig({ thresholds: { nouveauStaleDays: n } });
+                            }}
+                            className="w-full h-8 rounded-md border border-border bg-background px-2 text-[12.5px] tabular-nums"
+                        />
+                    </label>
+                </div>
+
+                <div className="space-y-1 max-h-[180px] overflow-y-auto -mx-1 px-1">
+                    {RULE_DEFS.map((rule) => (
+                        <div
+                            key={rule.id}
+                            className="flex items-start justify-between gap-2 py-1.5"
+                            title={rule.description}
+                        >
+                            <div className="min-w-0">
+                                <div className="text-[12.5px] font-medium text-foreground truncate">
+                                    {rule.title}
+                                </div>
+                                <div className="text-[10px] text-muted-foreground capitalize">
+                                    {rule.severity === "critical" ? "critique" : rule.severity === "warning" ? "alerte" : "info"}
+                                </div>
+                            </div>
+                            <Switch
+                                checked={!!inconsistencyConfig.enabled[rule.id]}
+                                onCheckedChange={(v) =>
+                                    patchInconsistencyConfig({ enabled: { [rule.id]: v } })
+                                }
+                                aria-label={`Activer ${rule.title}`}
+                            />
+                        </div>
+                    ))}
+                </div>
+            </div>
+
             <div className="px-4 py-2.5 border-t border-border/60 flex items-center justify-between">
                 <button
                     onClick={() => {
                         dispatch({ type: "SET_CARD_FIELDS", workspaceId: workspace.id, fields: DEFAULT_CARD_FIELDS });
                         dispatch({ type: "SET_COLUMN_WIDTH", workspaceId: workspace.id, width: DEFAULT_WIDTH });
                         dispatch({ type: "SET_CARD_SCALE", workspaceId: workspace.id, scale: DEFAULT_SCALE });
+                        dispatch({
+                            type: "SET_INCONSISTENCY_CONFIG",
+                            workspaceId: workspace.id,
+                            config: defaultInconsistencyConfig(),
+                        });
                     }}
                     className="text-xs text-muted-foreground hover:text-foreground transition-colors"
                 >

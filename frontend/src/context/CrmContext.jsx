@@ -83,6 +83,7 @@ export const DEFAULT_CARD_FIELDS = [
     { key: "dealValue",    label: "Prix / Valeur du deal",   visible: true  },
     { key: "lastNote",     label: "Dernière note",           visible: true  },
     { key: "followupBadge",label: "Badge relance auto",      visible: true  },
+    { key: "inconsistencyBadge", label: "Badge incohérences", visible: true },
     { key: "nextAction",   label: "Prochaine action",        visible: true  },
     { key: "statusTime",   label: "Temps dans la colonne",   visible: true  },
     { key: "lastContact",  label: "Dernier contact",         visible: true  },
@@ -807,7 +808,11 @@ function reducer(state, action) {
                     extra: l.extra || {},
                     customFields: [],
                     dealValue: null,
-                    logoUrl: l.logoUrl || resolveLogo(l.website, l.email) || null,
+                    logoUrl: l.logoUrl || resolveLogo({
+                        website: l.website,
+                        email: l.email,
+                        extra: l.extra || {},
+                    }) || null,
                     statusHistory: [{ columnId: firstCol, at: now }],
                     createdAt: now,
                     archived: false,
@@ -825,12 +830,18 @@ function reducer(state, action) {
             const lead = ws.leads[action.leadId];
             if (!lead) return state;
             const patch = action.patch;
-            // Recalculer le logo si website ou email change et qu'on n'a pas de logo fixé
+            // Recalculer le logo si website / email / extra change (sauf logo manuel)
             let logoUrl = lead.logoUrl;
-            if ((patch.website !== undefined || patch.email !== undefined) && !lead.logoUrlManual) {
-                const newWebsite = patch.website !== undefined ? patch.website : lead.website;
-                const newEmail   = patch.email   !== undefined ? patch.email   : lead.email;
-                logoUrl = resolveLogo(newWebsite, newEmail) || null;
+            if (
+                (patch.website !== undefined || patch.email !== undefined || patch.extra !== undefined) &&
+                !lead.logoUrlManual
+            ) {
+                const merged = {
+                    ...lead,
+                    ...patch,
+                    extra: patch.extra !== undefined ? patch.extra : lead.extra,
+                };
+                logoUrl = resolveLogo(merged) || null;
             }
             return updateWs(state, ws.id, {
                 leads: {
@@ -943,6 +954,32 @@ function reducer(state, action) {
                             : lead.nextAction,
                     },
                 },
+            });
+        }
+        case "DISMISS_INCONSISTENCY": {
+            // action.fingerprint — ignore cette alerte tant que les faits (fingerprint) ne changent pas
+            const ws = state.workspaces[action.workspaceId];
+            if (!ws) return state;
+            const lead = ws.leads[action.leadId];
+            if (!lead || !action.fingerprint) return state;
+            return updateWs(state, ws.id, {
+                leads: {
+                    ...ws.leads,
+                    [action.leadId]: {
+                        ...lead,
+                        dismissedInconsistencies: {
+                            ...(lead.dismissedInconsistencies || {}),
+                            [action.fingerprint]: new Date().toISOString(),
+                        },
+                    },
+                },
+            });
+        }
+        case "SET_INCONSISTENCY_CONFIG": {
+            const ws = state.workspaces[action.workspaceId];
+            if (!ws) return state;
+            return updateWs(state, ws.id, {
+                inconsistencyConfig: action.config,
             });
         }
         case "CHECK_FOLLOWUPS": {
@@ -1351,6 +1388,12 @@ function reducer(state, action) {
             if (!ws) return state;
             return updateWs(state, ws.id, { cardFields: action.fields });
         }
+        case "SET_PANEL_SECTIONS": {
+            // action.panelSections = { order, hidden, collapsed } — partagé par tous les leads du workspace
+            const ws = state.workspaces[action.workspaceId];
+            if (!ws) return state;
+            return updateWs(state, ws.id, { panelSections: action.panelSections });
+        }
         case "DELETE_EXTRA_FIELD": {
             // action.workspaceId, action.fieldKey (e.g. "extra:ville")
             // Removes the extra field from all leads and from cardFields
@@ -1706,15 +1749,44 @@ export function CrmProvider({ children }) {
 
     // Keyboard shortcut — Cmd+Z / Ctrl+Z  (undo)
     //                     Cmd+Shift+Z / Ctrl+Shift+Z  (redo)
+    //                     Option/Alt+1..9  (switch workspace)
     useEffect(() => {
+        const isTypingTarget = () => {
+            const el = document.activeElement;
+            if (!el) return false;
+            const tag = el.tagName;
+            if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+            return !!el.isContentEditable;
+        };
+
         const onKey = (e) => {
+            // Option/Alt + 1..9 → ouvrir l'espace N (ordre sidebar)
+            if (
+                e.altKey &&
+                !e.metaKey &&
+                !e.ctrlKey &&
+                !e.shiftKey &&
+                /^Digit[1-9]$/.test(e.code)
+            ) {
+                if (isTypingTarget()) return;
+                const index = Number(e.code.slice(5)) - 1;
+                const order = workspaceOrderFromSidebar(
+                    ensureSidebar(stateRef.current),
+                );
+                const id = order[index];
+                if (!id) return;
+                e.preventDefault();
+                if (stateRef.current.currentId !== id) {
+                    dispatch({ type: "SELECT_WORKSPACE", id });
+                }
+                return;
+            }
+
             const isMac = navigator.platform.toUpperCase().includes("MAC");
             const modifier = isMac ? e.metaKey : e.ctrlKey;
             if (!modifier || e.key.toLowerCase() !== "z") return;
 
-            // Don't intercept if focus is inside an input/textarea
-            const tag = document.activeElement?.tagName;
-            if (tag === "INPUT" || tag === "TEXTAREA") return;
+            if (isTypingTarget()) return;
 
             e.preventDefault();
 
@@ -1738,7 +1810,7 @@ export function CrmProvider({ children }) {
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [undo, redo]);
+    }, [undo, redo, dispatch]);
 
     // Persist to localStorage — debounce 500ms pour éviter de bloquer le thread
     // principal à chaque dispatch (JSON.stringify sur 300+ leads est coûteux).

@@ -483,9 +483,9 @@ export const KanbanBoard = ({
     };
 
     return (
-        <div className="overflow-x-auto kanban-hscroll relative">
+        <div className="overflow-x-auto kanban-hscroll relative flex-1">
             <div
-                className="flex gap-4 px-4 sm:px-6 pb-6 pt-3 min-w-min"
+                className="flex gap-3 px-3 sm:px-4 pb-8 pt-3 min-w-min"
                 data-testid="kanban-board"
             >
                 {workspace.columnOrder.map((cid) => (
@@ -553,7 +553,7 @@ export const KanbanBoard = ({
                 {/* Add column */}
                 <div className="shrink-0 w-[240px] pt-1 pl-2">
                     {addingColumn ? (
-                        <div className="bg-muted/30 rounded-xl p-2.5 border border-border">
+                        <div className="rounded-[10px] bg-surface-2 border border-border/60 p-2.5">
                             <input
                                 autoFocus
                                 data-testid="new-column-input"
@@ -575,7 +575,7 @@ export const KanbanBoard = ({
                         <button
                             data-testid="add-column-btn"
                             onClick={() => setAddingColumn(true)}
-                            className="flex items-center gap-2 h-9 px-3 text-[13px] text-muted-foreground/60 hover:text-foreground transition-colors rounded-xl hover:bg-muted/50 font-medium"
+                            className="flex items-center justify-center gap-2 w-full h-10 px-3 text-[13px] text-muted-foreground hover:text-foreground transition-colors rounded-[10px] border border-dashed border-border hover:bg-muted/40 font-medium"
                         >
                             <Plus size={14} strokeWidth={2} />
                             Ajouter une colonne

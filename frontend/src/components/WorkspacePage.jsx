@@ -42,15 +42,28 @@ export const WorkspacePage = () => {
             setQuickCount(0);
         }
     };
-    // Sidebar : pliée par défaut, état persisté en localStorage
-    const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    // Menu espaces : fermé par défaut (overlay), préférence persistée
+    const [sidebarOpen, setSidebarOpen] = useState(() => {
         try {
-            const saved = localStorage.getItem("sidebar_collapsed");
-            return saved === null ? true : saved === "true";
+            const saved = localStorage.getItem("sidebar_open");
+            if (saved !== null) return saved === "true";
+            // Ancienne clé : collapsed=true → menu fermé
+            const legacy = localStorage.getItem("sidebar_collapsed");
+            if (legacy !== null) return legacy !== "true";
+            return false;
         } catch {
-            return true;
+            return false;
         }
     });
+    const persistSidebarOpen = (next) => {
+        setSidebarOpen(next);
+        try {
+            localStorage.setItem("sidebar_open", String(next));
+            localStorage.setItem("sidebar_collapsed", String(!next));
+        } catch { /* ignore */ }
+    };
+    const toggleSidebar = () => persistSidebarOpen(!sidebarOpen);
+    const closeSidebar = () => persistSidebarOpen(false);
     const [callNoteLeadId, setCallNoteLeadId] = useState(null);
     const [wonLeadId, setWonLeadId] = useState(null);
     const [meetingLeadId, setMeetingLeadId] = useState(null);
@@ -190,21 +203,13 @@ export const WorkspacePage = () => {
     const leadCount = Object.keys(workspace.leads).length;
 
     return (
-        <div className="min-h-screen bg-background flex">
+        <div className="min-h-screen bg-background">
             <Sidebar
-                collapsed={sidebarCollapsed}
-                onToggleCollapsed={() => {
-                        const next = !sidebarCollapsed;
-                        setSidebarCollapsed(next);
-                        try { localStorage.setItem("sidebar_collapsed", String(next)); } catch {}
-                    }}
-                onExpandSidebar={() => {
-                    if (!sidebarCollapsed) return;
-                    setSidebarCollapsed(false);
-                    try { localStorage.setItem("sidebar_collapsed", "false"); } catch {}
-                }}
+                open={sidebarOpen}
+                onClose={closeSidebar}
+                onToggle={toggleSidebar}
             />
-            <main className="flex-1 flex flex-col min-w-0 min-h-screen overflow-x-hidden">
+            <main className="flex flex-col min-w-0 min-h-screen overflow-x-hidden">
                 {/* Alerte persistante si le quota localStorage est dépassé */}
                 <StorageErrorBanner />
                 <TopBar
@@ -216,12 +221,8 @@ export const WorkspacePage = () => {
                     onImport={() => setImportOpen(true)}
                     onNewLead={onNewLead}
                     onOpenLead={(l) => setOpenLeadId(l.id)}
-                    sidebarCollapsed={sidebarCollapsed}
-                    onToggleSidebar={() => {
-                        const next = !sidebarCollapsed;
-                        setSidebarCollapsed(next);
-                        try { localStorage.setItem("sidebar_collapsed", String(next)); } catch {}
-                    }}
+                    sidebarOpen={sidebarOpen}
+                    onToggleSidebar={toggleSidebar}
                     view={view}
                     onViewChange={handleViewChange}
                     quickMode={quickMode}

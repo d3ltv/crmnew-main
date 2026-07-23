@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { useCrm } from "@/context/CrmContext";
 import {
     Search,
@@ -8,7 +8,7 @@ import {
     Bell,
     Settings2,
     Trash2,
-    PanelLeftOpen,
+    Folders,
     Menu,
     X,
     Sun,
@@ -27,6 +27,7 @@ import {
     Monitor,
     Info,
     MoreHorizontal,
+    CheckCheck,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -75,7 +76,7 @@ export const TopBar = ({
     onNewLead,
     onOpenLead,
     onToggleSidebar,
-    sidebarCollapsed,
+    sidebarOpen,
     view,
     onViewChange,
     quickMode,
@@ -119,6 +120,39 @@ export const TopBar = ({
     const todayCount = followups.filter((f) => f.today && !f.overdue).length;
     const totalNotifs = overdueCount + todayCount;
 
+    // Signature des notifs actives — change si une nouvelle arrive → badge revient
+    const notifSignature = useMemo(
+        () =>
+            followups
+                .filter((f) => f.overdue || f.today)
+                .map((f) => `${f.lead.id}:${f.lead.autoFollowup?.dueAt || ""}`)
+                .sort()
+                .join("|"),
+        [followups]
+    );
+
+    const notifStorageKey = `crm_notif_seen_${workspace.id}`;
+    const [notifsSeen, setNotifsSeen] = useState(false);
+
+    useEffect(() => {
+        try {
+            const saved = localStorage.getItem(notifStorageKey) || "";
+            setNotifsSeen(!!notifSignature && saved === notifSignature);
+        } catch {
+            setNotifsSeen(false);
+        }
+    }, [notifSignature, notifStorageKey]);
+
+    const markNotifsAsRead = (e) => {
+        e?.stopPropagation();
+        try {
+            localStorage.setItem(notifStorageKey, notifSignature);
+        } catch { /* ignore */ }
+        setNotifsSeen(true);
+    };
+
+    const badgeCount = notifsSeen ? 0 : totalNotifs;
+
     const exportCsv = () => {
         const leads = Object.values(workspace.leads).map((l) => ({
             ...l,
@@ -138,11 +172,11 @@ export const TopBar = ({
 
     return (
         <>
-        <header className="border-b border-border/60 bg-background/95 backdrop-blur-sm sticky top-0 z-20 safe-top">
+        <header className="border-b border-border bg-surface/90 glass sticky top-0 z-50 safe-top">
             {/* Layout 3 colonnes : gauche / centre / droite */}
             <div className="px-3 sm:px-4 h-14 grid grid-cols-[1fr_auto_1fr] items-center gap-2">
 
-                {/* ── Colonne gauche : sidebar, titre, vues ── */}
+                {/* ── Colonne gauche : sidebar + titre ── */}
                 <div className="flex items-center gap-2 min-w-0">
                     {/* Mobile: hamburger opens sidebar sheet */}
                     <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
@@ -157,7 +191,7 @@ export const TopBar = ({
                         </SheetTrigger>
                         <SheetContent
                             side="left"
-                            className="w-72 p-0 border-r border-border/60 glass-strong"
+                            className="w-72 p-0 border-r border-border bg-surface"
                             data-testid="mobile-sidebar-sheet"
                         >
                             <SidebarContent
@@ -167,17 +201,30 @@ export const TopBar = ({
                         </SheetContent>
                     </Sheet>
 
-                    {/* Desktop: expand sidebar button when collapsed */}
-                    {sidebarCollapsed && (
-                        <button
-                            data-testid="topbar-expand-sidebar-btn"
-                            onClick={onToggleSidebar}
-                            aria-label="Développer la barre latérale"
-                            className="hidden md:flex w-9 h-9 rounded-full items-center justify-center hover:bg-secondary text-muted-foreground shrink-0"
-                        >
-                            <PanelLeftOpen size={16} />
-                        </button>
-                    )}
+                    {/* Desktop: menu des espaces (overlay) */}
+                    <button
+                        type="button"
+                        data-testid="topbar-sidebar-toggle-btn"
+                        onClick={onToggleSidebar}
+                        aria-label={
+                            sidebarOpen
+                                ? "Fermer le menu des espaces"
+                                : "Ouvrir le menu des espaces"
+                        }
+                        aria-expanded={!!sidebarOpen}
+                        title={
+                            sidebarOpen
+                                ? "Fermer le menu des espaces"
+                                : "Voir tous les espaces"
+                        }
+                        className={`hidden md:flex w-9 h-9 rounded-lg items-center justify-center shrink-0 transition-colors ${
+                            sidebarOpen
+                                ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                                : "bg-primary/10 text-primary hover:bg-primary/15"
+                        }`}
+                    >
+                        <Folders size={16} strokeWidth={2} />
+                    </button>
 
                     <div className="min-w-0">
                         <h1
@@ -191,25 +238,6 @@ export const TopBar = ({
                                 {workspace.sector}
                             </p>
                         )}
-                    </div>
-
-                    {/* Séparateur + Sélecteur de vue — collé au titre */}
-                    <div className="hidden sm:block w-px h-5 bg-border/60 shrink-0 ml-1" />
-                    <div className="hidden sm:flex items-center gap-0.5 bg-muted rounded-lg p-0.5 shrink-0">
-                        {VIEWS.map((v) => (
-                            <button
-                                key={v.id}
-                                onClick={() => onViewChange(v.id)}
-                                title={v.label}
-                                className={`w-8 h-8 flex items-center justify-center rounded-md transition-all ${
-                                    view === v.id
-                                        ? "bg-background text-foreground shadow-sm"
-                                        : "text-muted-foreground hover:text-foreground"
-                                }`}
-                            >
-                                {v.icon}
-                            </button>
-                        ))}
                     </div>
                 </div>
 
@@ -289,30 +317,49 @@ export const TopBar = ({
                                 className="relative w-9 h-9 rounded-full hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors touch-target"
                             >
                                 <Bell size={16} />
-                                {totalNotifs > 0 && (
+                                {badgeCount > 0 && (
                                     <span
                                         data-testid="notif-badge"
                                         className={`absolute top-1.5 right-1.5 min-w-[15px] h-3.5 px-1 rounded-full text-[9px] font-semibold flex items-center justify-center text-white ${overdueCount > 0 ? "bg-rose-500 pulse-dot" : "bg-primary"}`}
                                     >
-                                        {totalNotifs}
+                                        {badgeCount}
                                     </span>
                                 )}
                             </button>
                         </PopoverTrigger>
                         <PopoverContent
                             align="end"
-                            className="w-80 p-0 rounded-2xl overflow-hidden shadow-panel glass-strong"
+                            className="w-80 p-0 rounded-xl overflow-hidden shadow-panel bg-popover border border-border"
                             data-testid="notif-popover"
                         >
-                            <div className="px-4 py-3 border-b border-border/60">
-                                <div className="font-semibold tracking-tight text-sm">Rappels</div>
-                                <div className="text-xs text-muted-foreground mt-0.5">
-                                    {overdueCount > 0
-                                        ? `${overdueCount} en retard · ${todayCount} aujourd'hui`
-                                        : todayCount > 0
-                                          ? `${todayCount} à rappeler aujourd'hui`
-                                          : "Aucun rappel actif"}
+                            <div className="px-4 py-3 border-b border-border/60 flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                    <div className="font-semibold tracking-tight text-sm">Rappels</div>
+                                    <div className="text-xs text-muted-foreground mt-0.5">
+                                        {overdueCount > 0
+                                            ? `${overdueCount} en retard · ${todayCount} aujourd'hui`
+                                            : todayCount > 0
+                                              ? `${todayCount} à rappeler aujourd'hui`
+                                              : "Aucun rappel actif"}
+                                    </div>
                                 </div>
+                                {totalNotifs > 0 && (
+                                    <button
+                                        type="button"
+                                        onClick={markNotifsAsRead}
+                                        disabled={notifsSeen}
+                                        title={notifsSeen ? "Notifications lues" : "Marquer comme lu"}
+                                        aria-label={notifsSeen ? "Notifications lues" : "Marquer les rappels comme lus"}
+                                        data-testid="notif-mark-read-btn"
+                                        className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
+                                            notifsSeen
+                                                ? "text-emerald-600 dark:text-emerald-400 bg-emerald-500/10"
+                                                : "text-muted-foreground hover:text-emerald-600 hover:bg-emerald-500/10"
+                                        }`}
+                                    >
+                                        <CheckCheck size={16} strokeWidth={2} />
+                                    </button>
+                                )}
                             </div>
                             <div className="max-h-80 overflow-y-auto">
                                 {followups.length === 0 && (
@@ -408,7 +455,7 @@ export const TopBar = ({
                         </PopoverTrigger>
                         <PopoverContent
                             align="end"
-                            className="p-0 rounded-2xl overflow-hidden shadow-panel glass-strong w-auto"
+                            className="p-0 rounded-xl overflow-hidden shadow-panel bg-popover border border-border w-auto"
                             data-testid="card-fields-popover"
                         >
                             <CardFieldsPanel workspace={workspace} />
@@ -436,9 +483,41 @@ export const TopBar = ({
                                 {isDark ? "Mode clair" : "Mode sombre"}
                             </DropdownMenuItem>
                             <DropdownMenuSeparator className="sm:hidden" />
+
+                            <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
+                                Vue
+                            </DropdownMenuLabel>
+                            <div className="px-2 py-1.5">
+                                <div
+                                    className="flex items-center gap-0.5 bg-muted rounded-lg p-0.5"
+                                    role="tablist"
+                                    aria-label="Vue"
+                                >
+                                    {VIEWS.map((v) => (
+                                        <button
+                                            key={v.id}
+                                            role="tab"
+                                            aria-selected={view === v.id}
+                                            aria-label={v.label}
+                                            title={v.label}
+                                            onClick={() => onViewChange(v.id)}
+                                            className={`flex-1 h-8 flex items-center justify-center rounded-md transition-all ${
+                                                view === v.id
+                                                    ? "bg-background text-foreground shadow-sm"
+                                                    : "text-muted-foreground hover:text-foreground"
+                                            }`}
+                                        >
+                                            {v.icon}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                            <DropdownMenuSeparator />
+
                             <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
                                 Objectifs
-                            </DropdownMenuLabel>                            <DropdownMenuItem
+                            </DropdownMenuLabel>
+                            <DropdownMenuItem
                                 onClick={() => setGoalEditorOpen(true)}
                                 data-testid="settings-daily-goal-btn"
                             >
@@ -547,10 +626,11 @@ export const TopBar = ({
                     <Button
                         onClick={() => onNewLead()}
                         data-testid="topbar-new-lead-btn"
-                        className="h-8 rounded-lg px-2.5 sm:px-3.5 gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90 text-[12px] font-medium touch-target"
+                        aria-label="Nouveau lead"
+                        title="Nouveau lead"
+                        className="w-9 h-9 rounded-full p-0 bg-primary text-primary-foreground hover:bg-primary/90 touch-target"
                     >
-                        <Plus size={13} />
-                        <span className="hidden sm:inline">Nouveau</span>
+                        <Plus size={16} />
                     </Button>
                 </div>
             </div>
@@ -644,33 +724,6 @@ export const TopBar = ({
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
-
-            {/* Mobile : sélecteur de vues toujours accessible */}
-            <div className="sm:hidden px-3 pb-2">
-                <div
-                    className="flex items-center gap-0.5 bg-muted rounded-lg p-0.5"
-                    role="tablist"
-                    aria-label="Vue"
-                >
-                    {VIEWS.map((v) => (
-                        <button
-                            key={v.id}
-                            role="tab"
-                            aria-selected={view === v.id}
-                            onClick={() => onViewChange(v.id)}
-                            title={v.label}
-                            className={`flex-1 h-9 flex items-center justify-center gap-1.5 rounded-md text-[12px] font-medium transition-all touch-target ${
-                                view === v.id
-                                    ? "bg-background text-foreground shadow-sm"
-                                    : "text-muted-foreground hover:text-foreground"
-                            }`}
-                        >
-                            {v.icon}
-                            <span className="hidden xs:inline">{v.label}</span>
-                        </button>
-                    ))}
-                </div>
-            </div>
         </header>
 
         {/* Editor modal en dehors du header pour éviter les problèmes de z-index */}

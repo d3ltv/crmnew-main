@@ -6,32 +6,25 @@ import {
     Globe,
     Mail,
     User,
-    Calendar,
     Trash2,
     Tag,
     Plus,
-    Pin,
-    PinOff,
     History,
     CheckCircle2,
-    ArrowRight,
     Euro,
     Trophy,
     ChevronDown,
     ArrowUp,
     Database,
     MessageSquare,
-    PhoneCall,
-    ExternalLink,
     Star,
     CalendarClock,
     Sparkles,
-    RefreshCw,
-    Mail as MailIcon,
-    Linkedin,
-    MessageCircle,
     Repeat2,
+    MapPin,
+    AlertTriangle,
 } from "lucide-react";
+import { CopyBtn } from "./CopyBtn";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -43,11 +36,6 @@ import {
     SelectTrigger,
     SelectValue,
 } from "@/components/ui/select";
-import {
-    Collapsible,
-    CollapsibleContent,
-    CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 import { toast } from "sonner";
 import { getColumnColor } from "@/lib/columnColors";
 import { formatDateTimeLong } from "@/lib/dateUtils";
@@ -55,6 +43,25 @@ import { telHref, mailtoHref, websiteHref } from "@/lib/actionLinks";
 import { parseNote, detectAppointment, diffWithLead, formatDetected } from "@/lib/noteParser";
 import { isManualRdv, makeRdvNextAction } from "@/lib/nextActionUtils";
 import { toLocalDateKey } from "@/lib/dateUtils";
+import { PanelSectionCard, HiddenSectionsMenu, PanelSectionsOrganizer } from "./PanelSectionCard";
+import {
+    normalizePanelSections,
+    visiblePanelSections,
+    hiddenPanelSections,
+    PANEL_SECTION_META,
+    isSectionCollapsed,
+    toggleCollapsedSection,
+    extractLeadBrief,
+    valueAsHref,
+    displayUrl,
+    reorderPanelSection,
+} from "@/lib/panelSections";
+import {
+    detectInconsistencies,
+    countActionableInconsistencies,
+} from "@/lib/inconsistencyRules";
+
+const SECTION_ICONS = { AlertTriangle, Database, User, MessageSquare, Repeat2, Tag, Trophy, History };
 
 function formatDateTime(iso) {
     return formatDateTimeLong(iso);
@@ -88,7 +95,7 @@ function getRelanceColor(num) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── RelancesWidget ────────────────────────────────────────────────────────────
+// ── RelancesWidget (compact) ──────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 const RelancesWidget = ({ lead, workspace, dispatch }) => {
     const [canal, setCanal] = useState("Téléphone");
@@ -109,9 +116,7 @@ const RelancesWidget = ({ lead, workspace, dispatch }) => {
             canal,
             note: note.trim(),
         });
-        toast.success(`Relance #${nextNum} enregistrée`, {
-            description: `${canal}${note.trim() ? ` · ${note.trim()}` : ""}`,
-        });
+        toast.success(`Relance #${nextNum} · ${canal}`);
         setNote("");
         setAdding(false);
     };
@@ -126,162 +131,125 @@ const RelancesWidget = ({ lead, workspace, dispatch }) => {
     };
 
     return (
-        <div className="rounded-xl border border-border bg-card p-4 space-y-3 shadow-sm">
-            {/* Header */}
-            <div className="flex items-center justify-between">
-                <h3 className="text-xs uppercase tracking-wider text-muted-foreground font-semibold flex items-center gap-1.5">
-                    <Repeat2 size={13} strokeWidth={2.5} />
-                    Suivi des relances
-                    {relances.length > 0 && (
-                        <span className="ml-1 text-[10px] font-bold text-foreground bg-secondary rounded-full px-1.5 py-0.5">
-                            {relances.length}/{maxRelances}
-                        </span>
-                    )}
-                </h3>
-                {!atMax && (
-                    <button
-                        onClick={() => setAdding((v) => !v)}
-                        className={`h-7 px-2.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-colors ${
-                            adding
-                                ? "bg-secondary text-foreground"
-                                : "bg-primary text-primary-foreground hover:bg-primary/90"
-                        }`}
-                    >
-                        <Repeat2 size={11} strokeWidth={2} />
-                        {adding ? "Annuler" : `Relance #${nextNum}`}
-                    </button>
-                )}
-                {atMax && (
-                    <span className="text-[11px] text-rose-600 dark:text-rose-400 font-medium">Max 7 relances</span>
-                )}
-            </div>
-
-            {/* Badges visuels 1–7 */}
-            <div className="flex items-center gap-1.5 flex-wrap">
-                {Array.from({ length: maxRelances }, (_, i) => {
-                    const num = i + 1;
-                    const done = num <= relances.length;
-                    const color = getRelanceColor(num);
-                    const entry = relances[i];
-                    return (
-                        <div
-                            key={num}
-                            title={done && entry ? `${entry.canal} · ${new Date(entry.at).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}${entry.note ? ` · ${entry.note}` : ""}` : `Relance ${num}`}
-                            className={`relative w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-bold transition-all select-none
-                                ${done
-                                    ? `${color.bg} ${color.text} shadow-sm ring-1 ring-inset ring-current/20`
-                                    : "bg-muted/60 text-muted-foreground/40 border border-dashed border-border"
-                                }`}
-                        >
-                            {num}
-                            {done && (
-                                <span className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ${color.dot} ring-1 ring-background`} />
-                            )}
-                        </div>
-                    );
-                })}
-                {relances.length > 0 && (
-                    <span className="text-[11px] text-muted-foreground ml-1">
-                        {relances.length === 1 ? "1 relance" : `${relances.length} relances`}
-                    </span>
-                )}
-            </div>
-
-            {/* Formulaire d'ajout */}
-            {adding && !atMax && (
-                <div className="rounded-xl border border-primary/30 bg-primary/5 p-3 space-y-2.5 animate-in fade-in slide-in-from-top-1 duration-150">
-                    <p className="text-[11px] font-semibold text-primary uppercase tracking-wider">
-                        Relance #{nextNum} — Canal utilisé
-                    </p>
-                    {/* Sélecteur canal en chips */}
-                    <div className="flex flex-wrap gap-1.5">
-                        {RELANCE_CANAUX.map((c) => (
-                            <button
-                                key={c.value}
-                                onClick={() => setCanal(c.value)}
-                                className={`h-7 px-2.5 rounded-full text-[11.5px] font-medium flex items-center gap-1 transition-all border ${
-                                    canal === c.value
-                                        ? "bg-primary text-primary-foreground border-primary shadow-sm"
-                                        : "bg-card text-foreground/70 border-border hover:border-primary/50 hover:text-foreground"
-                                }`}
-                            >
-                                <span>{c.emoji}</span>
-                                <span>{c.label}</span>
-                            </button>
-                        ))}
-                    </div>
-                    {/* Note optionnelle */}
-                    <input
-                        type="text"
-                        value={note}
-                        onChange={(e) => setNote(e.target.value)}
-                        onKeyDown={(e) => e.key === "Enter" && handleLog()}
-                        placeholder="Note optionnelle… ex : messagerie, rappel demandé"
-                        className="w-full h-8 px-3 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-                    />
-                    <div className="flex justify-end gap-2">
-                        <button
-                            onClick={() => { setAdding(false); setNote(""); }}
-                            className="h-8 px-3 rounded-full text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
-                        >
-                            Annuler
-                        </button>
-                        <button
-                            onClick={handleLog}
-                            className="h-8 px-4 rounded-full text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors flex items-center gap-1.5"
-                        >
-                            <Repeat2 size={11} />
-                            Enregistrer la relance #{nextNum}
-                        </button>
-                    </div>
-                </div>
-            )}
-
-            {/* Historique des relances */}
-            {relances.length > 0 && (
-                <div className="space-y-1.5">
-                    {[...relances].reverse().map((r) => {
-                        const color = getRelanceColor(r.num);
-                        const canal = RELANCE_CANAUX.find((c) => c.value === r.canal);
+        <div className="space-y-2">
+            <div className="flex items-center gap-2">
+                {/* Pastilles compactes */}
+                <div className="flex items-center gap-1 flex-1 min-w-0">
+                    {Array.from({ length: maxRelances }, (_, i) => {
+                        const num = i + 1;
+                        const done = num <= relances.length;
+                        const color = getRelanceColor(num);
+                        const entry = relances[i];
                         return (
                             <div
-                                key={r.id}
-                                className="flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 bg-muted/40 border border-border/50 group"
+                                key={num}
+                                title={done && entry
+                                    ? `#${num} · ${entry.canal} · ${new Date(entry.at).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}`
+                                    : `Relance ${num}`}
+                                className={`w-5 h-5 rounded-md flex items-center justify-center text-[10px] font-semibold tabular-nums select-none ${
+                                    done
+                                        ? `${color.bg} ${color.text}`
+                                        : "bg-muted/50 text-muted-foreground/35"
+                                }`}
                             >
-                                {/* Badge numéro */}
-                                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${color.bg} ${color.text}`}>
-                                    {r.num}
-                                </div>
-                                {/* Canal + note */}
-                                <div className="flex-1 min-w-0">
-                                    <span className="text-[12px] font-medium text-foreground">
-                                        {canal?.emoji} {r.canal}
-                                    </span>
-                                    {r.note && (
-                                        <span className="text-[11px] text-muted-foreground ml-1.5">· {r.note}</span>
-                                    )}
-                                </div>
-                                {/* Date */}
-                                <span className="text-[10px] text-muted-foreground shrink-0">
-                                    {new Date(r.at).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}
-                                </span>
-                                {/* Supprimer */}
-                                <button
-                                    onClick={() => handleDelete(r.id)}
-                                    className="opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity text-muted-foreground hover:text-rose-500"
-                                    title="Supprimer cette relance"
-                                >
-                                    <X size={12} />
-                                </button>
+                                {num}
                             </div>
                         );
                     })}
+                    {relances.length > 0 && (
+                        <span className="text-[11px] text-muted-foreground ml-1 tabular-nums">
+                            {relances.length}/{maxRelances}
+                        </span>
+                    )}
+                </div>
+                {!atMax ? (
+                    <button
+                        type="button"
+                        onClick={() => setAdding((v) => !v)}
+                        className={`h-6 px-2 rounded-md text-[11px] font-medium transition-colors ${
+                            adding
+                                ? "bg-secondary text-foreground"
+                                : "bg-primary/10 text-primary hover:bg-primary/15"
+                        }`}
+                    >
+                        {adding ? "Annuler" : `+ #${nextNum}`}
+                    </button>
+                ) : (
+                    <span className="text-[10px] text-muted-foreground">Max</span>
+                )}
+            </div>
+
+            {adding && !atMax && (
+                <div className="rounded-lg border border-border bg-muted/20 p-2.5 space-y-2">
+                    <div className="flex flex-wrap gap-1">
+                        {RELANCE_CANAUX.map((c) => (
+                            <button
+                                key={c.value}
+                                type="button"
+                                onClick={() => setCanal(c.value)}
+                                className={`h-6 px-2 rounded-md text-[11px] transition-colors ${
+                                    canal === c.value
+                                        ? "bg-primary text-primary-foreground"
+                                        : "bg-card border border-border text-muted-foreground hover:text-foreground"
+                                }`}
+                            >
+                                {c.label}
+                            </button>
+                        ))}
+                    </div>
+                    <div className="flex gap-1.5">
+                        <input
+                            type="text"
+                            value={note}
+                            onChange={(e) => setNote(e.target.value)}
+                            onKeyDown={(e) => e.key === "Enter" && handleLog()}
+                            placeholder="Note (optionnel)"
+                            className="flex-1 h-7 px-2 rounded-md border border-border bg-background text-[12px] focus:outline-none focus:ring-1 focus:ring-primary"
+                        />
+                        <button
+                            type="button"
+                            onClick={handleLog}
+                            className="h-7 px-2.5 rounded-md text-[11px] font-medium bg-primary text-primary-foreground hover:bg-primary/90"
+                        >
+                            OK
+                        </button>
+                    </div>
                 </div>
             )}
 
+            {relances.length > 0 && (
+                <ul className="space-y-0.5">
+                    {[...relances].reverse().map((r) => (
+                        <li
+                            key={r.id}
+                            className="flex items-center gap-2 px-1.5 py-1 rounded-md hover:bg-muted/40 group text-[12px]"
+                        >
+                            <span className={`w-4 h-4 rounded flex items-center justify-center text-[9px] font-bold shrink-0 ${getRelanceColor(r.num).bg} ${getRelanceColor(r.num).text}`}>
+                                {r.num}
+                            </span>
+                            <span className="font-medium text-foreground truncate">{r.canal}</span>
+                            {r.note && (
+                                <span className="text-muted-foreground truncate">· {r.note}</span>
+                            )}
+                            <span className="ml-auto text-[10px] text-muted-foreground shrink-0 tabular-nums">
+                                {new Date(r.at).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() => handleDelete(r.id)}
+                                className="opacity-0 group-hover:opacity-70 hover:!opacity-100 text-muted-foreground hover:text-rose-500"
+                                title="Supprimer"
+                            >
+                                <X size={11} />
+                            </button>
+                        </li>
+                    ))}
+                </ul>
+            )}
+
             {relances.length === 0 && !adding && (
-                <p className="text-xs text-muted-foreground/60 italic text-center py-2">
-                    Aucune relance enregistrée. Cliquez sur "Relance #1" pour commencer le suivi.
+                <p className="text-[11px] text-muted-foreground/70 py-0.5">
+                    Aucune relance — ajoutez la #1.
                 </p>
             )}
         </div>
@@ -295,12 +263,15 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
     const [tagDraft, setTagDraft] = useState("");
     const [cfLabel, setCfLabel] = useState("");
     const [cfValue, setCfValue] = useState("");
-    const [extraOpen, setExtraOpen] = useState(false);
     const [lastAddedFieldLabel, setLastAddedFieldLabel] = useState(null);
     // RDV direct (sans passer par la note)
     const [rdvDate, setRdvDate] = useState("");
     const [rdvTime, setRdvTime] = useState("");
     const [rdvLabel, setRdvLabel] = useState("");
+    // Sections réordonnables (zone B)
+    const [dragSectionId, setDragSectionId] = useState(null);
+    const [dragOverId, setDragOverId] = useState(null);
+    const [dropPlace, setDropPlace] = useState(null); // "before" | "after"
     const panelRef = useRef(null);
     // Use the live lead from props directly — parent computes it from state.
     const local = lead;
@@ -321,11 +292,18 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
     // Détection en temps réel dans le draft de note
     const draftDetected = useMemo(() => parseNote(noteDraft), [noteDraft]);
     const draftDiff = useMemo(
-        () => local ? diffWithLead(draftDetected, local) : { newPhone: null, extraPhones: [], newEmail: null, newAddress: null },
+        () => local ? diffWithLead(draftDetected, local) : { newPhone: null, extraPhones: [], newEmail: null, newAddress: null, newContact: null },
         [draftDetected, local]
     );
     const draftDetectedItems = useMemo(() => formatDetected(draftDetected), [draftDetected]);
     const draftAppointment = useMemo(() => detectAppointment(noteDraft), [noteDraft]);
+
+    const inconsistencies = useMemo(
+        () => (local
+            ? detectInconsistencies(local, workspace.columns, workspace.inconsistencyConfig)
+            : []),
+        [local, workspace.columns, workspace.inconsistencyConfig]
+    );
 
     useEffect(() => {
         // Reset drafts when switching to a different lead
@@ -350,6 +328,59 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
 
     const isJobs = workspace.template === "jobs";
 
+    // ── Zone B : sections réordonnables (persistées par workspace) ──
+    const layout = normalizePanelSections(workspace.panelSections);
+    const persistLayout = (next) =>
+        dispatch({ type: "SET_PANEL_SECTIONS", workspaceId: workspace.id, panelSections: next });
+
+    const reorderSections = (draggedId, targetId, place = "before") => {
+        if (!draggedId || !targetId) return;
+        persistLayout(reorderPanelSection(layout, draggedId, targetId, place));
+    };
+
+    const hideSection = (sid) => {
+        if (layout.hidden.includes(sid)) return;
+        persistLayout({ ...layout, hidden: [...layout.hidden, sid] });
+    };
+
+    const restoreSection = (sid) => {
+        persistLayout({ ...layout, hidden: layout.hidden.filter((id) => id !== sid) });
+    };
+
+    const sectionTitle = (id) => {
+        switch (id) {
+            case "watch":
+                return "À surveiller";
+            case "contact":
+                return isJobs ? "Entreprise & Recruteur" : "Contact & coordonnées";
+            case "imported":
+                return "Données importées";
+            case "deal":
+                return isJobs ? "Salaire proposé" : "Valeur du deal";
+            case "relances":
+                return "Relances";
+            default:
+                return PANEL_SECTION_META[id]?.label || id;
+        }
+    };
+
+    const toggleCollapse = (sid) => {
+        persistLayout(toggleCollapsedSection(layout, sid));
+    };
+
+    // ── Zone A : brief fixe ──
+    const brief = extractLeadBrief(local);
+    const actionableInconsistencyCount = countActionableInconsistencies(inconsistencies);
+
+    const dismissInconsistency = (fingerprint) => {
+        dispatch({
+            type: "DISMISS_INCONSISTENCY",
+            workspaceId: workspace.id,
+            leadId: local.id,
+            fingerprint,
+        });
+    };
+
     const patch = (p) => {
         dispatch({
             type: "UPDATE_LEAD",
@@ -357,6 +388,33 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
             leadId: local.id,
             patch: p,
         });
+    };
+
+    const runInconsistencyAction = (item) => {
+        const action = item?.action;
+        if (!action) return;
+        if (action.type === "plan_rdv" && action.dueAt) {
+            const due = new Date(action.dueAt);
+            if (Number.isNaN(due.getTime())) return;
+            dispatch({
+                type: "SET_NEXT_ACTION",
+                workspaceId: workspace.id,
+                leadId: local.id,
+                nextAction: makeRdvNextAction({
+                    date: toLocalDateKey(due),
+                    dueAt: due.toISOString(),
+                    label: action.label || "",
+                }),
+            });
+            toast.success("RDV planifié", {
+                description: action.label || due.toLocaleDateString("fr-FR"),
+            });
+            return;
+        }
+        if (action.type === "apply_field" && action.applyKey && action.value) {
+            patch({ [action.applyKey]: action.value });
+            toast.success("Enregistré", { description: String(action.value) });
+        }
     };
 
     const changeStatus = (toColumnId) => {
@@ -379,16 +437,17 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
         });
 
         // Appliquer les infos détectées
-        const patch = {};
-        if (draftDiff.newPhone) patch.phone = draftDiff.newPhone;
-        if (draftDiff.newEmail) patch.email = draftDiff.newEmail;
+        const nextPatch = {};
+        if (draftDiff.newPhone) nextPatch.phone = draftDiff.newPhone;
+        if (draftDiff.newEmail) nextPatch.email = draftDiff.newEmail;
+        if (draftDiff.newContact) nextPatch.contact = draftDiff.newContact;
 
         // RDV détecté → nextAction (ne pas écraser un RDV existant plus récent)
         if (draftAppointment) {
             const existing = local.nextAction?.dueAt;
             const incomingTime = new Date(draftAppointment.iso).getTime();
             if (!existing || incomingTime < new Date(existing).getTime()) {
-                patch.nextAction = makeRdvNextAction({
+                nextPatch.nextAction = makeRdvNextAction({
                     date: toLocalDateKey(draftAppointment.iso),
                     dueAt: draftAppointment.iso,
                     label: `RDV détecté · ${draftAppointment.label}`,
@@ -396,8 +455,8 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
             }
         }
 
-        if (Object.keys(patch).length > 0) {
-            dispatch({ type: "UPDATE_LEAD", workspaceId: workspace.id, leadId: local.id, patch });
+        if (Object.keys(nextPatch).length > 0) {
+            dispatch({ type: "UPDATE_LEAD", workspaceId: workspace.id, leadId: local.id, patch: nextPatch });
         }
 
         // Téléphones supplémentaires → customFields
@@ -585,10 +644,10 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                 ref={panelRef}
                 data-testid="lead-detail-panel"
                 className={panelMode === "modal"
-                    ? "fixed z-50 flex flex-col inset-0 sm:inset-auto sm:top-[3%] sm:bottom-[3%] sm:left-1/2 sm:-translate-x-1/2 w-full sm:w-[780px] bg-card sm:rounded-2xl sm:border border-border shadow-2xl animate-in fade-in zoom-in-95 duration-200"
-                    : "fixed z-50 flex flex-col inset-0 sm:inset-auto sm:top-4 sm:bottom-4 sm:right-4 w-full sm:w-[560px] bg-card sm:rounded-2xl sm:border border-border shadow-2xl animate-in slide-in-from-right duration-300"}
+                    ? "fixed z-50 flex flex-col inset-0 sm:inset-auto sm:top-[3%] sm:bottom-[3%] sm:left-1/2 sm:-translate-x-1/2 w-full sm:w-[780px] bg-card sm:rounded-xl sm:border border-border shadow-panel animate-in fade-in zoom-in-95 duration-200"
+                    : "fixed z-50 flex flex-col inset-0 sm:inset-auto sm:top-4 sm:bottom-4 sm:right-4 w-full sm:w-[560px] bg-card sm:rounded-xl sm:border border-border shadow-panel animate-in slide-in-from-right duration-300"}
             >
-                <div className="glass border-b border-border px-5 py-4 flex items-start justify-between gap-3 rounded-t-2xl shrink-0">
+                <div className="border-b border-border bg-card px-5 py-4 flex items-start justify-between gap-3 rounded-t-xl shrink-0">
                     <div className="min-w-0 flex-1">
                         <input
                             data-testid="lead-company-input"
@@ -651,145 +710,217 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                 </div>
 
                 <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 bg-muted/30">
-                    {/* 📇 Coordonnées + Infos complémentaires */}
-                    <div className="rounded-xl border border-border bg-card p-4 space-y-3 shadow-sm">
-                        <h3 className="text-xs uppercase tracking-wider text-muted-foreground font-semibold flex items-center gap-1.5">
-                            <User size={13} strokeWidth={2.5} />
-                            {isJobs ? "Entreprise & Recruteur" : "Contact & Coordonnées"}
-                        </h3>
-                        <div className="space-y-2.5">
-                            {/* ── Contact ── */}
-                            <FieldGroup
-                                icon={User}
-                                label={isJobs ? "Recruteur / Contact RH" : "Contact"}
-                                baseLabel={isJobs ? "Contact RH" : "Contact"}
-                                value={local.contact}
-                                onChange={(v) => patch({ contact: v })}
-                                testId="lead-contact-input"
-                                customFields={local.customFields || []}
-                                lastAddedFieldLabel={lastAddedFieldLabel}
-                                onClearLastAdded={() => setLastAddedFieldLabel(null)}
-                                onAdd={(label) => { dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label, value: "", pinned: false, isMainDuplicate: true }); setLastAddedFieldLabel(label); }}
-                                onUpdateCf={(id, v) => updateCustomField(id, { value: v })}
-                                onDeleteCf={(id) => dispatch({ type: "REMOVE_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, fieldId: id })}
-                            />
-                            {/* ── Téléphone ── */}
-                            <FieldGroup
-                                icon={Phone}
-                                label="Téléphone"
-                                baseLabel="Téléphone"
-                                value={local.phone}
-                                onChange={(v) => patch({ phone: v })}
-                                testId="lead-phone-input"
-                                type="tel"
-                                customFields={local.customFields || []}
-                                lastAddedFieldLabel={lastAddedFieldLabel}
-                                onClearLastAdded={() => setLastAddedFieldLabel(null)}
-                                onAdd={(label) => { dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label, value: "", pinned: false, isMainDuplicate: true }); setLastAddedFieldLabel(label); }}
-                                onUpdateCf={(id, v) => updateCustomField(id, { value: v })}
-                                onDeleteCf={(id) => dispatch({ type: "REMOVE_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, fieldId: id })}
-                                action={
-                                    telHref(local.phone)
-                                        ? { href: telHref(local.phone), label: `Appeler ${local.phone}`, icon: <PhoneCall size={15} />, testId: "lead-phone-action" }
-                                        : null
-                                }
-                            />
-                            {/* ── Email ── */}
-                            <FieldGroup
-                                icon={Mail}
-                                label="Email"
-                                baseLabel="Email"
-                                value={local.email}
-                                onChange={(v) => patch({ email: v })}
-                                testId="lead-email-input"
-                                type="email"
-                                customFields={local.customFields || []}
-                                lastAddedFieldLabel={lastAddedFieldLabel}
-                                onClearLastAdded={() => setLastAddedFieldLabel(null)}
-                                onAdd={(label) => { dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label, value: "", pinned: false, isMainDuplicate: true }); setLastAddedFieldLabel(label); }}
-                                onUpdateCf={(id, v) => updateCustomField(id, { value: v })}
-                                onDeleteCf={(id) => dispatch({ type: "REMOVE_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, fieldId: id })}
-                                action={
-                                    mailtoHref(local.email)
-                                        ? { href: mailtoHref(local.email), label: `Envoyer un email`, icon: <ExternalLink size={15} />, testId: "lead-email-action" }
-                                        : null
-                                }
-                            />
-                            {/* ── Site web ── */}
-                            <FieldGroup
-                                icon={Globe}
-                                label={isJobs ? "Lien offre / Site entreprise" : "Site web"}
-                                baseLabel={isJobs ? "Site" : "Site web"}
-                                value={local.website}
-                                onChange={(v) => patch({ website: v })}
-                                testId="lead-website-input"
-                                customFields={local.customFields || []}
-                                lastAddedFieldLabel={lastAddedFieldLabel}
-                                onClearLastAdded={() => setLastAddedFieldLabel(null)}
-                                onAdd={(label) => { dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label, value: "", pinned: false, isMainDuplicate: true }); setLastAddedFieldLabel(label); }}
-                                onUpdateCf={(id, v) => updateCustomField(id, { value: v })}
-                                onDeleteCf={(id) => dispatch({ type: "REMOVE_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, fieldId: id })}
-                                action={
-                                    websiteHref(local.website)
-                                        ? { href: websiteHref(local.website), target: "_blank", label: `Ouvrir le site`, icon: <ExternalLink size={15} />, testId: "lead-website-action" }
-                                        : null
-                                }
-                            />
+                    {/* ═══════════ ZONE A — fixe : Information pertinente + prochaine action ═══════════ */}
+
+                    {/* 🧾 Brief interactif — personnalisé par lead (import + notes) */}
+                    {brief.hasBrief && (
+                        <div
+                            className="rounded-xl border border-border bg-card p-3.5 space-y-2.5 shadow-sm"
+                            data-testid="lead-brief-strip"
+                        >
+                            {/* Badge info pertinente */}
+                            {brief.hasPertinent && (
+                                <div className="flex items-center gap-1.5 text-[11px] font-medium text-primary">
+                                    <Sparkles size={12} strokeWidth={2} className="sparkle-icon shrink-0" />
+                                    <span>Information pertinente</span>
+                                    {brief.insights.some((i) => i.source === "note") && (
+                                        <span className="text-muted-foreground font-normal">· notes</span>
+                                    )}
+                                    {brief.insights.some((i) => i.source === "import") && (
+                                        <span className="text-muted-foreground font-normal">· import</span>
+                                    )}
+                                </div>
+                            )}
+
+                            {brief.jobTitle && (
+                                <div className="text-sm font-semibold text-foreground leading-snug line-clamp-2">
+                                    {brief.jobTitle}
+                                </div>
+                            )}
+
+                            {(brief.location || brief.contract) && (
+                                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                                    {brief.location && (
+                                        <span className="inline-flex items-center gap-1">
+                                            <MapPin size={11} className="shrink-0" />
+                                            {brief.location}
+                                        </span>
+                                    )}
+                                    {brief.location && brief.contract && <span>·</span>}
+                                    {brief.contract && <span>{brief.contract}</span>}
+                                </div>
+                            )}
+
+                            {/* Contact / tél / email — interactifs + copiables */}
+                            {(brief.contact || brief.phone || brief.email) && (
+                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-foreground">
+                                    {brief.contact && (
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                if (!local.contact && brief.contact) {
+                                                    patch({ contact: brief.contact });
+                                                    toast.success("Contact enregistré", { description: brief.contact });
+                                                }
+                                            }}
+                                            className="inline-flex items-center gap-1 group/row rounded-md hover:bg-muted/60 px-1 -mx-1 py-0.5 transition-colors text-left"
+                                            title={local.contact ? "Contact du lead" : "Cliquer pour enregistrer comme contact"}
+                                        >
+                                            <User size={11} className="text-muted-foreground shrink-0" />
+                                            <span className="font-semibold">{brief.contact}</span>
+                                            {brief.contactSource === "note" && !local.contact && (
+                                                <span className="text-[9px] text-primary font-medium">noter</span>
+                                            )}
+                                            <CopyBtn value={brief.contact} className="opacity-0 group-hover/row:opacity-100" />
+                                        </button>
+                                    )}
+                                    {brief.phone && (
+                                        <span className="inline-flex items-center gap-1 group/row">
+                                            <Phone size={11} className="text-muted-foreground shrink-0" />
+                                            <a
+                                                href={telHref(brief.phone) || undefined}
+                                                className="font-medium hover:text-primary tabular-nums"
+                                            >
+                                                {brief.phone}
+                                            </a>
+                                            {!local.phone && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        patch({ phone: brief.phone });
+                                                        toast.success("Téléphone enregistré");
+                                                    }}
+                                                    className="text-[9px] text-primary font-medium hover:underline"
+                                                >
+                                                    noter
+                                                </button>
+                                            )}
+                                            <CopyBtn value={brief.phone} className="opacity-0 group-hover/row:opacity-100" />
+                                        </span>
+                                    )}
+                                    {brief.email && (
+                                        <span className="inline-flex items-center gap-1 group/row min-w-0">
+                                            <Mail size={11} className="text-muted-foreground shrink-0" />
+                                            <a
+                                                href={mailtoHref(brief.email) || undefined}
+                                                className="font-medium hover:text-primary truncate max-w-[180px]"
+                                            >
+                                                {brief.email}
+                                            </a>
+                                            {!local.email && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        patch({ email: brief.email });
+                                                        toast.success("Email enregistré");
+                                                    }}
+                                                    className="text-[9px] text-primary font-medium hover:underline"
+                                                >
+                                                    noter
+                                                </button>
+                                            )}
+                                            <CopyBtn value={brief.email} className="opacity-0 group-hover/row:opacity-100" />
+                                        </span>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Insights actionnables */}
+                            {brief.insights.filter((i) => i.actionable).length > 0 && (
+                                <div className="flex flex-wrap gap-1.5">
+                                    {brief.insights.filter((i) => i.actionable).map((ins) => (
+                                        <button
+                                            key={`${ins.type}-${ins.value}`}
+                                            type="button"
+                                            onClick={() => {
+                                                if (!ins.applyKey) return;
+                                                patch({ [ins.applyKey]: ins.value });
+                                                toast.success(`${ins.label} enregistré`, { description: ins.value });
+                                            }}
+                                            className="inline-flex items-center gap-1 max-w-full h-6 px-2 rounded-md text-[11px] bg-primary/8 text-primary border border-primary/15 hover:bg-primary/15 transition-colors"
+                                            title={`Enregistrer comme ${ins.applyKey}`}
+                                        >
+                                            <Sparkles size={10} className="sparkle-icon shrink-0" />
+                                            <span className="truncate">{ins.value}</span>
+                                            <span className="opacity-70 shrink-0">+</span>
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+
+                            {/* Liens — empilés verticalement, lisibles */}
+                            {brief.links.length > 0 && (
+                                <div className="flex flex-col gap-0.5 min-w-0">
+                                    {brief.links.map((l) => (
+                                        <a
+                                            key={l.href}
+                                            href={l.href}
+                                            target="_blank"
+                                            rel="noreferrer noopener"
+                                            className="text-[12px] text-primary hover:underline truncate block"
+                                            title={l.href}
+                                        >
+                                            {l.display || displayUrl(l.href)}
+                                        </a>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* 📅 Prochaine action / RDV — carte unifiée */}
+                    <div className="rounded-xl border border-border bg-card p-4 space-y-3 shadow-sm" data-testid="lead-next-action-card">
+                        <div className="flex items-center justify-between">
+                            <h3 className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold flex items-center gap-1.5">
+                                <CalendarClock size={13} strokeWidth={2.5} />
+                                {isJobs ? "Prochain entretien / rappel" : "Prochaine action / RDV"}
+                                {local.nextAction?.auto && (
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium normal-case tracking-normal ml-1">
+                                        auto {local.nextAction.stage || 1}/3
+                                    </span>
+                                )}
+                            </h3>
+                            {local.nextAction && (
+                                <button
+                                    onClick={() => {
+                                        patch({ nextAction: null });
+                                        if (local.autoFollowup) {
+                                            dispatch({
+                                                type: "DISMISS_FOLLOWUP",
+                                                workspaceId: workspace.id,
+                                                leadId: local.id,
+                                            });
+                                        }
+                                    }}
+                                    data-testid="lead-clear-next-action"
+                                    className="text-[11px] text-muted-foreground hover:text-destructive"
+                                >
+                                    Effacer
+                                </button>
+                            )}
                         </div>
 
-                        {/* Infos complémentaires (customFields) — exclure les doublons gérés par FieldGroup */}
-                        {(local.customFields || []).filter((f) => !isMainFieldDuplicate(f.label)).length > 0 && (
-                            <>
-                                <div className="h-px bg-border/60 -mx-1" />
-                                <div className="space-y-2">
-                                    {(local.customFields || []).filter((f) => !isMainFieldDuplicate(f.label)).map((f) => {
-                                        const val = f.value || "";
-                                        const isPhone = /^[+\d\s.\-()]{7,}$/.test(val) && val.replace(/\D/g, "").length >= 7;
-                                        const isEmail = val.includes("@") && val.includes(".");
-                                        const isUrl = /^https?:\/\//i.test(val) || /^www\./i.test(val);
-                                        const actionHref = isPhone
-                                            ? `tel:${val.replace(/[^+\d]/g, "")}`
-                                            : isEmail ? `mailto:${val.trim()}`
-                                            : isUrl ? (val.startsWith("http") ? val : `https://${val}`)
-                                            : null;
-                                        const actionIcon = isPhone ? <PhoneCall size={14} /> : <ExternalLink size={14} />;
-                                        const isLong = val.length > 60;
-                                        return (
-                                            <ExpandableCustomField
-                                                key={f.id}
-                                                field={f}
-                                                isLong={isLong}
-                                                actionHref={actionHref}
-                                                actionIcon={actionIcon}
-                                                autoFocus={false}
-                                                onFocused={() => {}}
-                                                onUpdate={(v) => updateCustomField(f.id, { value: v })}
-                                                onToggleHighlight={() => toggleHighlightCustomField(f.id, f.highlight, f.label)}
-                                            />
-                                        );
-                                    })}
+                        {/* RDV existant */}
+                        {isManualRdv(local.nextAction) && (
+                            <div className="flex items-center justify-between gap-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1.5 text-[12px] text-emerald-700 dark:text-emerald-400">
+                                <div className="flex items-center gap-1.5">
+                                    <CalendarClock size={12} strokeWidth={2.5} />
+                                    <span className="font-medium">{local.nextAction.label.replace("📅 RDV détecté · ", "")}</span>
                                 </div>
-                            </>
+                                <button
+                                    onClick={() => patch({ nextAction: null })}
+                                    className="opacity-50 hover:opacity-100 transition-opacity"
+                                    title="Supprimer le RDV"
+                                >
+                                    <X size={12} />
+                                </button>
+                            </div>
                         )}
-                    </div>
 
-                    {/* 🔁 Suivi des relances */}
-                    <RelancesWidget
-                        lead={local}
-                        workspace={workspace}
-                        dispatch={dispatch}
-                    />
-
-                    {/* 💬 Notes & Historique — Grande card */}
-                    <div className="rounded-xl border border-border bg-card p-4 space-y-3 shadow-sm">
-                        <h3 className="text-xs uppercase tracking-wider text-muted-foreground font-semibold flex items-center gap-1.5">
-                            <MessageSquare size={13} strokeWidth={2.5} /> Notes & Historique
-                        </h3>
-
-                        {/* ── Ajout RDV direct ── */}
-                        <div className="rounded-xl border border-border bg-muted/30 p-3 space-y-2">
-                            <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
-                                <CalendarClock size={11} /> Planifier un RDV
+                        {/* Planifier un RDV direct */}
+                        <div className="space-y-2">
+                            <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                                Planifier un RDV
                             </p>
                             <div className="flex gap-2">
                                 <input
@@ -822,388 +953,517 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                     Enregistrer
                                 </Button>
                             </div>
-                            {/* RDV existant */}
-                            {isManualRdv(local.nextAction) && (
-                                <div className="flex items-center justify-between gap-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1.5 text-[12px] text-emerald-700 dark:text-emerald-400">
-                                    <div className="flex items-center gap-1.5">
-                                        <CalendarClock size={12} strokeWidth={2.5} />
-                                        <span className="font-medium">{local.nextAction.label.replace("📅 RDV détecté · ", "")}</span>
-                                    </div>
-                                    <button
-                                        onClick={() => patch({ nextAction: null })}
-                                        className="opacity-50 hover:opacity-100 transition-opacity"
-                                        title="Supprimer le RDV"
-                                    >
-                                        <X size={12} />
-                                    </button>
-                                </div>
-                            )}
                         </div>
 
-                        <Textarea
-                            data-testid="lead-note-input"
-                            value={noteDraft}
-                            onChange={(e) => setNoteDraft(e.target.value)}
-                            placeholder="Ajouter une note… Ex : « RDV demain à 14h » ou « 06 12 34 56 78 »"
-                            onKeyDown={(e) => {
-                                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                                    e.preventDefault();
-                                    addNote();
-                                }
-                            }}
-                            className="min-h-[70px] resize-none text-sm"
-                        />
+                        <div className="h-px bg-border/60" />
 
-                        {/* ── Détection en temps réel ── */}
-                        {(draftAppointment || draftDetectedItems.length > 0) && (
-                            <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 space-y-2">
-                                <div className="flex items-center gap-1.5 text-[11px] font-semibold text-primary uppercase tracking-wider">
-                                    <Sparkles size={11} /> Détecté — sera appliqué
-                                </div>
-                                {draftAppointment && (
-                                    <div className="flex items-center gap-2 text-[12px] text-foreground font-medium">
-                                        <CalendarClock size={12} className="text-primary shrink-0" />
-                                        <span>RDV · {draftAppointment.label}</span>
-                                    </div>
-                                )}
-                                {draftDetectedItems.map((item, i) => {
-                                    const isNew =
-                                        (item.type === "phone" && (draftDiff.newPhone === item.value || draftDiff.extraPhones.includes(item.value))) ||
-                                        (item.type === "email" && draftDiff.newEmail === item.value) ||
-                                        (item.type === "address" && draftDiff.newAddress === item.value);
-                                    return (
-                                        <div key={i} className={`flex items-center gap-2 text-[12px] rounded-lg px-2 py-0.5 ${isNew ? "text-foreground" : "text-muted-foreground line-through opacity-50"}`}>
-                                            <span className="text-base leading-none shrink-0">{item.icon}</span>
-                                            <span className="font-medium">{item.value}</span>
-                                            {!isNew && <span className="ml-auto text-[10px] opacity-70">déjà présent</span>}
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        )}
-
-                        <div className="flex justify-end">
-                            <Button
-                                onClick={addNote}
-                                disabled={!noteDraft.trim()}
-                                data-testid="lead-add-note-btn"
-                                className="h-9 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 text-xs"
-                            >
-                                Ajouter
-                            </Button>
-                        </div>
-                        <div className="space-y-2 pt-2">
-                            {(local.notes || []).map((n) => (
-                                <div
-                                    key={n.id}
-                                    className="rounded-lg border border-border/60 p-3 bg-muted/30"
-                                    data-testid={`lead-note-${n.id}`}
-                                >
-                                    <div className="text-[10px] text-muted-foreground mb-1 font-medium">
-                                        {formatDateTime(n.at)}
-                                    </div>
-                                    <div className="text-sm whitespace-pre-wrap leading-relaxed">
-                                        {n.text}
-                                    </div>
-                                </div>
-                            ))}
-                            {(!local.notes || local.notes.length === 0) && (
-                                <p className="text-xs text-muted-foreground/70 italic text-center py-4">
-                                    Aucune note pour l'instant.
-                                </p>
-                            )}
-                        </div>
-                    </div>
-
-                    {/* 💡 Infos détectées dans les notes */}
-                    {detectedFromNotes.length > 0 && (
-                        <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 space-y-1.5">
-                            <h3 className="text-[11px] uppercase tracking-wider text-primary font-semibold flex items-center gap-1.5">
-                                <span>✦</span> Détectés dans les notes
-                            </h3>
-                            <div className="space-y-1">
-                                {detectedFromNotes.map((item, i) => (
-                                    <div key={i} className="flex items-center gap-2 text-[12.5px]">
-                                        <span className="text-sm shrink-0">{item.icon}</span>
-                                        <span className="text-foreground font-medium truncate">{item.value}</span>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-
-                    {/* 🏷 Tags — Card */}
-                    <div className="rounded-xl border border-border bg-card p-4 space-y-3 shadow-sm">
-                        <h3 className="text-xs uppercase tracking-wider text-muted-foreground font-semibold flex items-center gap-1.5">
-                            <Tag size={13} strokeWidth={2.5} /> Tags
-                        </h3>
-                        <div className="flex flex-wrap gap-1.5">
-                            {(local.tags || []).map((t) => (
-                                <span
-                                    key={t}
-                                    data-testid={`lead-tag-${t}`}
-                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-secondary"
-                                >
-                                    {t}
-                                    <button
-                                        onClick={() => removeTag(t)}
-                                        aria-label={`Supprimer le tag ${t}`}
-                                        className="text-muted-foreground hover:text-destructive"
-                                    >
-                                        <X size={12} />
-                                    </button>
-                                </span>
-                            ))}
-                        </div>
-                        <div className="flex gap-2">
-                            <Input
-                                data-testid="lead-tag-input"
-                                value={tagDraft}
-                                onChange={(e) => setTagDraft(e.target.value)}
-                                onKeyDown={(e) => e.key === "Enter" && addTag()}
-                                placeholder="Ajouter un tag (Entrée)"
-                                className="h-9 text-sm"
-                            />
-                            <Button
-                                onClick={addTag}
-                                variant="secondary"
-                                className="h-9 rounded-lg shrink-0"
-                                data-testid="lead-add-tag-btn"
-                            >
-                                <Plus size={14} />
-                            </Button>
-                        </div>
-                    </div>
-
-                    {/* 📅 Prochaine action — Card */}
-                    <div className="rounded-xl border border-border bg-card p-4 space-y-3 shadow-sm">
-                        <div className="flex items-center justify-between">
-                            <h3 className="text-xs uppercase tracking-wider text-muted-foreground font-semibold flex items-center gap-1.5">
-                                <Calendar size={13} strokeWidth={2.5} />
-                                {isJobs ? "Prochain entretien / rappel" : "Prochaine action"}
-                                {local.nextAction?.auto && (
-                                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium normal-case tracking-normal ml-1">
-                                        auto {local.nextAction.stage || 1}/3
-                                    </span>
-                                )}
-                            </h3>
-                            {local.nextAction && (
-                                <button
-                                    onClick={() => {
-                                        patch({ nextAction: null });
-                                        if (local.autoFollowup) {
-                                            dispatch({
-                                                type: "DISMISS_FOLLOWUP",
-                                                workspaceId: workspace.id,
-                                                leadId: local.id,
-                                            });
-                                        }
-                                    }}
-                                    data-testid="lead-clear-next-action"
-                                    className="text-[11px] text-muted-foreground hover:text-destructive"
-                                >
-                                    Effacer
-                                </button>
-                            )}
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                            <Input
-                                data-testid="lead-next-action-date"
-                                type="date"
-                                value={local.nextAction?.date || ""}
-                                onChange={(e) =>
-                                    patch({
-                                        nextAction: {
-                                            ...(local.nextAction || {}),
-                                            date: e.target.value,
-                                            auto: false,
-                                        },
-                                    })
-                                }
-                                className="h-9"
-                            />
-                            <Input
-                                data-testid="lead-next-action-label"
-                                placeholder="ex. Relance"
-                                value={local.nextAction?.label || ""}
-                                onChange={(e) =>
-                                    patch({
-                                        nextAction: {
-                                            ...(local.nextAction || {}),
-                                            label: e.target.value,
-                                            auto: false,
-                                        },
-                                    })
-                                }
-                                className="h-9"
-                            />
-                        </div>
-                    </div>
-
-                    {/* 💰 Valeur du deal / Salaire */}
-                    <div className={`rounded-xl border p-4 space-y-3 shadow-sm ${
-                        isJobs
-                            ? "border-violet-500/20 bg-violet-500/5"
-                            : "border-emerald-500/20 bg-emerald-500/5"
-                    }`}>
-                        <h3 className={`text-xs uppercase tracking-wider font-semibold flex items-center gap-1.5 ${
-                            isJobs
-                                ? "text-violet-700 dark:text-violet-400"
-                                : "text-emerald-700 dark:text-emerald-400"
-                        }`}>
-                            <Trophy size={13} strokeWidth={2.5} />
-                            {isJobs ? "💰 Salaire proposé" : "Valeur du deal"}
-                        </h3>
-                        <div className="relative">
-                            <Euro size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
-                            <Input
-                                data-testid="lead-deal-value-input"
-                                type="text"
-                                inputMode="decimal"
-                                placeholder={isJobs ? "ex. 45000 (annuel brut)" : "Montant du deal (ex. 2500)"}
-                                value={local.dealValue != null ? String(local.dealValue) : ""}
-                                onChange={(e) => {
-                                    const raw = e.target.value.replace(/[^0-9.,]/g, "").replace(",", ".");
-                                    const num = raw === "" ? null : parseFloat(raw);
-                                    dispatch({
-                                        type: "SET_DEAL_VALUE",
-                                        workspaceId: workspace.id,
-                                        leadId: local.id,
-                                        value: num != null && !isNaN(num) ? num : null,
-                                    });
-                                }}
-                                className="pl-8 h-10"
-                            />
-                        </div>
-                        {local.dealValue != null && (
-                            <p className={`text-lg font-semibold ${isJobs ? "text-violet-600 dark:text-violet-400" : "text-emerald-600 dark:text-emerald-400"}`}>
-                                {new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(local.dealValue)}
-                                {isJobs && <span className="ml-1 text-sm font-normal text-muted-foreground">/an brut</span>}
-                                {!isJobs && local.dealClosedAt && (
-                                    <span className="ml-2 text-xs font-normal text-muted-foreground">
-                                        · closé le {new Date(local.dealClosedAt).toLocaleDateString("fr-FR")}
-                                    </span>
-                                )}
+                        {/* Échéance simple (date / libellé) */}
+                        <div className="space-y-2">
+                            <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                                Ou définir une échéance simple
                             </p>
-                        )}
-
+                            <div className="grid grid-cols-2 gap-2">
+                                <Input
+                                    data-testid="lead-next-action-date"
+                                    type="date"
+                                    value={local.nextAction?.date || ""}
+                                    onChange={(e) =>
+                                        patch({
+                                            nextAction: {
+                                                ...(local.nextAction || {}),
+                                                date: e.target.value,
+                                                auto: false,
+                                            },
+                                        })
+                                    }
+                                    className="h-9"
+                                />
+                                <Input
+                                    data-testid="lead-next-action-label"
+                                    placeholder="ex. Relance"
+                                    value={local.nextAction?.label || ""}
+                                    onChange={(e) =>
+                                        patch({
+                                            nextAction: {
+                                                ...(local.nextAction || {}),
+                                                label: e.target.value,
+                                                auto: false,
+                                            },
+                                        })
+                                    }
+                                    className="h-9"
+                                />
+                            </div>
+                        </div>
                     </div>
 
-                    {/* 📦 Données importées — Collapsible */}
-                    {local.extra && Object.keys(local.extra).length > 0 && (
-                        <Collapsible open={extraOpen} onOpenChange={setExtraOpen}>
-                            <CollapsibleTrigger asChild>
-                                <button className="w-full rounded-xl border border-border bg-card p-3 hover:bg-muted/30 transition-colors flex items-center justify-between group">
-                                    <h3 className="text-xs uppercase tracking-wider text-muted-foreground font-semibold flex items-center gap-1.5">
-                                        <Database size={13} strokeWidth={2.5} />
-                                        Données importées
-                                        <span className="normal-case tracking-normal text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground font-normal">
-                                            {Object.keys(local.extra).length}
-                                        </span>
-                                    </h3>
-                                    <ChevronDown
-                                        size={14}
-                                        className={`text-muted-foreground transition-transform duration-200 ${extraOpen ? "rotate-180" : ""}`}
-                                    />
-                                </button>
-                            </CollapsibleTrigger>
-                            <CollapsibleContent>
-                                <div className="mt-2 rounded-xl border border-border bg-card overflow-hidden">
-                                    {Object.entries(local.extra).map(([k, v]) => {
-                                        const alreadyPromoted = (local.customFields || []).some(
-                                            (cf) => cf.label.toLowerCase() === k.toLowerCase() && cf.value
-                                        );
-                                        const isHighlighted = (local.customFields || []).some(
-                                            (cf) => cf.label === k && cf.highlight
-                                        );
-                                        return (
-                                            <div
-                                                key={k}
-                                                className="flex items-center gap-2 px-3 py-2 border-b border-border last:border-b-0 hover:bg-muted/30 transition-colors group"
-                                            >
-                                                <div className="flex-1 min-w-0 grid grid-cols-2 gap-2 text-sm">
-                                                    <span className="text-muted-foreground truncate text-xs font-medium">{k}</span>
-                                                    <span className="truncate text-xs">{v}</span>
+                    {/* ═══════════ ZONE B — sections réordonnables ═══════════ */}
+                    <div className="flex items-center justify-between gap-2 -mb-1">
+                        <p className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
+                            Sections
+                        </p>
+                        <PanelSectionsOrganizer
+                            layout={layout}
+                            onChange={persistLayout}
+                            getTitle={sectionTitle}
+                        />
+                    </div>
+                    {visiblePanelSections(layout).map((id) => {
+                        if (id === "imported" && !(local.extra && Object.keys(local.extra).length > 0)) return null;
+                        if (id === "history" && (local.statusHistory || []).length === 0) return null;
+
+                        const sectionProps = {
+                            key: id,
+                            id,
+                            title: sectionTitle(id),
+                            icon: SECTION_ICONS[PANEL_SECTION_META[id]?.icon],
+                            onHide: hideSection,
+                            onDragStart: (sid) => {
+                                setDragSectionId(sid);
+                                if (!sid) {
+                                    setDragOverId(null);
+                                    setDropPlace(null);
+                                }
+                            },
+                            onDragOver: (sid, place) => {
+                                setDragOverId(sid);
+                                setDropPlace(place);
+                            },
+                            onDrop: (targetId, place) => {
+                                reorderSections(dragSectionId, targetId, place);
+                                setDragOverId(null);
+                                setDropPlace(null);
+                                setDragSectionId(null);
+                            },
+                            dragOver: dragOverId === id && dragSectionId && dragSectionId !== id,
+                            dropPlace: dragOverId === id ? dropPlace : null,
+                            isDragging: dragSectionId === id,
+                            collapsed: isSectionCollapsed(layout, id),
+                            onToggleCollapse: toggleCollapse,
+                            badge: id === "imported" && local.extra
+                                ? Object.keys(local.extra).length
+                                : id === "relances" && (local.relances || []).length > 0
+                                    ? (local.relances || []).length
+                                    : undefined,
+                        };
+
+                        switch (id) {
+                            case "imported": {
+                                return (
+                                    <PanelSectionCard {...sectionProps}>
+                                        <div className="rounded-lg border border-border overflow-hidden divide-y divide-border">
+                                            {Object.entries(local.extra).map(([k, v]) => {
+                                                const alreadyPromoted = (local.customFields || []).some(
+                                                    (cf) => cf.label.toLowerCase() === k.toLowerCase() && cf.value
+                                                );
+                                                const isHighlighted = (local.customFields || []).some(
+                                                    (cf) => cf.label === k && cf.highlight
+                                                );
+                                                const href = valueAsHref(v);
+                                                return (
+                                                    <div
+                                                        key={k}
+                                                        className="flex items-start gap-2 px-3 py-2 hover:bg-muted/30 transition-colors group"
+                                                    >
+                                                        <div className="flex-1 min-w-0 grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-2 text-sm">
+                                                            <span className="text-muted-foreground truncate text-[11px] font-medium pt-0.5">{k}</span>
+                                                            <span className="min-w-0 flex items-start gap-1 group/row">
+                                                                {href ? (
+                                                                    <a
+                                                                        href={href}
+                                                                        target="_blank"
+                                                                        rel="noreferrer noopener"
+                                                                        className="text-[12px] text-primary hover:underline break-all leading-snug"
+                                                                    >
+                                                                        {displayUrl(href)}
+                                                                    </a>
+                                                                ) : (
+                                                                    <span className="text-[12px] break-words leading-snug">{String(v)}</span>
+                                                                )}
+                                                                <CopyBtn value={String(v)} className="opacity-0 group-hover/row:opacity-100 mt-0.5" />
+                                                            </span>
+                                                        </div>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => highlightExtraField(k, v)}
+                                                            title={isHighlighted ? "Retirer de la carte Kanban" : "Afficher sur la carte Kanban"}
+                                                            className={`shrink-0 w-6 h-6 rounded-md flex items-center justify-center transition-colors ${
+                                                                isHighlighted
+                                                                    ? "text-amber-500 bg-amber-500/10"
+                                                                    : "text-muted-foreground/40 hover:text-amber-500 hover:bg-amber-500/10 opacity-0 group-hover:opacity-100"
+                                                            }`}
+                                                        >
+                                                            <Star size={11} strokeWidth={2} className={isHighlighted ? "fill-amber-500" : ""} />
+                                                        </button>
+                                                        {alreadyPromoted ? (
+                                                            <span className="shrink-0 text-[10px] text-emerald-600 dark:text-emerald-400 flex items-center mt-1">
+                                                                <CheckCircle2 size={11} />
+                                                            </span>
+                                                        ) : (
+                                                            <ExtraPromoteButton
+                                                                extraKey={k}
+                                                                value={v}
+                                                                onPromote={promoteExtraField}
+                                                            />
+                                                        )}
+                                                        <ExtraDeleteButton
+                                                            extraKey={k}
+                                                            extraValue={v}
+                                                            onDelete={deleteLeadExtraField}
+                                                        />
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                        <p className="text-[11px] text-muted-foreground px-0.5">
+                                            ↑ Ajoute le champ sur <strong>tous les leads</strong> sans écraser.
+                                        </p>
+                                    </PanelSectionCard>
+                                );
+                            }
+
+                            case "contact": {
+                                return (
+                                    <PanelSectionCard {...sectionProps}>
+                                        <div className="space-y-2.5">
+                                            <FieldGroup
+                                                icon={User}
+                                                label={isJobs ? "Recruteur / Contact RH" : "Contact"}
+                                                baseLabel={isJobs ? "Contact RH" : "Contact"}
+                                                value={local.contact}
+                                                onChange={(v) => patch({ contact: v })}
+                                                testId="lead-contact-input"
+                                                customFields={local.customFields || []}
+                                                lastAddedFieldLabel={lastAddedFieldLabel}
+                                                onClearLastAdded={() => setLastAddedFieldLabel(null)}
+                                                onAdd={(label) => { dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label, value: "", pinned: false, isMainDuplicate: true }); setLastAddedFieldLabel(label); }}
+                                                onUpdateCf={(cid, v) => updateCustomField(cid, { value: v })}
+                                                onDeleteCf={(cid) => dispatch({ type: "REMOVE_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, fieldId: cid })}
+                                            />
+                                            <FieldGroup
+                                                icon={Phone}
+                                                label="Téléphone"
+                                                baseLabel="Téléphone"
+                                                value={local.phone}
+                                                onChange={(v) => patch({ phone: v })}
+                                                testId="lead-phone-input"
+                                                type="tel"
+                                                linkHref={telHref(local.phone)}
+                                                customFields={local.customFields || []}
+                                                lastAddedFieldLabel={lastAddedFieldLabel}
+                                                onClearLastAdded={() => setLastAddedFieldLabel(null)}
+                                                onAdd={(label) => { dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label, value: "", pinned: false, isMainDuplicate: true }); setLastAddedFieldLabel(label); }}
+                                                onUpdateCf={(cid, v) => updateCustomField(cid, { value: v })}
+                                                onDeleteCf={(cid) => dispatch({ type: "REMOVE_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, fieldId: cid })}
+                                            />
+                                            <FieldGroup
+                                                icon={Mail}
+                                                label="Email"
+                                                baseLabel="Email"
+                                                value={local.email}
+                                                onChange={(v) => patch({ email: v })}
+                                                testId="lead-email-input"
+                                                type="email"
+                                                linkHref={mailtoHref(local.email)}
+                                                customFields={local.customFields || []}
+                                                lastAddedFieldLabel={lastAddedFieldLabel}
+                                                onClearLastAdded={() => setLastAddedFieldLabel(null)}
+                                                onAdd={(label) => { dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label, value: "", pinned: false, isMainDuplicate: true }); setLastAddedFieldLabel(label); }}
+                                                onUpdateCf={(cid, v) => updateCustomField(cid, { value: v })}
+                                                onDeleteCf={(cid) => dispatch({ type: "REMOVE_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, fieldId: cid })}
+                                            />
+                                            <FieldGroup
+                                                icon={Globe}
+                                                label={isJobs ? "Lien offre / Site entreprise" : "Site web"}
+                                                baseLabel={isJobs ? "Site" : "Site web"}
+                                                value={local.website}
+                                                onChange={(v) => patch({ website: v })}
+                                                testId="lead-website-input"
+                                                linkHref={websiteHref(local.website)}
+                                                linkIsExternal
+                                                customFields={local.customFields || []}
+                                                lastAddedFieldLabel={lastAddedFieldLabel}
+                                                onClearLastAdded={() => setLastAddedFieldLabel(null)}
+                                                onAdd={(label) => { dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label, value: "", pinned: false, isMainDuplicate: true }); setLastAddedFieldLabel(label); }}
+                                                onUpdateCf={(cid, v) => updateCustomField(cid, { value: v })}
+                                                onDeleteCf={(cid) => dispatch({ type: "REMOVE_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, fieldId: cid })}
+                                            />
+
+                                            {(local.customFields || []).filter((f) => !isMainFieldDuplicate(f.label)).length > 0 && (
+                                                <>
+                                                    <div className="h-px bg-border/60 -mx-1" />
+                                                    <div className="space-y-2">
+                                                        {(local.customFields || []).filter((f) => !isMainFieldDuplicate(f.label)).map((f) => {
+                                                            const val = f.value || "";
+                                                            const href = valueAsHref(val)
+                                                                || (/^[+\d\s.\-()]{7,}$/.test(val) && val.replace(/\D/g, "").length >= 7
+                                                                    ? `tel:${val.replace(/[^+\d]/g, "")}`
+                                                                    : null)
+                                                                || (val.includes("@") && val.includes(".") ? `mailto:${val.trim()}` : null);
+                                                            const isLong = val.length > 60;
+                                                            return (
+                                                                <ExpandableCustomField
+                                                                    key={f.id}
+                                                                    field={f}
+                                                                    isLong={isLong}
+                                                                    actionHref={href}
+                                                                    autoFocus={false}
+                                                                    onFocused={() => {}}
+                                                                    onUpdate={(v) => updateCustomField(f.id, { value: v })}
+                                                                    onToggleHighlight={() => toggleHighlightCustomField(f.id, f.highlight, f.label)}
+                                                                />
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </>
+                                            )}
+                                        </div>
+                                    </PanelSectionCard>
+                                );
+                            }
+
+                            case "notes": {
+                                return (
+                                    <PanelSectionCard {...sectionProps}>
+                                        <Textarea
+                                            data-testid="lead-note-input"
+                                            value={noteDraft}
+                                            onChange={(e) => setNoteDraft(e.target.value)}
+                                            placeholder="Ajouter une note… Ex : « RDV demain à 14h » ou « 06 12 34 56 78 »"
+                                            onKeyDown={(e) => {
+                                                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                                                    e.preventDefault();
+                                                    addNote();
+                                                }
+                                            }}
+                                            className="min-h-[70px] resize-none text-sm"
+                                        />
+
+                                        {/* ── Détection en temps réel ── */}
+                                        {(draftAppointment || draftDetectedItems.length > 0) && (
+                                            <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 space-y-2">
+                                                <div className="flex items-center gap-1.5 text-[11px] font-semibold text-primary uppercase tracking-wider">
+                                                    <Sparkles size={11} /> Détecté — sera appliqué
                                                 </div>
-                                                {/* Bouton highlight ⭐ */}
-                                                <button
-                                                    onClick={() => highlightExtraField(k, v)}
-                                                    title={isHighlighted ? "Retirer de l'aperçu carte" : "Afficher sous le nom sur la carte"}
-                                                    className={`shrink-0 w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
-                                                        isHighlighted
-                                                            ? "text-amber-500 bg-amber-500/10"
-                                                            : "text-muted-foreground/40 hover:text-amber-500 hover:bg-amber-500/10 opacity-0 group-hover:opacity-100"
-                                                    }`}
-                                                >
-                                                    <Star size={12} strokeWidth={2} className={isHighlighted ? "fill-amber-500" : ""} />
-                                                </button>
-                                                {alreadyPromoted ? (
-                                                    <span className="shrink-0 text-[10px] text-emerald-600 dark:text-emerald-400 flex items-center gap-0.5">
-                                                        <CheckCircle2 size={11} />
-                                                    </span>
-                                                ) : (
-                                                    <ExtraPromoteButton
-                                                        extraKey={k}
-                                                        value={v}
-                                                        onPromote={promoteExtraField}
-                                                    />
+                                                {draftAppointment && (
+                                                    <div className="flex items-center gap-2 text-[12px] text-foreground font-medium">
+                                                        <CalendarClock size={12} className="text-primary shrink-0" />
+                                                        <span>RDV · {draftAppointment.label}</span>
+                                                    </div>
                                                 )}
-                                                <ExtraDeleteButton
-                                                    extraKey={k}
-                                                    extraValue={v}
-                                                    onDelete={deleteLeadExtraField}
+                                                {draftDetectedItems.map((item, i) => {
+                                                    const isNew =
+                                                        (item.type === "person" && draftDiff.newContact === item.value) ||
+                                                        (item.type === "phone" && (draftDiff.newPhone === item.value || draftDiff.extraPhones.includes(item.value))) ||
+                                                        (item.type === "email" && draftDiff.newEmail === item.value) ||
+                                                        (item.type === "address" && draftDiff.newAddress === item.value);
+                                                    return (
+                                                        <div key={i} className={`flex items-center gap-2 text-[12px] rounded-lg px-2 py-0.5 ${isNew ? "text-foreground" : "text-muted-foreground line-through opacity-50"}`}>
+                                                            <span className="text-base leading-none shrink-0">{item.icon}</span>
+                                                            <span className="font-medium">{item.value}</span>
+                                                            {!isNew && <span className="ml-auto text-[10px] opacity-70">déjà présent</span>}
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+
+                                        <div className="flex justify-end">
+                                            <Button
+                                                onClick={addNote}
+                                                disabled={!noteDraft.trim()}
+                                                data-testid="lead-add-note-btn"
+                                                className="h-9 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 text-xs"
+                                            >
+                                                Ajouter
+                                            </Button>
+                                        </div>
+                                        <div className="space-y-2 pt-2">
+                                            {(local.notes || []).map((n) => (
+                                                <div
+                                                    key={n.id}
+                                                    className="rounded-lg border border-border/60 p-3 bg-muted/30"
+                                                    data-testid={`lead-note-${n.id}`}
+                                                >
+                                                    <div className="text-[10px] text-muted-foreground mb-1 font-medium">
+                                                        {formatDateTime(n.at)}
+                                                    </div>
+                                                    <div className="text-sm whitespace-pre-wrap leading-relaxed">
+                                                        {n.text}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                            {(!local.notes || local.notes.length === 0) && (
+                                                <p className="text-xs text-muted-foreground/70 italic text-center py-4">
+                                                    Aucune note pour l'instant.
+                                                </p>
+                                            )}
+                                        </div>
+
+                                        {/* 💡 Infos détectées dans l'ensemble des notes */}
+                                        {detectedFromNotes.length > 0 && (
+                                            <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 space-y-1.5">
+                                                <h4 className="text-[11px] uppercase tracking-wider text-primary font-semibold flex items-center gap-1.5">
+                                                    <span>✦</span> Détectés dans les notes
+                                                </h4>
+                                                <div className="space-y-1">
+                                                    {detectedFromNotes.map((item, i) => (
+                                                        <div key={i} className="flex items-center gap-2 text-[12.5px]">
+                                                            <span className="text-sm shrink-0">{item.icon}</span>
+                                                            <span className="text-foreground font-medium truncate">{item.value}</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </PanelSectionCard>
+                                );
+                            }
+
+                            case "relances": {
+                                return (
+                                    <PanelSectionCard {...sectionProps}>
+                                        <RelancesWidget lead={local} workspace={workspace} dispatch={dispatch} />
+                                    </PanelSectionCard>
+                                );
+                            }
+
+                            case "tags": {
+                                return (
+                                    <PanelSectionCard {...sectionProps}>
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {(local.tags || []).map((t) => (
+                                                <span
+                                                    key={t}
+                                                    data-testid={`lead-tag-${t}`}
+                                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-secondary"
+                                                >
+                                                    {t}
+                                                    <button
+                                                        onClick={() => removeTag(t)}
+                                                        aria-label={`Supprimer le tag ${t}`}
+                                                        className="text-muted-foreground hover:text-destructive"
+                                                    >
+                                                        <X size={12} />
+                                                    </button>
+                                                </span>
+                                            ))}
+                                        </div>
+                                        <div className="flex gap-2">
+                                            <Input
+                                                data-testid="lead-tag-input"
+                                                value={tagDraft}
+                                                onChange={(e) => setTagDraft(e.target.value)}
+                                                onKeyDown={(e) => e.key === "Enter" && addTag()}
+                                                placeholder="Ajouter un tag (Entrée)"
+                                                className="h-9 text-sm"
+                                            />
+                                            <Button
+                                                onClick={addTag}
+                                                variant="secondary"
+                                                className="h-9 rounded-lg shrink-0"
+                                                data-testid="lead-add-tag-btn"
+                                            >
+                                                <Plus size={14} />
+                                            </Button>
+                                        </div>
+                                    </PanelSectionCard>
+                                );
+                            }
+
+                            case "deal": {
+                                return (
+                                    <PanelSectionCard {...sectionProps}>
+                                        <div className={`rounded-lg p-3 space-y-3 ${isJobs ? "bg-violet-500/5" : "bg-emerald-500/5"}`}>
+                                            <div className="relative">
+                                                <Euro size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+                                                <Input
+                                                    data-testid="lead-deal-value-input"
+                                                    type="text"
+                                                    inputMode="decimal"
+                                                    placeholder={isJobs ? "ex. 45000 (annuel brut)" : "Montant du deal (ex. 2500)"}
+                                                    value={local.dealValue != null ? String(local.dealValue) : ""}
+                                                    onChange={(e) => {
+                                                        const raw = e.target.value.replace(/[^0-9.,]/g, "").replace(",", ".");
+                                                        const num = raw === "" ? null : parseFloat(raw);
+                                                        dispatch({
+                                                            type: "SET_DEAL_VALUE",
+                                                            workspaceId: workspace.id,
+                                                            leadId: local.id,
+                                                            value: num != null && !isNaN(num) ? num : null,
+                                                        });
+                                                    }}
+                                                    className="pl-8 h-10"
                                                 />
                                             </div>
-                                        );
-                                    })}
-                                </div>
-                                <p className="text-[11px] text-muted-foreground mt-2 px-1">
-                                    ↑ Ajoute le champ sur <strong>tous les leads</strong> sans écraser.
-                                </p>
-                            </CollapsibleContent>
-                        </Collapsible>
-                    )}
+                                            {local.dealValue != null && (
+                                                <p className={`text-lg font-semibold ${isJobs ? "text-violet-600 dark:text-violet-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+                                                    {new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(local.dealValue)}
+                                                    {isJobs && <span className="ml-1 text-sm font-normal text-muted-foreground">/an brut</span>}
+                                                    {!isJobs && local.dealClosedAt && (
+                                                        <span className="ml-2 text-xs font-normal text-muted-foreground">
+                                                            · closé le {new Date(local.dealClosedAt).toLocaleDateString("fr-FR")}
+                                                        </span>
+                                                    )}
+                                                </p>
+                                            )}
+                                        </div>
+                                    </PanelSectionCard>
+                                );
+                            }
 
-                    {/* 📈 Historique de statut — Card conditionnelle */}
-                    {(local.statusHistory || []).length > 0 && (
-                        <div className="rounded-xl border border-border bg-card p-4 space-y-3 shadow-sm">
-                            <h3 className="text-xs uppercase tracking-wider text-muted-foreground font-semibold flex items-center gap-1.5">
-                                <History size={13} strokeWidth={2.5} /> Historique de statut
-                            </h3>
-                            <div className="space-y-1.5">
-                                {[...local.statusHistory]
-                                    .reverse()
-                                    .map((entry, idx) => {
-                                        const col = workspace.columns[entry.columnId];
-                                        if (!col) return null;
-                                        const cc = getColumnColor(col);
-                                        const isCurrent = idx === 0;
-                                        return (
-                                            <div
-                                                key={idx}
-                                                className={`flex items-center gap-2.5 text-xs ${isCurrent ? "opacity-100" : "opacity-50"}`}
-                                                data-testid={`status-history-${idx}`}
-                                            >
-                                                <span className={`w-2 h-2 rounded-full ${cc.dot} shrink-0`} />
-                                                <span className="font-medium">{col.name}</span>
-                                                <span className="text-muted-foreground text-[11px]">
-                                                    · {formatDateTime(entry.at)}
-                                                </span>
-                                                {isCurrent && (
-                                                    <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary ml-auto uppercase tracking-wide font-semibold">
-                                                        actuel
-                                                    </span>
-                                                )}
-                                            </div>
-                                        );
-                                    })}
-                            </div>
-                        </div>
-                    )}
+                            case "history": {
+                                return (
+                                    <PanelSectionCard {...sectionProps}>
+                                        <div className="space-y-1.5">
+                                            {[...local.statusHistory]
+                                                .reverse()
+                                                .map((entry, idx) => {
+                                                    const col = workspace.columns[entry.columnId];
+                                                    if (!col) return null;
+                                                    const cc = getColumnColor(col);
+                                                    const isCurrent = idx === 0;
+                                                    return (
+                                                        <div
+                                                            key={idx}
+                                                            className={`flex items-center gap-2.5 text-xs ${isCurrent ? "opacity-100" : "opacity-50"}`}
+                                                            data-testid={`status-history-${idx}`}
+                                                        >
+                                                            <span className={`w-2 h-2 rounded-full ${cc.dot} shrink-0`} />
+                                                            <span className="font-medium">{col.name}</span>
+                                                            <span className="text-muted-foreground text-[11px]">
+                                                                · {formatDateTime(entry.at)}
+                                                            </span>
+                                                            {isCurrent && (
+                                                                <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary ml-auto uppercase tracking-wide font-semibold">
+                                                                    actuel
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })}
+                                        </div>
+                                    </PanelSectionCard>
+                                );
+                            }
 
+                            default:
+                                return null;
+                        }
+                    })}
+
+                    {/* ═══════════ ZONE C — sections masquées ═══════════ */}
+                    <HiddenSectionsMenu
+                        items={hiddenPanelSections(layout).map((id) => ({
+                            id,
+                            label: sectionTitle(id),
+                            Icon: SECTION_ICONS[PANEL_SECTION_META[id]?.icon],
+                        }))}
+                        onRestore={restoreSection}
+                    />
                 </div>
 
-                <div className="border-t border-border px-5 py-3 flex items-center justify-between glass rounded-b-2xl shrink-0">
+                <div className="border-t border-border px-5 py-3 flex items-center justify-between bg-card rounded-b-xl shrink-0">
                     <div className="text-xs text-muted-foreground">
                         Créé le {formatDateTime(local.createdAt)}
                     </div>
@@ -1284,13 +1544,12 @@ function isMainFieldDuplicate(label) {
     );
 }
 
-const ExpandableCustomField = ({ field: f, isLong, actionHref, actionIcon, onUpdate, onToggleHighlight, autoFocus = false, onFocused }) => {
+const ExpandableCustomField = ({ field: f, isLong, actionHref, onUpdate, onToggleHighlight, autoFocus = false, onFocused }) => {
     const [expanded, setExpanded] = useState(false);
     const inputRef = useRef(null);
     const val = f.value || "";
-    const isPhone = actionHref?.startsWith("tel:");
+    const isExternal = actionHref && !actionHref.startsWith("tel:") && !actionHref.startsWith("mailto:");
 
-    // Auto-focus quand le champ vient d'être créé via le bouton "+"
     useEffect(() => {
         if (autoFocus && inputRef.current) {
             inputRef.current.focus();
@@ -1308,7 +1567,7 @@ const ExpandableCustomField = ({ field: f, isLong, actionHref, actionIcon, onUpd
                 {f.highlight && <Star size={9} className="text-amber-500 fill-amber-500 shrink-0" />}
                 {f.label}
             </Label>
-            <div className="flex-1 min-w-0">
+            <div className="flex-1 min-w-0 space-y-1">
                 {expanded ? (
                     <textarea
                         value={f.value}
@@ -1326,13 +1585,24 @@ const ExpandableCustomField = ({ field: f, isLong, actionHref, actionIcon, onUpd
                         className={`h-8 text-sm transition-all ${autoFocus ? "ring-2 ring-primary border-primary" : ""}`}
                     />
                 )}
+                {actionHref && val && (
+                    <a
+                        href={actionHref}
+                        target={isExternal ? "_blank" : undefined}
+                        rel={isExternal ? "noreferrer noopener" : undefined}
+                        className="inline-block text-[11px] text-primary hover:underline break-all leading-snug"
+                    >
+                        {isExternal ? displayUrl(actionHref) : val}
+                    </a>
+                )}
             </div>
-            {/* Bouton déplier — uniquement si valeur longue */}
+            {val && <CopyBtn value={val} className="mt-2 opacity-0 group-hover/cf:opacity-100" />}
             {isLong && (
                 <button
+                    type="button"
                     onClick={() => setExpanded((v) => !v)}
-                    title={expanded ? "Réduire" : "Déplier pour lire en entier"}
-                    className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center transition-colors text-muted-foreground/40 hover:text-primary hover:bg-primary/10"
+                    title={expanded ? "Réduire" : "Déplier"}
+                    className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground/40 hover:text-primary hover:bg-primary/10"
                 >
                     <ChevronDown
                         size={13}
@@ -1342,8 +1612,9 @@ const ExpandableCustomField = ({ field: f, isLong, actionHref, actionIcon, onUpd
                 </button>
             )}
             <button
+                type="button"
                 onClick={onToggleHighlight}
-                title={f.highlight ? "Retirer de l'aperçu carte" : "Afficher sous le nom sur la carte"}
+                title={f.highlight ? "Retirer de la carte Kanban" : "Afficher sur la carte Kanban"}
                 className={`shrink-0 w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
                     f.highlight
                         ? "text-amber-500 bg-amber-500/10"
@@ -1352,68 +1623,10 @@ const ExpandableCustomField = ({ field: f, isLong, actionHref, actionIcon, onUpd
             >
                 <Star size={13} strokeWidth={2} className={f.highlight ? "fill-amber-500" : ""} />
             </button>
-            {actionHref && val && (
-                <a
-                    href={actionHref}
-                    target={isPhone ? undefined : "_blank"}
-                    rel={isPhone ? undefined : "noreferrer noopener"}
-                    title={isPhone ? `Appeler ${val}` : `Ouvrir ${val}`}
-                    className="shrink-0 w-8 h-8 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 flex items-center justify-center transition-colors"
-                >
-                    {actionIcon}
-                </a>
-            )}
         </div>
     );
 };
 
-const Field = ({
-    icon: Icon,
-    label,
-    value,
-    onChange,
-    testId,
-    type = "text",
-    action,
-}) => (
-    <div>
-        <Label className="text-xs text-muted-foreground">{label}</Label>
-        <div className="relative mt-1 flex items-center gap-1.5">
-            <div className="relative flex-1">
-                <Icon
-                    size={14}
-                    className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
-                />
-                <Input
-                    data-testid={testId}
-                    type={type}
-                    value={value || ""}
-                    onChange={(e) => onChange(e.target.value)}
-                    className="pl-9 h-10"
-                />
-            </div>
-            {action && value && (
-                <a
-                    href={action.href}
-                    target={action.target}
-                    rel={action.target === "_blank" ? "noreferrer noopener" : undefined}
-                    data-testid={action.testId}
-                    aria-label={action.label}
-                    title={action.label}
-                    className="shrink-0 w-10 h-10 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 flex items-center justify-center transition-colors"
-                >
-                    {action.icon}
-                </a>
-            )}
-        </div>
-    </div>
-);
-
-/**
- * FieldGroup — champ principal + ses doublons (Téléphone 2, Email 2…)
- * affichés comme des Field normaux juste en dessous.
- * Un icône "+" discret à côté du label permet d'en ajouter un.
- */
 const FieldGroup = ({
     icon: Icon,
     label,
@@ -1422,7 +1635,8 @@ const FieldGroup = ({
     onChange,
     testId,
     type = "text",
-    action,
+    linkHref,
+    linkIsExternal = false,
     customFields,
     lastAddedFieldLabel,
     onClearLastAdded,
@@ -1438,20 +1652,17 @@ const FieldGroup = ({
     );
     const nextNum = dupes.length + 2;
 
-    const getAction = (val) => {
+    const resolveHref = (val) => {
         if (!val) return null;
-        const isPhone = /^[+\d\s.\-()]{7,}$/.test(val) && val.replace(/\D/g, "").length >= 7;
-        const isEmail = val.includes("@") && val.includes(".");
-        const isUrl = /^https?:\/\//i.test(val) || /^www\./i.test(val);
-        if (isPhone) return { href: "tel:" + val.replace(/[^+\d]/g, ""), icon: <PhoneCall size={15} /> };
-        if (isEmail) return { href: "mailto:" + val.trim(), icon: <ExternalLink size={15} /> };
-        if (isUrl) return { href: val.startsWith("http") ? val : "https://" + val, target: "_blank", icon: <ExternalLink size={15} /> };
-        return null;
+        if (/^[+\d\s.\-()]{7,}$/.test(val) && val.replace(/\D/g, "").length >= 7) {
+            return "tel:" + val.replace(/[^+\d]/g, "");
+        }
+        if (val.includes("@") && val.includes(".")) return "mailto:" + val.trim();
+        return valueAsHref(val);
     };
 
     return (
         <div className="space-y-1.5">
-            {/* Champ principal */}
             <div>
                 <div className="flex items-center gap-1 mb-1">
                     <Label className="text-xs text-muted-foreground flex-1">{label}</Label>
@@ -1464,7 +1675,7 @@ const FieldGroup = ({
                         <Plus size={12} strokeWidth={2.5} />
                     </button>
                 </div>
-                <div className="relative flex items-center gap-1.5">
+                <div className="relative flex items-center gap-1.5 group/row">
                     <div className="relative flex-1">
                         <Icon size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
                         <Input
@@ -1475,30 +1686,27 @@ const FieldGroup = ({
                             className="pl-9 h-10"
                         />
                     </div>
-                    {action && value && (
-                        <a
-                            href={action.href}
-                            target={action.target}
-                            rel={action.target === "_blank" ? "noreferrer noopener" : undefined}
-                            data-testid={action.testId}
-                            aria-label={action.label}
-                            title={action.label}
-                            className="shrink-0 w-10 h-10 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 flex items-center justify-center transition-colors"
-                        >
-                            {action.icon}
-                        </a>
-                    )}
+                    {value && <CopyBtn value={value} className="opacity-0 group-hover/row:opacity-100" />}
                 </div>
+                {linkHref && value && (
+                    <a
+                        href={linkHref}
+                        target={linkIsExternal ? "_blank" : undefined}
+                        rel={linkIsExternal ? "noreferrer noopener" : undefined}
+                        className="inline-block mt-1 text-[11px] text-primary hover:underline break-all"
+                    >
+                        {linkIsExternal ? displayUrl(linkHref) : value}
+                    </a>
+                )}
             </div>
 
-            {/* Champs dupliqués — même look qu'un Field normal */}
             {dupes.map((f) => (
                 <DupeField
                     key={f.id}
                     icon={Icon}
                     field={f}
                     type={type}
-                    action={getAction(f.value)}
+                    linkHref={resolveHref(f.value)}
                     autoFocus={lastAddedFieldLabel === f.label}
                     onFocused={onClearLastAdded}
                     onUpdate={(v) => onUpdateCf(f.id, v)}
@@ -1510,8 +1718,9 @@ const FieldGroup = ({
 };
 
 /** Ligne dupliquée — même rendu que Field, + bouton X au hover pour supprimer */
-const DupeField = ({ icon: Icon, field: f, type = "text", action, autoFocus, onFocused, onUpdate, onDelete }) => {
+const DupeField = ({ icon: Icon, field: f, type = "text", linkHref, autoFocus, onFocused, onUpdate, onDelete }) => {
     const inputRef = useRef(null);
+    const isExternal = linkHref && !linkHref.startsWith("tel:") && !linkHref.startsWith("mailto:");
 
     useEffect(() => {
         if (autoFocus && inputRef.current) {
@@ -1524,7 +1733,7 @@ const DupeField = ({ icon: Icon, field: f, type = "text", action, autoFocus, onF
     return (
         <div className="group/dupe">
             <Label className="text-xs text-muted-foreground mb-1 block">{f.label}</Label>
-            <div className="relative flex items-center gap-1.5">
+            <div className="relative flex items-center gap-1.5 group/row">
                 <div className="relative flex-1">
                     <Icon size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
                     <Input
@@ -1536,16 +1745,7 @@ const DupeField = ({ icon: Icon, field: f, type = "text", action, autoFocus, onF
                         className={"pl-9 h-10" + (autoFocus ? " ring-2 ring-primary" : "")}
                     />
                 </div>
-                {action && f.value && (
-                    <a
-                        href={action.href}
-                        target={action.target}
-                        rel={action.target === "_blank" ? "noreferrer noopener" : undefined}
-                        className="shrink-0 w-10 h-10 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 flex items-center justify-center transition-colors"
-                    >
-                        {action.icon}
-                    </a>
-                )}
+                {f.value && <CopyBtn value={f.value} className="opacity-0 group-hover/row:opacity-100" />}
                 <button
                     type="button"
                     onClick={onDelete}
@@ -1555,6 +1755,16 @@ const DupeField = ({ icon: Icon, field: f, type = "text", action, autoFocus, onF
                     <X size={13} strokeWidth={2} />
                 </button>
             </div>
+            {linkHref && f.value && (
+                <a
+                    href={linkHref}
+                    target={isExternal ? "_blank" : undefined}
+                    rel={isExternal ? "noreferrer noopener" : undefined}
+                    className="inline-block mt-1 text-[11px] text-primary hover:underline break-all"
+                >
+                    {isExternal ? displayUrl(linkHref) : f.value}
+                </a>
+            )}
         </div>
     );
 };

@@ -31,6 +31,10 @@ import { Button } from "@/components/ui/button";
 import { LeadAvatar } from "./LeadAvatar";
 import { isContactedColumn } from "@/constants/columnPatterns";
 import { isManualRdv } from "@/lib/nextActionUtils";
+import {
+    detectInconsistencies,
+    countCriticalInconsistencies,
+} from "@/lib/inconsistencyRules";
 
 /* ── Tag colors ───────────────────────────────────────────────── */
 const TAG_HUES = [
@@ -109,7 +113,7 @@ const LinkBtn = ({ href, label }) => (
 );
 
 /* ── Move-column popover ──────────────────────────────────────── */
-const MoveColumnButton = ({ lead, workspace, currentColumnId, dispatch }) => {
+const MoveColumnButton = ({ lead, workspace, currentColumnId, dispatch, onOpenChange }) => {
     const [open, setOpen] = useState(false);
     const otherColumns = workspace.columnOrder
         .filter((cid) => cid !== currentColumnId)
@@ -120,9 +124,10 @@ const MoveColumnButton = ({ lead, workspace, currentColumnId, dispatch }) => {
         dispatch({ type: "MOVE_LEAD_ORDERED", workspaceId: workspace.id, leadId: lead.id, toColumnId: targetColumnId, toIndex: null });
         toast.success(`Déplacé vers « ${targetName} »`, { description: lead.company });
         setOpen(false);
+        onOpenChange?.(false);
     };
     return (
-        <Popover open={open} onOpenChange={setOpen}>
+        <Popover open={open} onOpenChange={(v) => { setOpen(v); onOpenChange?.(v); }}>
             <PopoverTrigger asChild>
                 <button
                     data-testid={`quick-move-${lead.id}`}
@@ -200,6 +205,7 @@ export const LeadCard = memo(({
 
     const colColor = getColumnColor(column);
     const [reminderOpen, setReminderOpen] = useState(false);
+    const [moveOpen, setMoveOpen] = useState(false);
     const [reminderDate, setReminderDate] = useState(lead.nextAction?.date || "");
     const [reminderLabel, setReminderLabel] = useState(lead.nextAction?.label || "");
     const [justLogged, setJustLogged] = useState(false);
@@ -212,6 +218,17 @@ export const LeadCard = memo(({
     const followupDue       = followup ? (new Date(followup.dueAt).getTime() <= now || followup.overdue) : false;
     const followupIsOverdue = followup && (followup.overdue || followup.stage >= 3);
     const isStale           = !!lead.staleInContacted;
+
+    const allInconsistencies = detectInconsistencies(
+        lead,
+        workspace.columns,
+        workspace.inconsistencyConfig
+    );
+    // Discipline carte : uniquement les critiques (warnings = panneau seulement)
+    const cardInconsistency = (workspace.inconsistencyConfig?.showOnCard === false)
+        ? null
+        : allInconsistencies.find((i) => i.severity === "critical") || null;
+    const inconsistencyCount = countCriticalInconsistencies(allInconsistencies);
 
     const currentEntry = [...(lead.statusHistory || [])].reverse().find((e) => e.columnId === lead.columnId);
 
@@ -258,28 +275,25 @@ export const LeadCard = memo(({
         dispatch({ type: "DISMISS_FOLLOWUP", workspaceId: workspace.id, leadId: lead.id });
     };
 
-    /* ── Urgency border + ombre colorée RDV ── */
-    const urgencyBorder = quickFocused
-        ? "ring-2 ring-primary border-primary shadow-lg shadow-primary/20"
-        : rdv && rdvIsPast   ? "border-l-4 border-l-rose-500 border-t border-r border-b border-border"
-        : rdv && rdvIsSoon   ? "border-l-4 border-l-amber-400 border-t border-r border-b border-border"
-        : rdv                ? "border-l-4 border-l-primary/60 border-t border-r border-b border-border"
-        : isStale            ? "border-l-4 border-l-rose-500 border-t border-r border-b border-border bg-rose-500/[0.02]"
-        : followupIsOverdue  ? "border-l-4 border-l-rose-400 border-t border-r border-b border-border"
-        : followupDue        ? "border-l-4 border-l-amber-400 border-t border-r border-b border-border"
-        : "border";
+    /* ── Cadre colonne + accent côté si RDV ── */
+    const glowColor = quickFocused
+        ? null
+        : rdv && rdvIsPast   ? "rgba(244,63,94,0.22)"
+        : rdv && rdvIsSoon   ? "rgba(16,185,129,0.18)"
+        : isStale            ? "rgba(244,63,94,0.16)"
+        : cardInconsistency?.severity === "critical" ? "rgba(244,63,94,0.14)"
+        : followupIsOverdue  ? "rgba(244,63,94,0.14)"
+        : followupDue        ? "rgba(245,158,11,0.16)"
+        : null;
 
-    // Liseré coloré via CSS var — très subtil, couleur de la colonne
-    const cardBorderColor = (!rdv && !isStale && !followupDue && !followupIsOverdue && !quickFocused)
-        ? colColor.cardBorder
-        : undefined;
+    const hasGlow = !!glowColor;
 
-    // Ombre colorée : uniquement quand RDV présent, couleur selon urgence
-    const rdvShadowColor = rdv && !quickFocused
-        ? rdvIsPast ? "rgba(244,63,94,0.5)"
-        : rdvIsSoon ? "rgba(245,158,11,0.5)"
-        : colColor.shadow
-        : undefined;
+    // Accent latéral RDV (ne remplace pas le cadre colonne)
+    const rdvSideColor = !rdv || quickFocused
+        ? null
+        : rdvIsPast  ? "rgb(244, 63, 94)"
+        : rdvIsSoon  ? "rgb(16, 185, 129)"
+        : "rgb(59, 130, 246)";
 
     /* ── Inline data rows with copy & link ── */
     const DataRow = ({ value, isUrl, copyValue }) => {
@@ -452,10 +466,11 @@ export const LeadCard = memo(({
                 if (e.target.closest("a, button, input, textarea, [data-no-open]")) return;
                 onOpen(lead);
             }}
-            className={`lead-card ${dragging ? "dragging" : ""} ${rdvShadowColor ? "rdv-shadow" : ""} ${rdv && rdvIsSoon && !rdvIsPast ? "rdv-soon" : ""} relative bg-card rounded-xl cursor-grab active:cursor-grabbing mb-1.5 transition-all ${urgencyBorder}`}
+            className={`lead-card ${dragging ? "dragging" : ""} ${hasGlow ? "card-glow" : ""} ${rdvSideColor ? "rdv-side" : ""} ${rdv && rdvIsSoon && !rdvIsPast ? "rdv-soon" : ""} ${quickFocused ? "quick-focused" : ""} ${reminderOpen || moveOpen ? "actions-open" : ""} ${isStale && !rdv ? "card-stale" : ""} relative cursor-grab active:cursor-grabbing mb-1.5`}
             style={{
-                ...(rdvShadowColor ? { "--rdv-shadow": rdvShadowColor } : {}),
-                ...(cardBorderColor ? { borderColor: cardBorderColor } : {}),
+                "--col-lisere": colColor.lisere || colColor.accentBar,
+                ...(glowColor ? { "--card-glow": glowColor } : {}),
+                ...(rdvSideColor ? { "--rdv-side": rdvSideColor } : {}),
             }}
             role="button"
             tabIndex={0}
@@ -533,6 +548,21 @@ export const LeadCard = memo(({
                                         <span>3j+</span>
                                     </div>
                                 )}
+                                {visible.has("inconsistencyBadge") && cardInconsistency && !isStale && !(rdv && rdvIsPast) && (
+                                    <div
+                                        onClick={(e) => e.stopPropagation()}
+                                        className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+                                            cardInconsistency.severity === "critical"
+                                                ? "bg-rose-600 text-white"
+                                                : "bg-amber-500 text-white"
+                                        }`}
+                                        title={cardInconsistency.message}
+                                        data-testid={`lead-inconsistency-badge-${lead.id}`}
+                                    >
+                                        <AlertTriangle size={9} strokeWidth={2.5} />
+                                        <span>{inconsistencyCount > 1 ? `${inconsistencyCount}!` : "!"}</span>
+                                    </div>
+                                )}
                             </div>
                         </div>
                         {/* Contact / Recruteur — juste sous le nom, gris */}
@@ -552,6 +582,24 @@ export const LeadCard = memo(({
                                     {rdvDate.toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" })}
                                     {rdv.hasTime !== false && ` à ${String(rdvDate.getHours()).padStart(2,"0")}h${String(rdvDate.getMinutes()).padStart(2,"0") !== "00" ? String(rdvDate.getMinutes()).padStart(2,"0") : ""}`}
                                 </span>
+                            </div>
+                        )}
+                        {/* Signal d'incohérence sous le RDV / nom
+                            (évite le doublon si le bandeau RDV dépassé couvre déjà rdv_overdue) */}
+                        {visible.has("inconsistencyBadge") && cardInconsistency && !(
+                            cardInconsistency.id === "rdv_overdue" && rdv && rdvIsPast && inconsistencyCount <= 1
+                        ) && (
+                            <div
+                                className={`mt-1 text-[11px] font-medium leading-snug line-clamp-2 ${
+                                    cardInconsistency.severity === "critical"
+                                        ? "text-rose-600 dark:text-rose-400"
+                                        : "text-amber-700 dark:text-amber-400"
+                                }`}
+                                title={cardInconsistency.message}
+                                data-testid={`lead-inconsistency-line-${lead.id}`}
+                            >
+                                {cardInconsistency.title}
+                                {inconsistencyCount > 1 ? ` · +${inconsistencyCount - 1}` : ""}
                             </div>
                         )}
                     </div>
@@ -618,9 +666,9 @@ export const LeadCard = memo(({
                     </div>
                 )}
 
-                {/* ════════ ACTION BAR ════════ */}
+                {/* ════════ ACTION BAR — survol ════════ */}
                 {visible.has("actionBar") && (
-                    <div className="pt-1 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                    <div className="lead-card-actions flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                         {/* Contacté — CTA principal */}
                         <button
                             data-testid={`quick-log-${lead.id}`}
@@ -662,7 +710,7 @@ export const LeadCard = memo(({
                         </Popover>
 
                         {/* Déplacer */}
-                        <MoveColumnButton lead={lead} workspace={workspace} currentColumnId={lead.columnId} dispatch={dispatch} />
+                        <MoveColumnButton lead={lead} workspace={workspace} currentColumnId={lead.columnId} dispatch={dispatch} onOpenChange={setMoveOpen} />
                     </div>
                 )}
 
@@ -725,5 +773,7 @@ export const LeadCard = memo(({
     prev.dragging === next.dragging &&
     prev.quickFocused === next.quickFocused &&
     prev.workspace.cardFields === next.workspace.cardFields &&
-    prev.workspace.columnWidth === next.workspace.columnWidth
+    prev.workspace.columnWidth === next.workspace.columnWidth &&
+    prev.workspace.inconsistencyConfig === next.workspace.inconsistencyConfig &&
+    prev.workspace.columns === next.workspace.columns
 );

@@ -4,8 +4,6 @@ import {
     Plus,
     LayoutGrid,
     Home,
-    ChevronLeft,
-    ChevronRight,
     ChevronDown,
     Folder,
     FolderOpen,
@@ -107,6 +105,7 @@ export const SidebarContent = ({
     onNavigate,
     forceExpanded = false,
     onExpandSidebar,
+    hideBrandHeader = false,
 }) => {
     const { state, dispatch } = useCrm();
     const [createOpen, setCreateOpen] = useState(false);
@@ -410,42 +409,56 @@ export const SidebarContent = ({
         </DropdownMenu>
     );
 
+    const workspaceIds = workspaceOrderFromSidebar(sidebar);
+    const shortcutMod =
+        typeof navigator !== "undefined" &&
+        /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || "")
+            ? "⌥"
+            : "Alt+";
+
     return (
         <TooltipProvider delayDuration={200}>
             <div className="h-full flex flex-col">
+                {!hideBrandHeader && (
                 <div
                     className={cn(
                         "h-14 flex items-center border-b border-border/60 shrink-0",
                         isCollapsed ? "justify-center px-2" : "px-4 gap-2",
                     )}
                 >
-                    <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
-                        <LayoutGrid size={16} />
-                    </div>
+                    {onToggleCollapsed ? (
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <button
+                                    type="button"
+                                    data-testid="sidebar-toggle-btn"
+                                    onClick={onToggleCollapsed}
+                                    aria-label={
+                                        isCollapsed
+                                            ? "Ouvrir le menu des espaces"
+                                            : "Fermer le menu des espaces"
+                                    }
+                                    aria-expanded={!isCollapsed}
+                                    className="w-8 h-8 rounded-lg bg-primary/10 text-primary hover:bg-primary/15 flex items-center justify-center shrink-0 transition-colors"
+                                >
+                                    <LayoutGrid size={16} />
+                                </button>
+                            </TooltipTrigger>
+                            <TooltipContent side="right">
+                                {isCollapsed
+                                    ? "Ouvrir le menu des espaces"
+                                    : "Fermer le menu des espaces"}
+                            </TooltipContent>
+                        </Tooltip>
+                    ) : (
+                        <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                            <LayoutGrid size={16} />
+                        </div>
+                    )}
                     {!isCollapsed && (
                         <span className="font-semibold tracking-tight">CRM</span>
                     )}
-                    {!isCollapsed && onToggleCollapsed && (
-                        <button
-                            data-testid="sidebar-collapse-btn"
-                            onClick={onToggleCollapsed}
-                            aria-label="Réduire la barre latérale"
-                            className="ml-auto w-8 h-8 rounded-md hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center"
-                        >
-                            <ChevronLeft size={15} />
-                        </button>
-                    )}
                 </div>
-
-                {isCollapsed && onToggleCollapsed && (
-                    <button
-                        data-testid="sidebar-expand-btn"
-                        onClick={onToggleCollapsed}
-                        aria-label="Développer la barre latérale"
-                        className="mx-2 mt-3 h-9 rounded-md hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center"
-                    >
-                        <ChevronRight size={15} />
-                    </button>
                 )}
 
                 <Tooltip>
@@ -631,6 +644,11 @@ export const SidebarContent = ({
                             if (!ws) return null;
                             const active = state.currentId === ws.id;
                             const leadCount = Object.keys(ws.leads).length;
+                            const shortcutIdx = workspaceIds.indexOf(ws.id);
+                            const shortcutLabel =
+                                shortcutIdx >= 0 && shortcutIdx < 9
+                                    ? `${shortcutMod}${shortcutIdx + 1}`
+                                    : null;
 
                             const body = (
                                 <div className="relative">
@@ -690,6 +708,18 @@ export const SidebarContent = ({
                                                     <span className="truncate flex-1 text-left">
                                                         {ws.name}
                                                     </span>
+                                                    {shortcutLabel && (
+                                                        <kbd
+                                                            className={cn(
+                                                                "hidden xl:inline-flex items-center px-1 py-0.5 rounded border border-border/60 font-mono text-[10px] tabular-nums shrink-0 opacity-0 group-hover:opacity-100 transition-opacity",
+                                                                active
+                                                                    ? "text-primary/50"
+                                                                    : "text-muted-foreground/70",
+                                                            )}
+                                                        >
+                                                            {shortcutLabel}
+                                                        </kbd>
+                                                    )}
                                                     <span
                                                         className={cn(
                                                             "text-xs tabular-nums shrink-0",
@@ -722,9 +752,14 @@ export const SidebarContent = ({
                             return (
                                 <Tooltip key={id}>
                                     <TooltipTrigger asChild>{body}</TooltipTrigger>
-                                    <TooltipContent side="right">
-                                        {ws.name}
-                                        <span className="ml-2 opacity-60">{leadCount}</span>
+                                    <TooltipContent side="right" className="flex items-center gap-2">
+                                        <span>{ws.name}</span>
+                                        <span className="opacity-60">{leadCount}</span>
+                                        {shortcutLabel && (
+                                            <kbd className="px-1.5 py-0.5 rounded bg-muted border border-border font-mono text-[10px] text-muted-foreground">
+                                                {shortcutLabel}
+                                            </kbd>
+                                        )}
                                     </TooltipContent>
                                 </Tooltip>
                             );
@@ -738,20 +773,43 @@ export const SidebarContent = ({
     );
 };
 
-export const Sidebar = ({ collapsed, onToggleCollapsed, onExpandSidebar }) => {
+export const Sidebar = ({ open, onClose, onToggle }) => {
+    useEffect(() => {
+        if (!open) return;
+        const onKey = (e) => {
+            if (e.key === "Escape") onClose?.();
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [open, onClose]);
+
     return (
-        <aside
-            data-testid="sidebar"
-            className={cn(
-                "hidden md:flex flex-col shrink-0 border-r border-border/60 bg-background h-screen sticky top-0 transition-[width] duration-200 ease-out",
-                collapsed ? "w-14" : "w-56",
-            )}
-        >
-            <SidebarContent
-                collapsed={collapsed}
-                onToggleCollapsed={onToggleCollapsed}
-                onExpandSidebar={onExpandSidebar}
+        <>
+            <div
+                data-testid="sidebar-backdrop"
+                aria-hidden={!open}
+                onClick={onClose}
+                className={cn(
+                    "hidden md:block fixed top-14 inset-x-0 bottom-0 z-30 bg-black/20 transition-opacity duration-300 ease-out",
+                    open ? "opacity-100" : "opacity-0 pointer-events-none",
+                )}
             />
-        </aside>
+            <aside
+                data-testid="sidebar"
+                aria-hidden={!open}
+                className={cn(
+                    "hidden md:flex flex-col fixed top-14 bottom-0 left-0 z-40 w-56 border-r border-border bg-surface shadow-panel",
+                    "transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] will-change-transform",
+                    open ? "translate-x-0" : "-translate-x-full pointer-events-none",
+                )}
+            >
+                <SidebarContent
+                    forceExpanded
+                    hideBrandHeader
+                    onToggleCollapsed={onToggle}
+                    onNavigate={onClose}
+                />
+            </aside>
+        </>
     );
 };

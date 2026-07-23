@@ -60,7 +60,7 @@ export const WonDealModal = ({ open, lead, workspace, onClose }) => {
             />
 
             {/* Modal */}
-            <div className="fixed z-[70] left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2 w-[92vw] sm:w-[420px] glass-strong rounded-3xl shadow-panel border border-border/60 float-in overflow-hidden">
+            <div className="fixed z-[70] left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2 w-[92vw] sm:w-[420px] bg-card rounded-2xl shadow-panel border border-border float-in overflow-hidden">
                 {/* Header */}
                 <div className="px-6 pt-6 pb-4 flex items-start justify-between gap-3">
                     <div className="flex items-center gap-3">

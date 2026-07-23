@@ -76,7 +76,7 @@ export const MeetingModal = ({ open, lead, workspace, onClose }) => {
                 className="fixed inset-0 z-[60] bg-foreground/20 backdrop-blur-sm animate-in fade-in duration-200"
                 onClick={skip}
             />
-            <div className="fixed z-[70] left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] max-w-[420px] glass-strong rounded-3xl shadow-panel border border-border/60 animate-in fade-in zoom-in-95 duration-200"
+            <div className="fixed z-[70] left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] max-w-[420px] bg-card rounded-2xl shadow-panel border border-border animate-in fade-in zoom-in-95 duration-200"
                 style={{ top: "50%", transform: "translate(-50%, -50%)" }}
             >
                 {/* Header */}

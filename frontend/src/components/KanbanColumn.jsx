@@ -40,7 +40,7 @@ import {
 import { ColorPickerRow } from "./ColorPickerRow";
 import { getColumnColor } from "@/lib/columnColors";
 import { useCrm } from "@/context/CrmContext";
-import { isContactedColumn } from "@/constants/columnPatterns";
+import { isContactedColumn, isNouveauColumn } from "@/constants/columnPatterns";
 import { isManualRdv } from "@/lib/nextActionUtils";
 
 // Wrapper local : accepte un nom de colonne string
@@ -155,7 +155,7 @@ export const KanbanColumn = ({
     const contentRef = useRef(null);
     const [bgHeight, setBgHeight] = useState(160);
     const color = getColumnColor(column);
-    const { dispatch, state: crmState } = useCrm();
+    const { dispatch } = useCrm();
 
     // ── Tri local — persisté par colonne ──────────────────────────────────────
     const SORT_KEY = `crm_sort_${column.id}`;
@@ -306,18 +306,14 @@ export const KanbanColumn = ({
         [column.id, leads.length, onDropLead, onColumnDrop],
     );
 
-    // Detect dark mode via CRM context (reactive to theme changes)
-    const isDark = crmState.theme === "dark";
-
     return (
         <div
             data-testid={`kanban-column-${column.id}`}
-            className={`kanban-col relative shrink-0 flex flex-col transition-colors duration-150 rounded-xl ${
-                isDragTarget ? "ring-2 ring-primary/30" : ""
+            className={`kanban-col relative shrink-0 flex flex-col transition-colors duration-150 ${
+                isDragTarget ? "column-drop-active" : ""
             }`}
             style={{
                 width: `${workspace.columnWidth ?? 300}px`,
-                backgroundColor: isDark ? color.colTintDark : color.colTint,
             }}
             onDragOver={handleColumnDragOver}
             onDrop={handleColumnDrop}
@@ -330,7 +326,7 @@ export const KanbanColumn = ({
 
             {/* ── Header ── */}
             <div
-                className="px-1 pt-1 pb-2 flex items-center gap-1.5 group"
+                className="px-2 pt-2 pb-1.5 flex items-center gap-1.5 group"
                 draggable
                 onDragStart={(e) => onColumnDragStart(e, column.id)}
             >
@@ -343,7 +339,7 @@ export const KanbanColumn = ({
                     <GripVertical size={12} />
                 </button>
 
-                {/* Pill coloré avec le nom */}
+                {/* Pastille couleur + nom (plus de pill pleine) */}
                 {editing ? (
                     <input
                         ref={inputRef}
@@ -361,25 +357,27 @@ export const KanbanColumn = ({
                     <button
                         data-testid={`column-title-${column.id}`}
                         onDoubleClick={() => setEditing(true)}
-                        className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold text-white ${color.dot} shrink-0 max-w-[180px] truncate`}
+                        className="inline-flex items-center gap-2 min-w-0 flex-1 text-left"
                         title="Double-cliquez pour renommer"
                     >
-                        {column.name}
+                        <span
+                            className={`w-2 h-2 rounded-full shrink-0 ${color.dot}`}
+                            aria-hidden
+                        />
+                        <span className="text-[13px] font-semibold text-foreground truncate max-w-[160px]">
+                            {column.name}
+                        </span>
                     </button>
                 )}
 
-                {/* Compteur — discret, gris */}
                 <span
                     data-testid={`column-count-${column.id}`}
-                    className="text-[12.5px] text-muted-foreground/60 tabular-nums shrink-0"
+                    className="text-[12px] text-muted-foreground/70 tabular-nums shrink-0 font-medium"
                 >
                     {leads.length}
                 </span>
                 {sort && (
-                    <span
-                        title={`Trié par ${sort.label}`}
-                        className="shrink-0 text-primary/70"
-                    >
+                    <span title={`Trié par ${sort.label}`} className="shrink-0 text-primary/70">
                         {sort.dir === "asc" ? <ArrowUp size={11} /> : <ArrowDown size={11} />}
                     </span>
                 )}
@@ -389,13 +387,12 @@ export const KanbanColumn = ({
                     </span>
                 )}
 
-                {/* ⋯ Menu */}
                 <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                         <button
                             data-testid={`column-menu-${column.id}`}
                             aria-label="Options de colonne"
-                            className="ml-auto w-7 h-7 rounded-lg flex items-center justify-center text-foreground/40 hover:text-foreground hover:bg-black/10 dark:hover:bg-white/10 transition-all shrink-0"
+                            className="ml-auto w-7 h-7 rounded-lg flex items-center justify-center text-foreground/40 hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10 transition-all shrink-0"
                         >
                             <MoreHorizontal size={15} />
                         </button>
@@ -577,19 +574,25 @@ export const KanbanColumn = ({
                 {/* Empty state */}
                 {leads.length === 0 && !isDragTarget && (
                     <div className="pt-1 pb-2 px-1">
-                        <button
-                            onClick={onAddLead}
-                            className="flex items-center justify-center gap-2 w-full py-4 rounded-xl border border-dashed border-foreground/15 hover:border-foreground/30 hover:bg-white/20 dark:hover:bg-white/5 transition-colors text-foreground/40 text-[13px] font-medium"
-                        >
-                            <Plus size={14} />
-                            <span>Nouveau lead</span>
-                        </button>
+                        {isNouveauColumn(column.name) ? (
+                            <button
+                                onClick={onAddLead}
+                                className="flex items-center justify-center gap-2 w-full py-2.5 rounded-lg border border-dashed border-border hover:border-primary/40 hover:bg-primary/5 transition-colors text-muted-foreground hover:text-primary text-[12px] font-medium"
+                            >
+                                <Plus size={13} />
+                                <span>Nouveau lead</span>
+                            </button>
+                        ) : (
+                            <p className="py-6 text-center text-[12px] text-muted-foreground/50">
+                                Aucun lead
+                            </p>
+                        )}
                     </div>
                 )}
 
                 {leads.length === 0 && isDragTarget && (
                     <div
-                        className="rounded-xl border-2 border-dashed border-foreground/30 bg-white/30 py-8 mx-1 flex items-center justify-center"
+                        className="rounded-xl border-2 border-dashed border-primary/40 bg-primary/10 py-8 mx-1 flex items-center justify-center"
                         onDragOver={(e) => {
                             if (e.dataTransfer.types.includes("application/x-lead-id")) {
                                 e.preventDefault();

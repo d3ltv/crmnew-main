@@ -69,13 +69,13 @@ export const CallNoteModal = ({
     // ── Analyse du texte en temps réel ───────────────────────────────────────
     const detected = useMemo(() => parseNote(text), [text]);
     const diff = useMemo(
-        () => lead ? diffWithLead(detected, lead) : { newPhone: null, extraPhones: [], newEmail: null, newAddress: null },
+        () => lead ? diffWithLead(detected, lead) : { newPhone: null, extraPhones: [], newEmail: null, newAddress: null, newContact: null },
         [detected, lead]
     );
     const detectedItems = useMemo(() => formatDetected(detected), [detected]);
     const appointment = useMemo(() => detectAppointment(text), [text]);
 
-    const hasNewInfo = diff.newPhone || diff.extraPhones.length > 0 || diff.newEmail || diff.newAddress;
+    const hasNewInfo = diff.newPhone || diff.extraPhones.length > 0 || diff.newEmail || diff.newAddress || diff.newContact;
 
     if (!open || !lead) return null;
 
@@ -168,6 +168,7 @@ export const CallNoteModal = ({
         const patch = {};
         if (diff.newPhone) patch.phone = diff.newPhone;
         if (diff.newEmail) patch.email = diff.newEmail;
+        if (diff.newContact) patch.contact = diff.newContact;
 
         // ── 2b. Rappel automatique "Pas de réponse" ───────────────────────
         // Si pas de réponse et pas de RDV détecté dans la note :
@@ -261,7 +262,7 @@ export const CallNoteModal = ({
             />
             <div
                 data-testid="call-note-modal"
-                className="fixed z-[70] left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] max-w-[480px] glass-strong rounded-3xl shadow-panel border border-border/60 overflow-y-auto animate-in fade-in zoom-in-95 duration-200"
+                className="fixed z-[70] left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] max-w-[480px] bg-card rounded-2xl shadow-panel border border-border overflow-y-auto animate-in fade-in zoom-in-95 duration-200"
                 style={{
                     top: "50%",
                     transform: "translate(-50%, -50%)",
@@ -370,6 +371,7 @@ export const CallNoteModal = ({
                                 {detectedItems.map((item, i) => {
                                     // Détecter si cet item est "nouveau" ou déjà présent
                                     const isNew =
+                                        (item.type === "person" && diff.newContact === item.value) ||
                                         (item.type === "phone" && (diff.newPhone === item.value || diff.extraPhones.includes(item.value))) ||
                                         (item.type === "email" && diff.newEmail === item.value) ||
                                         (item.type === "address" && diff.newAddress === item.value);

@@ -52,7 +52,7 @@ function getColorScheme(ratio) {
     if (ratio >= 1)     return { bar: "bg-emerald-500", text: "text-emerald-600 dark:text-emerald-400", label: "Objectif atteint !" };
     if (ratio >= 0.7)   return { bar: "bg-yellow-400",  text: "text-yellow-600 dark:text-yellow-400",  label: "Bientôt !" };
     if (ratio >= 0.35)  return { bar: "bg-orange-400",  text: "text-orange-600 dark:text-orange-400",  label: "En cours" };
-    return                     { bar: "bg-rose-500",    text: "text-rose-600 dark:text-rose-400",      label: "Critique" };
+    return                     { bar: "bg-muted-foreground/40", text: "text-muted-foreground", label: "En cours" };
 }
 
 // ─── Composant principal ──────────────────────────────────────────────────────

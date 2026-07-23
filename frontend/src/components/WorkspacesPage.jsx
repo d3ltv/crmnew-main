@@ -121,7 +121,7 @@ const WorkspaceCard = ({ ws, onOpen, onDelete, isRecent, icon }) => {
             role="button"
             tabIndex={0}
             onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onOpen()}
-            className="group relative rounded-2xl border border-border bg-card overflow-hidden cursor-pointer hover:border-border/80 hover:shadow-lg transition-all duration-200"
+            className="group relative rounded-xl border border-border bg-card overflow-hidden cursor-pointer hover:border-foreground/15 transition-colors duration-150"
         >
             {/* Bande colorée top */}
             <div className={`h-1.5 w-full ${dominantColor.dot}`} />
@@ -275,10 +275,10 @@ export const WorkspacesPage = () => {
     if (isEmpty) {
         return (
             <div className="min-h-screen bg-background" data-testid="workspaces-page">
-                <nav className="border-b border-border bg-background/95 backdrop-blur-sm sticky top-0 z-30">
+                <nav className="border-b border-border bg-surface/90 glass sticky top-0 z-30">
                     <div className="max-w-5xl mx-auto px-4 sm:px-8 h-14 flex items-center justify-between">
                         <div className="flex items-center gap-2">
-                            <div className="w-7 h-7 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
+                            <div className="w-7 h-7 rounded-md bg-primary/10 text-primary flex items-center justify-center">
                                 <LayoutGrid size={14} />
                             </div>
                             <span className="font-semibold text-[15px]">Mon CRM</span>
@@ -297,7 +297,7 @@ export const WorkspacesPage = () => {
             {/* Alerte persistante si le quota localStorage est dépassé */}
             <StorageErrorBanner />
             {/* Nav */}
-            <nav className="border-b border-border bg-background/95 backdrop-blur-sm sticky top-0 z-30">
+            <nav className="border-b border-border bg-surface/90 glass sticky top-0 z-30">
                 <div className="max-w-5xl mx-auto px-4 sm:px-8 h-14 flex items-center justify-between">
                     <div className="flex items-center gap-2">
                         <div className="w-7 h-7 rounded-lg bg-primary/10 text-primary flex items-center justify-center">

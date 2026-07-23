@@ -1,62 +1,77 @@
-import React, { useState } from "react";
-import { googleFaviconUrl, extractDomain } from "@/lib/logoUtils";
+import React, { useState, useMemo, useEffect } from "react";
+import {
+    findCompanyDomain,
+    clearbitLogoUrl,
+    googleFaviconUrl,
+    isAggregatorLogoUrl,
+} from "@/lib/logoUtils";
 
-// Emojis repère visuel — même liste que LeadCard
-const LEAD_EMOJIS = [
-    "🏢","🏗","🏬","🏭","🏦","🏨","🏪","🏫","🏛","🏟",
-    "🔧","⚡","🛠","🔩","⚙️","🔌","💻","📱","🖥","🖨",
-    "🌿","🏔","🌸","🦋","🌻","🍀","🌴","🌵",
-    "🌾","🍃","🌺","🌹","🦚","🦜","🐬","🦁","🐯","🦊",
-    "🚀","💡","🔑","🎯","🔮","🎪","🎨","🎭","🎬","🎤",
-    "🏆","🥇","🎗","🎁","🎊","✨",
-    "🔵","🟢","🟡","🟠","🔴","🟣","⚫","🟤","🔶","🔷",
-    "🟦","🟩","🟨","🟧","🟥","🟪","⬛","🟫","💠","🔹",
-    "🍎","🍋","🍇","🍓","🥝","🌶","🧁","☕","🍵","🧃",
-    "✈️","🚢","🚂","🚁","🛸","🚗","🏎","⛵",
-    "🌙","⭐","🌟","💫","☀️","🌈","❄️","🔥","💧","🌊",
-    "💎","🔐","📦","📋","📌","📎","🗂","📊","📈","🧩",
-    "🧲","🧪","🔭","🗺","🧭","⏱","🕰","📡","🛡","⚔️",
+const AVATAR_HUES = [
+    "bg-blue-500/12 text-blue-700 dark:text-blue-300",
+    "bg-sky-500/12 text-sky-700 dark:text-sky-300",
+    "bg-teal-500/12 text-teal-700 dark:text-teal-300",
+    "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
+    "bg-violet-500/12 text-violet-700 dark:text-violet-300",
+    "bg-amber-500/12 text-amber-800 dark:text-amber-300",
+    "bg-rose-500/12 text-rose-700 dark:text-rose-300",
+    "bg-indigo-500/12 text-indigo-700 dark:text-indigo-300",
 ];
 
-function pickEmoji(id = "") {
+function hashId(id = "") {
     let h = 2166136261;
     for (let i = 0; i < id.length; i++) {
         h ^= id.charCodeAt(i);
         h = (h * 16777619) >>> 0;
     }
-    return LEAD_EMOJIS[h % LEAD_EMOJIS.length];
+    return h;
+}
+
+function initialsFromLead(lead) {
+    const raw = (lead?.company || lead?.contact || "?").trim();
+    const parts = raw.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) {
+        return (parts[0][0] + parts[1][0]).toUpperCase();
+    }
+    return raw.slice(0, 2).toUpperCase() || "?";
 }
 
 /**
- * Affiche le logo d'une entreprise avec fallback progressif :
- * 1. logoUrl stocké sur le lead (Clearbit)
- * 2. Google Favicon (si le domaine est récupérable)
- * 3. Emoji déterministe dans un cercle coloré (couleur de la colonne)
- *
- * @param {object} lead   - objet lead (.id, .logoUrl, .website, .email)
- * @param {string} size   - classe Tailwind de taille emoji (défaut auto)
- * @param {boolean} card  - vrai si affiché sur la carte (taille réduite)
- * @param {string} bgClass - classe Tailwind de fond pour le cercle emoji (ex: "bg-blue-500/15")
+ * Logo entreprise (domaine réel) → favicon → initiale.
+ * Ignore les logos HelloWork / Indeed / LinkedIn stockés par erreur.
  */
-export const LeadAvatar = ({ lead, size, card = false, bgClass = "bg-muted" }) => {
+export const LeadAvatar = ({ lead, size, card = false, bgClass }) => {
     const [logoFailed, setLogoFailed] = useState(false);
     const [fallbackFailed, setFallbackFailed] = useState(false);
 
-    const logoUrl = lead.logoUrl;
-    const domain = !logoFailed && !logoUrl
-        ? extractDomain(lead.website, lead.email)
-        : null;
+    const domain = useMemo(
+        () => findCompanyDomain(lead),
+        [lead.website, lead.email, lead.extra, lead.customFields]
+    );
+
+    const logoUrl = useMemo(() => {
+        if (domain) return clearbitLogoUrl(domain);
+        if (lead.logoUrl && !isAggregatorLogoUrl(lead.logoUrl)) return lead.logoUrl;
+        return null;
+    }, [domain, lead.logoUrl]);
+
     const fallbackUrl = domain ? googleFaviconUrl(domain) : null;
 
-    const containerSize = card ? "w-8 h-8" : "w-9 h-9";
-    const imgSize      = card ? "w-6 h-6" : "w-8 h-8";
-    const imgFbSize    = card ? "w-5 h-5" : "w-7 h-7";
+    useEffect(() => {
+        setLogoFailed(false);
+        setFallbackFailed(false);
+    }, [logoUrl, fallbackUrl]);
 
-    // Logo Clearbit
+    const hue = AVATAR_HUES[hashId(lead.id) % AVATAR_HUES.length];
+    const well = bgClass || hue;
+    const containerSize = card ? "w-7 h-7" : "w-8 h-8";
+    const imgSize = card ? "w-4 h-4" : "w-5 h-5";
+    const imgFbSize = card ? "w-3.5 h-3.5" : "w-4.5 h-4.5";
+    const initialSize = size || (card ? "text-[10px]" : "text-[11px]");
+
     if (logoUrl && !logoFailed) {
         return (
             <span
-                className={`shrink-0 select-none flex items-center justify-center ${containerSize} rounded-full overflow-hidden ${bgClass}`}
+                className={`shrink-0 select-none flex items-center justify-center ${containerSize} rounded-md overflow-hidden bg-white dark:bg-white/10`}
                 aria-hidden
             >
                 <img
@@ -70,11 +85,10 @@ export const LeadAvatar = ({ lead, size, card = false, bgClass = "bg-muted" }) =
         );
     }
 
-    // Fallback Google Favicon
     if (fallbackUrl && !fallbackFailed) {
         return (
             <span
-                className={`shrink-0 select-none flex items-center justify-center ${containerSize} rounded-full overflow-hidden ${bgClass}`}
+                className={`shrink-0 select-none flex items-center justify-center ${containerSize} rounded-md overflow-hidden bg-white dark:bg-white/10`}
                 aria-hidden
             >
                 <img
@@ -88,15 +102,12 @@ export const LeadAvatar = ({ lead, size, card = false, bgClass = "bg-muted" }) =
         );
     }
 
-    // Emoji dans un cercle coloré
     return (
         <span
-            className={`shrink-0 select-none flex items-center justify-center ${containerSize} rounded-full ${bgClass}`}
+            className={`shrink-0 select-none flex items-center justify-center ${containerSize} rounded-md font-semibold tracking-tight ${well} ${initialSize}`}
             aria-hidden
         >
-            <span className={size || (card ? "text-[15px]" : "text-[22px]")} style={{ lineHeight: 1 }}>
-                {pickEmoji(lead.id)}
-            </span>
+            {initialsFromLead(lead)}
         </span>
     );
 };

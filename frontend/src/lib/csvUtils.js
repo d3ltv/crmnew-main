@@ -472,7 +472,7 @@ export function rowsToLeads(headers, rows, mapping, colMapping = {}, nameHeader 
             email,
             contact,
             extra,
-            logoUrl:  resolveLogo(website, email),
+            logoUrl:  resolveLogo({ website, email, extra }),
             _incomplete: !companyFinal,
         };
     });
