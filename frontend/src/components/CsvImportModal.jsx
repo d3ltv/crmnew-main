@@ -339,7 +339,7 @@ const DropZone = ({ onFile }) => {
 };
 
 // ── Sous-composant : Récapitulatif ────────────────────────────────────────────
-const Summary = ({ fileName, rowCount, summary, headers, colMapping, nameHeader, dupStrategy, dupDominant, onDupStrategyChange, onDupDominantChange }) => {
+const Summary = ({ fileName, rowCount, summary, headers, colMapping, nameHeader, dupStrategy, dupDominant, onDupStrategyChange, onDupDominantChange, skipExisting, onSkipExistingChange, existingLeadCount }) => {
     const { mapped, extra, ignored, noCompany, duplicates, duplicateGroups } = summary;
     return (
         <div className="space-y-4">
@@ -371,6 +371,24 @@ const Summary = ({ fileName, rowCount, summary, headers, colMapping, nameHeader,
                     )}
                 </div>
             </div>
+
+            {/* Ne pas réimporter les leads déjà dans l'espace */}
+            {existingLeadCount > 0 && (
+                <label className="flex items-start gap-2.5 rounded-xl border border-border bg-card px-3 py-2.5 text-sm cursor-pointer hover:bg-muted/30 transition-colors">
+                    <input
+                        type="checkbox"
+                        checked={skipExisting}
+                        onChange={(e) => onSkipExistingChange?.(e.target.checked)}
+                        className="mt-0.5 rounded border-border"
+                    />
+                    <span>
+                        <span className="font-medium text-foreground">Ignorer les leads déjà présents</span>
+                        <span className="block text-xs text-muted-foreground mt-0.5">
+                            Même entreprise ou e-mail que les {existingLeadCount} lead{existingLeadCount > 1 ? "s" : ""} de cet espace.
+                        </span>
+                    </span>
+                </label>
+            )}
 
             {/* Colonne nom épinglée */}
             {nameHeader && (
@@ -912,7 +930,8 @@ const SaveProfileButton = ({ onSave }) => {
 
 // ── Composant principal ───────────────────────────────────────────────────────
 export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
-    const { dispatch, batchDispatch } = useCrm();
+    const { state, dispatch, batchDispatch } = useCrm();
+    const workspace = state.workspaces[workspaceId];
 
     // step: "upload" | "quick-summary" | "advanced-edit" | "advanced-summary"
     const [step, setStep]           = useState("upload");
@@ -931,9 +950,12 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
 
     // ── Résolution de doublons ────────────────────────────────────────────────
     // "ignore" | "keep_first" | "keep_last" | "merge"
-    const [dupStrategy,   setDupStrategy]   = useState("ignore");
+    // Défaut keep_first : évite de polluer le pipeline avec des lignes CSV en double
+    const [dupStrategy,   setDupStrategy]   = useState("keep_first");
     // colonne dominante pour la fusion (header name ou null)
     const [dupDominant,   setDupDominant]   = useState(null);
+    // Ignorer les leads déjà présents dans le workspace (company / email)
+    const [skipExisting,  setSkipExisting]  = useState(true);
 
     // ── Colonne "nom du lead" épinglée via l'étoile ───────────────────────────
     // Indépendante du colMapping — n'importe quelle colonne peut être le nom,
@@ -943,7 +965,8 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
     const reset = () => {
         setStep("upload"); setFileName(""); setHeaders([]); setRows([]); setColMapping({});
         setMatchedProfile(null); setAppliedProfileId(null); setShowProfiles(false);
-        setDupStrategy("ignore"); setDupDominant(null);
+        setDupStrategy("keep_first"); setDupDominant(null);
+        setSkipExisting(true);
         setNameHeader(null);
     };
 
@@ -998,7 +1021,33 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
         const legacyMapping = buildLegacyMapping(finalColMapping);
         const leads = rowsToLeads(finalHeaders, resolvedRows, legacyMapping, finalColMapping, nameHeader);
         const incomplete = leads.filter((l) => l._incomplete).length;
-        const cleanLeads = leads.map(({ _incomplete: _i, ...rest }) => rest);
+        let cleanLeads = leads.map(({ _incomplete: _i, ...rest }) => rest);
+
+        // Filtrer les leads déjà présents dans le workspace (company / email)
+        let skippedExisting = 0;
+        if (skipExisting && workspace?.leads) {
+            const companies = new Set();
+            const emails = new Set();
+            Object.values(workspace.leads).forEach((l) => {
+                const c = (l.company || "").trim().toLowerCase();
+                const e = (l.email || "").trim().toLowerCase();
+                if (c) companies.add(c);
+                if (e) emails.add(e);
+            });
+            const kept = [];
+            for (const lead of cleanLeads) {
+                const c = (lead.company || "").trim().toLowerCase();
+                const e = (lead.email || "").trim().toLowerCase();
+                if ((c && companies.has(c)) || (e && emails.has(e))) {
+                    skippedExisting++;
+                    continue;
+                }
+                if (c) companies.add(c);
+                if (e) emails.add(e);
+                kept.push(lead);
+            }
+            cleanLeads = kept;
+        }
 
         const removedCount = finalRows.length - resolvedRows.length;
 
@@ -1016,14 +1065,21 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
         // Marquer le profil comme utilisé
         if (appliedProfileId) touchProfile(appliedProfileId);
 
-        toast.success(`${leads.length} lead${leads.length > 1 ? "s" : ""} importé${leads.length > 1 ? "s" : ""}`, {
-            description: [
-                incomplete > 0 ? `${incomplete} sans nom d'entreprise.` : null,
-                removedCount > 0 ? `${removedCount} doublon${removedCount > 1 ? "s" : ""} ${dupStrategy === "merge" ? "fusionné" : "supprimé"}${removedCount > 1 ? "s" : ""}.` : null,
-            ].filter(Boolean).join(" ") || undefined,
-        });
+        const importedCount = cleanLeads.length;
+        toast.success(
+            importedCount === 0
+                ? "Aucun nouveau lead à importer"
+                : `${importedCount} lead${importedCount > 1 ? "s" : ""} importé${importedCount > 1 ? "s" : ""}`,
+            {
+                description: [
+                    incomplete > 0 ? `${incomplete} sans nom d'entreprise.` : null,
+                    removedCount > 0 ? `${removedCount} doublon${removedCount > 1 ? "s" : ""} ${dupStrategy === "merge" ? "fusionné" : "supprimé"}${removedCount > 1 ? "s" : ""} dans le fichier.` : null,
+                    skippedExisting > 0 ? `${skippedExisting} déjà présent${skippedExisting > 1 ? "s" : ""} dans l'espace (ignoré${skippedExisting > 1 ? "s" : ""}).` : null,
+                ].filter(Boolean).join(" ") || undefined,
+            }
+        );
         handleClose(false);
-    }, [dispatch, batchDispatch, workspaceId, appliedProfileId, dupStrategy, dupDominant, nameHeader]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [dispatch, batchDispatch, workspaceId, workspace, appliedProfileId, dupStrategy, dupDominant, nameHeader, skipExisting]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Récapitulatif courant (recalculé à chaque changement)
     const summary = useMemo(
@@ -1223,6 +1279,9 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
                             dupDominant={dupDominant}
                             onDupStrategyChange={setDupStrategy}
                             onDupDominantChange={setDupDominant}
+                            skipExisting={skipExisting}
+                            onSkipExistingChange={setSkipExisting}
+                            existingLeadCount={Object.keys(workspace?.leads || {}).length}
                         />
                     </div>
                 )}
@@ -1264,6 +1323,9 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
                             dupDominant={dupDominant}
                             onDupStrategyChange={setDupStrategy}
                             onDupDominantChange={setDupDominant}
+                            skipExisting={skipExisting}
+                            onSkipExistingChange={setSkipExisting}
+                            existingLeadCount={Object.keys(workspace?.leads || {}).length}
                         />
                     </div>
                 )}

@@ -5,6 +5,7 @@ import {
     isLostColumn,
     isContactedColumn,
 } from "@/constants/columnPatterns";
+import { toLocalDateKey } from "@/lib/dateUtils";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -343,7 +344,7 @@ export function computeCallStats(workspaces) {
     // ── Par date (YYYY-MM-DD) ─────────────────────────────────────────────────
     const dateMap = new Map();
     for (const e of events) {
-        const key = e.at.toISOString().slice(0, 10);
+        const key = toLocalDateKey(e.at);
         if (!dateMap.has(key)) dateMap.set(key, { total: 0, answered: 0 });
         dateMap.get(key).total++;
         if (e.answered) dateMap.get(key).answered++;
@@ -363,7 +364,7 @@ export function computeCallStats(workspaces) {
     for (let i = 29; i >= 0; i--) {
         const d = new Date(today);
         d.setDate(d.getDate() - i);
-        const key = d.toISOString().slice(0, 10);
+        const key = toLocalDateKey(d);
         const entry = dateMap.get(key);
         last30Days.push({
             date: key,
@@ -391,17 +392,17 @@ export function computeCallStats(workspaces) {
 
     // ── Streak : jours consécutifs avec appels (jusqu'à aujourd'hui) ──────────
     let streak = 0;
-    const todayKey = today.toISOString().slice(0, 10);
+    const todayKey = toLocalDateKey(today);
     let checkDate = new Date(today);
     while (true) {
-        const key = checkDate.toISOString().slice(0, 10);
+        const key = toLocalDateKey(checkDate);
         if (dateMap.has(key)) {
             streak++;
             checkDate.setDate(checkDate.getDate() - 1);
         } else if (key === todayKey) {
             // Aujourd'hui sans appel — on remonte quand même pour voir hier
             checkDate.setDate(checkDate.getDate() - 1);
-            const yesterdayKey = checkDate.toISOString().slice(0, 10);
+            const yesterdayKey = toLocalDateKey(checkDate);
             if (dateMap.has(yesterdayKey)) {
                 checkDate = new Date(today);
                 checkDate.setDate(checkDate.getDate() - 1);

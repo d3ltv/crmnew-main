@@ -25,10 +25,11 @@ import {
     Zap,
     PanelRight,
     Monitor,
+    Info,
+    MoreHorizontal,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { ThemeToggle } from "./ThemeToggle";
 import { leadsToCsv } from "@/lib/csvUtils";
 import {
     DropdownMenu,
@@ -149,7 +150,7 @@ export const TopBar = ({
                             <button
                                 data-testid="topbar-mobile-nav-btn"
                                 aria-label="Ouvrir le menu"
-                                className="md:hidden w-9 h-9 rounded-full flex items-center justify-center hover:bg-secondary text-muted-foreground shrink-0"
+                                className="md:hidden w-9 h-9 rounded-full flex items-center justify-center hover:bg-secondary text-muted-foreground shrink-0 touch-target"
                             >
                                 <Menu size={17} />
                             </button>
@@ -222,8 +223,11 @@ export const TopBar = ({
                             </div>
                             <Popover>
                                 <PopoverTrigger asChild>
-                                    <button className="w-5 h-5 rounded-full bg-primary/10 border border-primary/20 text-primary flex items-center justify-center hover:bg-primary/20 transition-colors text-[10px] font-bold">
-                                        i
+                                    <button
+                                        aria-label="Aide mode rapide"
+                                        className="w-5 h-5 rounded-full bg-primary/10 border border-primary/20 text-primary flex items-center justify-center hover:bg-primary/20 transition-colors"
+                                    >
+                                        <Info size={10} strokeWidth={2.5} />
                                     </button>
                                 </PopoverTrigger>
                                 <PopoverContent align="center" sideOffset={6} className="w-52 p-3 rounded-xl text-xs space-y-1.5">
@@ -249,133 +253,32 @@ export const TopBar = ({
                     />
                 </div>
 
-                {/* ── Colonne droite : actions ── */}
-                <div className="flex items-center gap-2 justify-end">
-
-                    {/* ── Groupe 1 : Recherche + Champs cartes ── */}
-                    <div className="flex items-center gap-0.5">
-                        {/* Search expand */}
-                        {searchOpen && (
-                            <div className="animate-in fade-in slide-in-from-right-2 duration-150 mr-1">
-                                <div className="flex items-center gap-1.5 flex-wrap max-w-xs">
-                                    {/* Tags des filtres actifs */}
-                                    {(activeFilters || []).length > 0 && (
-                                        <div className="flex items-center gap-1 flex-wrap">
-                                            {(activeFilters || []).map((tag) => (
-                                                <span
-                                                    key={tag}
-                                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/12 border border-primary/25 text-primary text-[11px] font-medium"
-                                                >
-                                                    {tag}
-                                                    <button
-                                                        onClick={() => setActiveFilters((prev) => prev.filter((t) => t !== tag))}
-                                                        className="hover:text-rose-500 transition-colors"
-                                                        aria-label={`Retirer le filtre ${tag}`}
-                                                    >
-                                                        <X size={9} strokeWidth={2.5} />
-                                                    </button>
-                                                </span>
-                                            ))}
-                                            <button
-                                                onClick={() => setActiveFilters([])}
-                                                className="text-[10px] text-muted-foreground hover:text-foreground transition-colors px-1"
-                                                title="Effacer tous les filtres"
-                                            >
-                                                Tout effacer
-                                            </button>
-                                        </div>
-                                    )}
-                                    {/* Input */}
-                                    <div className="relative">
-                                        <Search
-                                            size={14}
-                                            className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
-                                        />
-                                        <Input
-                                            data-testid="workspace-search-input"
-                                            value={filterInput}
-                                            onChange={(e) => {
-                                                setFilterInput(e.target.value);
-                                                setFilter(e.target.value);
-                                            }}
-                                            onKeyDown={(e) => {
-                                                if (e.key === "Enter" && filterInput.trim()) {
-                                                    const val = filterInput.trim();
-                                                    if (!(activeFilters || []).includes(val)) {
-                                                        setActiveFilters((prev) => [...prev, val]);
-                                                    }
-                                                    setFilterInput("");
-                                                    setFilter("");
-                                                    e.preventDefault();
-                                                } else if (e.key === "Backspace" && !filterInput && (activeFilters || []).length > 0) {
-                                                    setActiveFilters((prev) => prev.slice(0, -1));
-                                                } else if (e.key === "Escape") {
-                                                    setFilterInput("");
-                                                    setFilter("");
-                                                    setSearchOpen(false);
-                                                }
-                                            }}
-                                            placeholder={(activeFilters || []).length > 0 ? "Ajouter un filtre…" : "Rechercher ou filtrer…"}
-                                            autoFocus
-                                            className="pl-8 pr-3 h-9 w-48 sm:w-56 rounded-full bg-secondary/70 border-transparent focus-visible:bg-background transition-colors text-[13px]"
-                                        />
-                                    </div>
-                                </div>
-                            </div>
+                {/* ── Colonne droite : actions essentielles ── */}
+                <div className="flex items-center gap-1.5 justify-end min-w-0">
+                    {/* Recherche (ouvre une rangée pleine largeur) */}
+                    <button
+                        data-testid="topbar-search-btn"
+                        aria-label="Rechercher"
+                        onClick={() => {
+                            setSearchOpen((v) => !v);
+                            if (searchOpen) {
+                                setFilterInput("");
+                                setFilter("");
+                            }
+                        }}
+                        className={`relative w-9 h-9 rounded-full flex items-center justify-center transition-colors touch-target ${
+                            searchOpen || (activeFilters || []).length > 0
+                                ? "bg-primary/10 text-primary"
+                                : "hover:bg-secondary text-muted-foreground"
+                        }`}
+                    >
+                        <Search size={16} />
+                        {(activeFilters || []).length > 0 && (
+                            <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-primary text-primary-foreground text-[9px] font-bold flex items-center justify-center">
+                                {(activeFilters || []).length}
+                            </span>
                         )}
-
-                        {/* Search toggle — badge rouge si filtres actifs */}
-                        <button
-                            data-testid="topbar-search-btn"
-                            aria-label="Rechercher"
-                            onClick={() => {
-                                setSearchOpen((v) => !v);
-                                if (searchOpen) {
-                                    setFilterInput("");
-                                    setFilter("");
-                                }
-                            }}
-                            className={`relative w-9 h-9 rounded-full flex items-center justify-center transition-colors ${
-                                searchOpen || (activeFilters || []).length > 0
-                                    ? "bg-primary/10 text-primary"
-                                    : "hover:bg-secondary text-muted-foreground"
-                            }`}
-                        >
-                            <Search size={16} />
-                            {(activeFilters || []).length > 0 && (
-                                <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-primary text-primary-foreground text-[9px] font-bold flex items-center justify-center">
-                                    {(activeFilters || []).length}
-                                </span>
-                            )}
-                        </button>
-
-                        {/* Champs cartes */}
-                        <Popover>
-                            <PopoverTrigger asChild>
-                                <button
-                                    data-testid="topbar-card-fields-btn"
-                                    aria-label="Configurer les champs affichés sur les cartes"
-                                    title="Configurer la vue des cartes"
-                                    className="w-9 h-9 rounded-full hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors"
-                                >
-                                    <Columns3 size={16} />
-                                </button>
-                            </PopoverTrigger>
-                            <PopoverContent
-                                align="end"
-                                className="p-0 rounded-2xl overflow-hidden shadow-panel glass-strong w-auto"
-                                data-testid="card-fields-popover"
-                            >
-                                <CardFieldsPanel workspace={workspace} />
-                            </PopoverContent>
-                        </Popover>
-                    </div>
-
-                    {/* Séparateur */}
-                    <div className="hidden sm:block w-px h-5 bg-border/60 shrink-0" />
-
-                    {/* ── Groupe 2 : Notifs + Thème + Paramètres + Undo ── */}
-                    <div className="flex items-center gap-0.5">
+                    </button>
 
                     {/* Notifications */}
                     <Popover>
@@ -383,7 +286,7 @@ export const TopBar = ({
                             <button
                                 data-testid="topbar-notifications-btn"
                                 aria-label="Notifications de rappel"
-                                className="relative w-9 h-9 rounded-full hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors"
+                                className="relative w-9 h-9 rounded-full hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors touch-target"
                             >
                                 <Bell size={16} />
                                 {totalNotifs > 0 && (
@@ -443,9 +346,74 @@ export const TopBar = ({
                         </PopoverContent>
                     </Popover>
 
-                    <div className="hidden sm:flex">
-                        <ThemeToggle />
-                    </div>
+                    {/* Overflow : champs cartes, undo/redo, thème */}
+                    <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                            <button
+                                data-testid="topbar-more-btn"
+                                aria-label="Plus d'actions"
+                                className="w-9 h-9 rounded-full hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors touch-target"
+                            >
+                                <MoreHorizontal size={16} />
+                            </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-52 rounded-xl">
+                            <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
+                                Actions
+                            </DropdownMenuLabel>
+                            <DropdownMenuItem
+                                disabled={!canUndo()}
+                                onClick={() => {
+                                    const did = undo();
+                                    if (did) import("sonner").then(({ toast }) => toast("Action annulée", { duration: 2000 }));
+                                }}
+                                data-testid="topbar-undo-btn"
+                            >
+                                <Undo2 size={14} className="mr-2" /> Annuler
+                                <span className="ml-auto text-[10px] text-muted-foreground">⌘Z</span>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                                disabled={!canRedo()}
+                                onClick={() => {
+                                    const did = redo();
+                                    if (did) import("sonner").then(({ toast }) => toast("Action rétablie", { duration: 2000 }));
+                                }}
+                                data-testid="topbar-redo-btn"
+                            >
+                                <Redo2 size={14} className="mr-2" /> Rétablir
+                                <span className="ml-auto text-[10px] text-muted-foreground">⌘⇧Z</span>
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                                className="hidden sm:flex"
+                                onClick={() => dispatch({ type: "SET_THEME", theme: isDark ? "light" : "dark" })}
+                            >
+                                {isDark ? <Sun size={14} className="mr-2" /> : <Moon size={14} className="mr-2" />}
+                                {isDark ? "Mode clair" : "Mode sombre"}
+                            </DropdownMenuItem>
+                        </DropdownMenuContent>
+                    </DropdownMenu>
+
+                    {/* Champs cartes */}
+                    <Popover>
+                        <PopoverTrigger asChild>
+                            <button
+                                data-testid="topbar-card-fields-btn"
+                                aria-label="Configurer les champs affichés sur les cartes"
+                                title="Configurer la vue des cartes"
+                                className="w-9 h-9 rounded-full hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors touch-target"
+                            >
+                                <Columns3 size={16} />
+                            </button>
+                        </PopoverTrigger>
+                        <PopoverContent
+                            align="end"
+                            className="p-0 rounded-2xl overflow-hidden shadow-panel glass-strong w-auto"
+                            data-testid="card-fields-popover"
+                        >
+                            <CardFieldsPanel workspace={workspace} />
+                        </PopoverContent>
+                    </Popover>
 
                     {/* Paramètres */}
                     <DropdownMenu>
@@ -453,7 +421,7 @@ export const TopBar = ({
                             <button
                                 data-testid="topbar-settings-btn"
                                 aria-label="Paramètres de l'espace"
-                                className="w-9 h-9 rounded-full hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors"
+                                className="w-9 h-9 rounded-full hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors touch-target"
                             >
                                 <Settings2 size={16} />
                             </button>
@@ -470,8 +438,7 @@ export const TopBar = ({
                             <DropdownMenuSeparator className="sm:hidden" />
                             <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
                                 Objectifs
-                            </DropdownMenuLabel>
-                            <DropdownMenuItem
+                            </DropdownMenuLabel>                            <DropdownMenuItem
                                 onClick={() => setGoalEditorOpen(true)}
                                 data-testid="settings-daily-goal-btn"
                             >
@@ -481,7 +448,6 @@ export const TopBar = ({
                             <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
                                 Rappels
                             </DropdownMenuLabel>
-                            {/* Sélecteur colonne de rappel par défaut */}
                             <div className="px-2 py-1.5">
                                 <p className="text-[10px] text-muted-foreground mb-1.5 flex items-center gap-1.5">
                                     <BellRing size={10} />
@@ -493,7 +459,6 @@ export const TopBar = ({
                                             (cid) => workspace.columns[cid]?.autoFollowup
                                         ) || ""}
                                         onChange={(e) => {
-                                            // Désactiver l'ancien, activer le nouveau
                                             workspace.columnOrder.forEach((cid) => {
                                                 if (workspace.columns[cid]?.autoFollowup) {
                                                     dispatch({
@@ -528,11 +493,7 @@ export const TopBar = ({
                                     </select>
                                     <BellRing size={11} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
                                 </div>
-                                <p className="text-[10px] text-muted-foreground mt-1">
-                                    Les RDV détectés y seront déplacés
-                                </p>
                             </div>
-                            <DropdownMenuSeparator />
                             <DropdownMenuSeparator />
                             <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
                                 Affichage
@@ -583,57 +544,82 @@ export const TopBar = ({
                         </DropdownMenuContent>
                     </DropdownMenu>
 
-                    {/* Undo */}
-                    <button
-                        data-testid="topbar-undo-btn"
-                        onClick={() => {
-                            const did = undo();
-                            if (!did) return;
-                            import("sonner").then(({ toast }) =>
-                                toast("Action annulée", { duration: 2000 })
-                            );
-                        }}
-                        disabled={!canUndo()}
-                        title="Annuler la dernière action (⌘Z)"
-                        aria-label="Annuler"
-                        className="w-9 h-9 rounded-full flex items-center justify-center transition-colors text-muted-foreground hover:text-foreground hover:bg-secondary disabled:opacity-30 disabled:cursor-not-allowed"
-                    >
-                        <Undo2 size={15} />
-                    </button>
-
-                    {/* Redo */}
-                    <button
-                        data-testid="topbar-redo-btn"
-                        onClick={() => {
-                            const did = redo();
-                            if (!did) return;
-                            import("sonner").then(({ toast }) =>
-                                toast("Action rétablie", { duration: 2000 })
-                            );
-                        }}
-                        disabled={!canRedo()}
-                        title="Rétablir la dernière action (⌘⇧Z)"
-                        aria-label="Rétablir"
-                        className="w-9 h-9 rounded-full flex items-center justify-center transition-colors text-muted-foreground hover:text-foreground hover:bg-secondary disabled:opacity-30 disabled:cursor-not-allowed"
-                    >
-                        <Redo2 size={15} />
-                    </button>
-
-                    </div>{/* fin groupe 2 */}
-
-                    {/* Séparateur */}
-                    <div className="hidden sm:block w-px h-5 bg-border/60 shrink-0" />
-
                     <Button
                         onClick={() => onNewLead()}
                         data-testid="topbar-new-lead-btn"
-                        className="h-8 rounded-lg px-2.5 sm:px-3.5 gap-1.5 bg-foreground text-background hover:bg-foreground/85 text-[12px] font-medium"
+                        className="h-8 rounded-lg px-2.5 sm:px-3.5 gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90 text-[12px] font-medium touch-target"
                     >
                         <Plus size={13} />
-                        <span className="hidden sm:inline">Nouveau lead</span>
+                        <span className="hidden sm:inline">Nouveau</span>
                     </Button>
                 </div>
             </div>
+
+            {/* Rangée recherche pleine largeur */}
+            {searchOpen && (
+                <div className="px-3 sm:px-4 pb-3 flex flex-wrap items-center gap-2 border-t border-border/40 pt-2">
+                    {(activeFilters || []).length > 0 && (
+                        <div className="flex items-center gap-1 flex-wrap">
+                            {(activeFilters || []).map((tag) => (
+                                <span
+                                    key={tag}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/12 border border-primary/25 text-primary text-[11px] font-medium"
+                                >
+                                    {tag}
+                                    <button
+                                        onClick={() => setActiveFilters((prev) => prev.filter((t) => t !== tag))}
+                                        className="hover:text-rose-500 transition-colors"
+                                        aria-label={`Retirer le filtre ${tag}`}
+                                    >
+                                        <X size={9} strokeWidth={2.5} />
+                                    </button>
+                                </span>
+                            ))}
+                            <button
+                                onClick={() => setActiveFilters([])}
+                                className="text-[10px] text-muted-foreground hover:text-foreground transition-colors px-1"
+                                title="Effacer tous les filtres"
+                            >
+                                Tout effacer
+                            </button>
+                        </div>
+                    )}
+                    <div className="relative flex-1 min-w-[180px]">
+                        <Search
+                            size={14}
+                            className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
+                        />
+                        <Input
+                            data-testid="workspace-search-input"
+                            value={filterInput}
+                            onChange={(e) => {
+                                setFilterInput(e.target.value);
+                                setFilter(e.target.value);
+                            }}
+                            onKeyDown={(e) => {
+                                if (e.key === "Enter" && filterInput.trim()) {
+                                    const val = filterInput.trim();
+                                    if (!(activeFilters || []).includes(val)) {
+                                        setActiveFilters((prev) => [...prev, val]);
+                                    }
+                                    setFilterInput("");
+                                    setFilter("");
+                                    e.preventDefault();
+                                } else if (e.key === "Backspace" && !filterInput && (activeFilters || []).length > 0) {
+                                    setActiveFilters((prev) => prev.slice(0, -1));
+                                } else if (e.key === "Escape") {
+                                    setFilterInput("");
+                                    setFilter("");
+                                    setSearchOpen(false);
+                                }
+                            }}
+                            placeholder={(activeFilters || []).length > 0 ? "Ajouter un filtre…" : "Rechercher ou filtrer…"}
+                            autoFocus
+                            className="pl-8 pr-3 h-9 w-full rounded-lg bg-secondary/70 border-transparent focus-visible:bg-background transition-colors text-[13px]"
+                        />
+                    </div>
+                </div>
+            )}
 
             <AlertDialog open={confirmDelete} onOpenChange={(v) => !v && setConfirmDelete(false)}>
                 <AlertDialogContent className="rounded-2xl" data-testid="delete-current-ws-dialog">
@@ -658,6 +644,33 @@ export const TopBar = ({
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
+
+            {/* Mobile : sélecteur de vues toujours accessible */}
+            <div className="sm:hidden px-3 pb-2">
+                <div
+                    className="flex items-center gap-0.5 bg-muted rounded-lg p-0.5"
+                    role="tablist"
+                    aria-label="Vue"
+                >
+                    {VIEWS.map((v) => (
+                        <button
+                            key={v.id}
+                            role="tab"
+                            aria-selected={view === v.id}
+                            onClick={() => onViewChange(v.id)}
+                            title={v.label}
+                            className={`flex-1 h-9 flex items-center justify-center gap-1.5 rounded-md text-[12px] font-medium transition-all touch-target ${
+                                view === v.id
+                                    ? "bg-background text-foreground shadow-sm"
+                                    : "text-muted-foreground hover:text-foreground"
+                            }`}
+                        >
+                            {v.icon}
+                            <span className="hidden xs:inline">{v.label}</span>
+                        </button>
+                    ))}
+                </div>
+            </div>
         </header>
 
         {/* Editor modal en dehors du header pour éviter les problèmes de z-index */}

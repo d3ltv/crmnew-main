@@ -1,5 +1,22 @@
 // Small date/time helpers — French, concise, no external lib.
 
+/**
+ * Clé calendaire locale YYYY-MM-DD (évite le décalage UTC de toISOString().slice).
+ * @param {Date | string | number | null | undefined} value
+ * @returns {string}
+ */
+export function toLocalDateKey(value) {
+    if (value == null || value === "") return "";
+    // Déjà une clé date pure
+    if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+    const d = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(d.getTime())) return "";
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+}
+
 export function formatShortDateTime(iso) {
     if (!iso) return "";
     const d = new Date(iso);

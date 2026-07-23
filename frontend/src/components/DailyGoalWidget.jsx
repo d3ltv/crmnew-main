@@ -174,7 +174,7 @@ export const DailyGoalEditor = ({ open, onClose }) => {
                     </button>
                     <button
                         onClick={handleSave}
-                        className="flex-1 h-9 rounded-lg bg-foreground text-background text-sm font-medium hover:bg-foreground/85 transition-colors"
+                        className="flex-1 h-9 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
                     >
                         Enregistrer
                     </button>

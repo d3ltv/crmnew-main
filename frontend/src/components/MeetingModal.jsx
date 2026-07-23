@@ -3,6 +3,8 @@ import { CalendarCheck, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useCrm } from "@/context/CrmContext";
+import { makeRdvNextAction } from "@/lib/nextActionUtils";
+import { toLocalDateKey } from "@/lib/dateUtils";
 
 /**
  * Modal qui s'ouvre quand un lead entre dans une colonne "Rendez-vous".
@@ -18,7 +20,7 @@ export const MeetingModal = ({ open, lead, workspace, onClose }) => {
     useEffect(() => {
         if (open) {
             // Pré-remplir avec la date du jour
-            const today = new Date().toISOString().slice(0, 10);
+            const today = toLocalDateKey(new Date());
             setDate(today);
             setTime("");
             setLabel("");
@@ -59,13 +61,7 @@ export const MeetingModal = ({ open, lead, workspace, onClose }) => {
             type: "SET_NEXT_ACTION",
             workspaceId: workspace.id,
             leadId: lead.id,
-            nextAction: {
-                date,
-                dueAt,
-                label: fullLabel,
-                auto: false,
-                meeting: true, // flag pour l'affichage vert sur la carte
-            },
+            nextAction: makeRdvNextAction({ date, dueAt, label: fullLabel }),
         });
         onClose();
     };

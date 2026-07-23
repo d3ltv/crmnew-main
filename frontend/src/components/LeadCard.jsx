@@ -30,6 +30,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { LeadAvatar } from "./LeadAvatar";
 import { isContactedColumn } from "@/constants/columnPatterns";
+import { isManualRdv } from "@/lib/nextActionUtils";
 
 /* ── Tag colors ───────────────────────────────────────────────── */
 const TAG_HUES = [
@@ -214,7 +215,7 @@ export const LeadCard = memo(({
 
     const currentEntry = [...(lead.statusHistory || [])].reverse().find((e) => e.columnId === lead.columnId);
 
-    const rdv       = lead.nextAction?.label?.startsWith("📅 RDV") ? lead.nextAction : null;
+    const rdv       = isManualRdv(lead.nextAction) ? lead.nextAction : null;
     const rdvDate   = rdv ? new Date(rdv.dueAt || rdv.date) : null;
     const rdvIsToday = rdvDate ? rdvDate.toDateString() === new Date().toDateString() : false;
     const rdvIsPast  = rdvDate ? rdvDate.getTime() < Date.now() - 60000 : false;
@@ -619,31 +620,32 @@ export const LeadCard = memo(({
 
                 {/* ════════ ACTION BAR ════════ */}
                 {visible.has("actionBar") && (
-                    <div className="pt-1 flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                        {/* Contacté */}
+                    <div className="pt-1 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                        {/* Contacté — CTA principal */}
                         <button
                             data-testid={`quick-log-${lead.id}`}
                             onClick={logToday}
-                            className={`flex-1 h-8 rounded-lg border text-[12.5px] font-medium flex items-center justify-center gap-1.5 transition-all ${
+                            className={`flex-1 h-8 rounded-lg border text-[12px] font-medium flex items-center justify-center gap-1.5 transition-all min-w-0 ${
                                 justLogged
                                     ? "bg-emerald-50 border-emerald-300 text-emerald-700 dark:bg-emerald-900/20 dark:border-emerald-700 dark:text-emerald-400"
-                                    : "bg-card border-border text-foreground/70 hover:bg-muted/60 hover:border-border"
+                                    : "bg-primary/10 border-primary/25 text-primary hover:bg-primary/15"
                             }`}
                         >
-                            <CheckCircle2 size={13} strokeWidth={justLogged ? 2.5 : 1.75} />
-                            {contactedLabel}
+                            <CheckCircle2 size={13} strokeWidth={justLogged ? 2.5 : 1.75} className="shrink-0" />
+                            <span className="truncate">{contactedLabel}</span>
                         </button>
 
-                        {/* Rappel */}
+                        {/* Rappel — icône seule */}
                         <Popover open={reminderOpen} onOpenChange={setReminderOpen}>
                             <PopoverTrigger asChild>
                                 <button
                                     data-testid={`quick-reminder-${lead.id}`}
                                     onClick={(e) => e.stopPropagation()}
-                                    className="flex-1 h-8 rounded-lg border border-border bg-card text-foreground/70 text-[12.5px] font-medium flex items-center justify-center gap-1.5 hover:bg-muted/60 transition-colors"
+                                    title={isJobs ? "Entretien / rappel" : "Rappel"}
+                                    aria-label={isJobs ? "Entretien / rappel" : "Rappel"}
+                                    className="h-8 w-8 rounded-lg border border-border bg-card text-muted-foreground flex items-center justify-center hover:bg-muted/60 hover:text-foreground transition-colors shrink-0"
                                 >
                                     <CalendarClock size={13} strokeWidth={1.75} />
-                                    {isJobs ? "Entretien" : "Rappel"}
                                 </button>
                             </PopoverTrigger>
                             <PopoverContent align="end" sideOffset={8} className="w-64 p-3 rounded-xl" onClick={(e) => e.stopPropagation()}>
@@ -653,7 +655,7 @@ export const LeadCard = memo(({
                                     <Input placeholder={reminderPlaceholder} value={reminderLabel} onChange={(e) => setReminderLabel(e.target.value)} onKeyDown={(e) => e.key === "Enter" && saveReminder(e)} data-testid={`quick-reminder-label-${lead.id}`} className="h-9" />
                                     <div className="flex justify-end gap-1.5 pt-1">
                                         <Button variant="ghost" size="sm" className="h-8 rounded-lg text-xs" onClick={() => { setReminderDate(""); setReminderLabel(""); }}>Effacer</Button>
-                                        <Button size="sm" onClick={saveReminder} data-testid={`quick-reminder-save-${lead.id}`} className="h-8 rounded-lg text-xs">Enregistrer</Button>
+                                        <Button size="sm" onClick={saveReminder} data-testid={`quick-reminder-save-${lead.id}`} className="h-8 rounded-lg text-xs bg-primary text-primary-foreground hover:bg-primary/90">Enregistrer</Button>
                                     </div>
                                 </div>
                             </PopoverContent>

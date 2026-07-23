@@ -53,6 +53,8 @@ import { getColumnColor } from "@/lib/columnColors";
 import { formatDateTimeLong } from "@/lib/dateUtils";
 import { telHref, mailtoHref, websiteHref } from "@/lib/actionLinks";
 import { parseNote, detectAppointment, diffWithLead, formatDetected } from "@/lib/noteParser";
+import { isManualRdv, makeRdvNextAction } from "@/lib/nextActionUtils";
+import { toLocalDateKey } from "@/lib/dateUtils";
 
 function formatDateTime(iso) {
     return formatDateTimeLong(iso);
@@ -386,12 +388,11 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
             const existing = local.nextAction?.dueAt;
             const incomingTime = new Date(draftAppointment.iso).getTime();
             if (!existing || incomingTime < new Date(existing).getTime()) {
-                patch.nextAction = {
-                    date: draftAppointment.iso.slice(0, 10),
+                patch.nextAction = makeRdvNextAction({
+                    date: toLocalDateKey(draftAppointment.iso),
                     dueAt: draftAppointment.iso,
-                    label: `📅 RDV détecté · ${draftAppointment.label}`,
-                    auto: false,
-                };
+                    label: `RDV détecté · ${draftAppointment.label}`,
+                });
             }
         }
 
@@ -420,12 +421,11 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
             workspaceId: workspace.id,
             leadId: local.id,
             patch: {
-                nextAction: {
+                nextAction: makeRdvNextAction({
                     date: rdvDate,
                     dueAt: iso,
-                    label: `📅 RDV détecté · ${label}`,
-                    auto: false,
-                },
+                    label,
+                }),
             },
         });
         toast.success("RDV enregistré", { description: label });
@@ -823,7 +823,7 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                 </Button>
                             </div>
                             {/* RDV existant */}
-                            {local.nextAction?.label?.startsWith("📅 RDV") && (
+                            {isManualRdv(local.nextAction) && (
                                 <div className="flex items-center justify-between gap-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1.5 text-[12px] text-emerald-700 dark:text-emerald-400">
                                     <div className="flex items-center gap-1.5">
                                         <CalendarClock size={12} strokeWidth={2.5} />

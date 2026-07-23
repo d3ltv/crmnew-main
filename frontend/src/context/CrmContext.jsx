@@ -24,6 +24,8 @@ import {
     navIdForWorkspace,
     workspaceOrderFromSidebar,
 } from "@/lib/sidebarNav";
+import { isManualRdv } from "@/lib/nextActionUtils";
+import { toLocalDateKey } from "@/lib/dateUtils";
 
 // ---------- Utilities ----------
 const uid = () =>
@@ -169,9 +171,8 @@ function addDaysISO(days, from = null) {
 }
 
 function isoToDate(iso) {
-    // Returns YYYY-MM-DD (used by <input type="date">)
-    if (!iso) return "";
-    return new Date(iso).toISOString().slice(0, 10);
+    // Returns YYYY-MM-DD in local calendar (used by <input type="date">)
+    return toLocalDateKey(iso);
 }
 
 function followupLabel(stage) {
@@ -356,6 +357,7 @@ const initialState = {
     order: [],
     sidebar: { items: {}, rootOrder: [] },
     currentId: null,
+    lastOpenedId: null,
     theme: "light",
     leadPanelMode: "side", // "side" | "modal"
     // undo stack for lead deletions (Gmail-style)
@@ -380,6 +382,7 @@ function reducer(state, action) {
                 workspaces: { ...state.workspaces, [ws.id]: ws },
                 order: [...state.order, ws.id],
                 currentId: ws.id,
+                lastOpenedId: ws.id,
                 sidebar: {
                     items: {
                         ...sidebar.items,
@@ -396,7 +399,11 @@ function reducer(state, action) {
             };
         }
         case "SELECT_WORKSPACE":
-            return { ...state, currentId: action.id };
+            return {
+                ...state,
+                currentId: action.id,
+                lastOpenedId: action.id || state.lastOpenedId,
+            };
 
         case "DELETE_WORKSPACE": {
             const { [action.id]: _removed, ...rest } = state.workspaces;
@@ -405,6 +412,10 @@ function reducer(state, action) {
             return {
                 ...next,
                 sidebar: ensureSidebar(next),
+                lastOpenedId:
+                    state.lastOpenedId === action.id
+                        ? (newOrder[0] || null)
+                        : state.lastOpenedId,
                 currentId:
                     state.currentId === action.id
                         ? newOrder[0] || null
@@ -663,8 +674,8 @@ function reducer(state, action) {
                 ? makeFollowup(action.toColumnId, 1, now)
                 : null;
             let nextAction = lead.nextAction;
-            // Ne jamais écraser un RDV détecté manuellement ("📅 RDV…")
-            const hasManualRdv = lead.nextAction?.label?.startsWith("📅 RDV");
+            // Ne jamais écraser un RDV manuel (📅 RDV… / meeting: true / legacy)
+            const hasManualRdv = isManualRdv(lead.nextAction);
             if (autoFollowup && !hasManualRdv) {
                 nextAction = followupToNextAction(autoFollowup);
             } else if (!hasManualRdv && nextAction?.auto) {
@@ -829,27 +840,35 @@ function reducer(state, action) {
             });
         }
         case "MOVE_LEAD": {
+            // Même sémantique que MOVE_LEAD_ORDERED (garde RDV + leadOrder),
+            // sans index de destination explicite (append en fin de colonne).
             const ws = state.workspaces[action.workspaceId];
             if (!ws) return state;
             const lead = ws.leads[action.leadId];
             if (!lead || lead.columnId === action.toColumnId) return state;
             const now = new Date().toISOString();
             const targetCol = ws.columns[action.toColumnId];
-            // Auto-followup: if the target column has it enabled, start a fresh stage 1.
-            // Otherwise clear any existing followup.
             const autoFollowup = targetCol?.autoFollowup
                 ? makeFollowup(action.toColumnId, 1, now)
                 : null;
-            // Also set/clear nextAction so the reminder is real (not just visual).
-            // Preserve manual nextAction if the target column doesn't have followup
-            // AND the existing nextAction is not from a previous auto-followup.
             let nextAction = lead.nextAction;
-            if (autoFollowup) {
+            const hasManualRdv = isManualRdv(lead.nextAction);
+            if (autoFollowup && !hasManualRdv) {
                 nextAction = followupToNextAction(autoFollowup);
-            } else if (nextAction?.auto) {
-                // Was auto — clear it since we left the auto-followup column
+            } else if (!hasManualRdv && nextAction?.auto) {
                 nextAction = null;
             }
+            const destLeads = Object.values(ws.leads)
+                .filter((l) => l.columnId === action.toColumnId && l.id !== action.leadId)
+                .map((l) => l.id);
+            const destOrder = (ws.leadOrder?.[action.toColumnId] || destLeads)
+                .filter((id) => destLeads.includes(id));
+            destLeads.forEach((id) => {
+                if (!destOrder.includes(id)) destOrder.push(id);
+            });
+            const newDestOrder = [...destOrder, action.leadId];
+            const srcOrder = (ws.leadOrder?.[lead.columnId] || [])
+                .filter((id) => id !== action.leadId);
             return updateWs(state, ws.id, {
                 leads: {
                     ...ws.leads,
@@ -869,6 +888,11 @@ function reducer(state, action) {
                             ? lead.staleInContacted
                             : false,
                     },
+                },
+                leadOrder: {
+                    ...(ws.leadOrder || {}),
+                    [lead.columnId]: srcOrder,
+                    [action.toColumnId]: newDestOrder,
                 },
             });
         }
@@ -1119,7 +1143,7 @@ function reducer(state, action) {
                         { columnId: contactedColumn.id, at: now },
                     ],
                     autoFollowup,
-                    nextAction: (autoFollowup && !lead.nextAction?.label?.startsWith("📅 RDV"))
+                    nextAction: (autoFollowup && !isManualRdv(lead.nextAction))
                         ? followupToNextAction(autoFollowup)
                         : updatedLead.nextAction,
                     // Enregistrer l'entrée dans la colonne "Contacté"
@@ -1606,6 +1630,12 @@ export function CrmProvider({ children }) {
     // Wrapped dispatch: pousse { before, after } sur le undo stack de façon synchrone
     const dispatch = useCallback(
         (action) => {
+            // Restauration complète (backup / crash) : vider l'historique pour
+            // empêcher Cmd+Z de réécraser l'état restauré.
+            if (action.type === "RESTORE_SNAPSHOT") {
+                undoStackRef.current = [];
+                redoStackRef.current = [];
+            }
             if (!NON_UNDOABLE.has(action.type)) {
                 const before = stripTransient(stateRef.current);
                 const after  = stripTransient(reducer(stateRef.current, action));
@@ -1792,7 +1822,7 @@ export function CrmProvider({ children }) {
                     });
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement("a");
-                    const date = new Date().toISOString().slice(0, 10);
+                    const date = toLocalDateKey(new Date());
                     a.href = url;
                     a.download = `crm-backup-${date}.json`;
                     a.click();
@@ -1808,6 +1838,9 @@ export function CrmProvider({ children }) {
                 try {
                     const parsed = JSON.parse(jsonString);
                     if (!parsed || !parsed.workspaces) throw new Error("Format invalide");
+                    // rawDispatch : vider explicitement l'undo (comme dispatch RESTORE_SNAPSHOT)
+                    undoStackRef.current = [];
+                    redoStackRef.current = [];
                     rawDispatch({ type: "RESTORE_SNAPSHOT", snapshot: parsed });
                     setRestoreEpoch((n) => n + 1);
                     import("sonner").then(({ toast }) =>

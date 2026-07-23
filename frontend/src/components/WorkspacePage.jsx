@@ -20,6 +20,7 @@ import {
     isContactedCol as isContactedColumn,
     isMeetingCol as isMeetingColumn,
 } from "@/constants/columnPatterns";
+import { isManualRdv } from "@/lib/nextActionUtils";
 
 export const WorkspacePage = () => {
     const { state, dispatch, restoreEpoch } = useCrm();
@@ -121,7 +122,7 @@ export const WorkspacePage = () => {
                 }
                 // Prompt meeting date on entering "Rendez-vous"
                 // — sauf si le lead a déjà un RDV enregistré
-                const hasExistingRdv = l.nextAction?.label?.startsWith("📅 RDV");
+                const hasExistingRdv = isManualRdv(l.nextAction);
                 if (isMeetingColumn(targetCol) && !hasExistingRdv) {
                     setMeetingLeadId(l.id);
                 }

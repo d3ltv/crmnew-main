@@ -1,11 +1,4 @@
-/* ── CRM — styles complémentaires à Tailwind ── */
-
-/* Cartes : hover subtil avec légère ombre */
-.lead-card:not(.dragging):hover {
-    box-shadow: 0 2px 10px -3px rgba(0, 0, 0, 0.10), 0 1px 3px -1px rgba(0, 0, 0, 0.06);
-    transform: translateY(-1px);
-    transition: box-shadow 0.15s ease, transform 0.15s ease;
-}
+/* ── CRM — styles complémentaires (uniques, non dupliqués dans index.css) ── */
 
 /* Cartes avec RDV : ombre colorée via CSS custom property */
 .lead-card.rdv-shadow:not(.dragging),
@@ -35,34 +28,7 @@
     opacity: 0.8;
 }
 
-/* État drag */
-.lead-card.dragging {
-    opacity: 0.4;
-    transform: scale(0.97) rotate(-1deg);
-}
-
-/* Animation placeholder d'insertion (drag & drop) */
-@keyframes placeholderPulse {
-    0%, 100% { opacity: 0.4; transform: scaleX(0.95); }
-    50%       { opacity: 1;   transform: scaleX(1); }
-}
-
-/* Ombre panel latéral lead detail */
-.shadow-panel {
-    box-shadow:
-        0 0 0 1px hsl(var(--border)),
-        0 8px 32px -8px rgba(0, 0, 0, 0.15),
-        0 24px 48px -16px rgba(0, 0, 0, 0.08);
-}
-
-/* Glassmorphism pour header/footer du panel de détail */
-.glass {
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    background-color: hsl(var(--card) / 0.94);
-}
-
-/* Scroll horizontal du board kanban */
+/* Scroll horizontal du board kanban — complément thin scrollbar (Firefox) */
 .kanban-hscroll {
     scrollbar-width: thin;
     scrollbar-color: hsl(var(--border)) transparent;

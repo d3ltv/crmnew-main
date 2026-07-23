@@ -5,6 +5,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { useCrm } from "@/context/CrmContext";
 import { formatDateTimeLong } from "@/lib/dateUtils";
 import { parseNote, diffWithLead, formatDetected, detectAppointment } from "@/lib/noteParser";
+import { isMeetingColumn } from "@/constants/columnPatterns";
+import { makeRdvNextAction } from "@/lib/nextActionUtils";
+import { toLocalDateKey } from "@/lib/dateUtils";
 
 export const CallNoteModal = ({
     open,
@@ -123,12 +126,33 @@ export const CallNoteModal = ({
             });
         }
 
-        // ── 1b. Déplacement vers la colonne de rappel ─────────────────────
-        const shouldMove = appointment
-            ? (autoFollowupColumn && effectiveColumnId !== autoFollowupColumn.id)
-            : (finalOutcome === "noanswer" && outcomeManual && autoFollowupColumn && effectiveColumnId !== autoFollowupColumn.id);
+        // ── 1b. Déplacement colonne ─────────────────────────────────────────
+        // RDV détecté → colonne « Rendez-vous » si elle existe (jamais la colonne rappel).
+        // Pas de réponse (manuel) → colonne auto-followup / rappel.
+        const meetingColumn = workspace.columnOrder
+            .map((cid) => workspace.columns[cid])
+            .find((c) => c && isMeetingColumn(c.name));
 
-        if (shouldMove) {
+        const shouldMoveToMeeting =
+            !!appointment && meetingColumn && effectiveColumnId !== meetingColumn.id;
+        const shouldMoveToFollowup =
+            !appointment &&
+            finalOutcome === "noanswer" &&
+            outcomeManual &&
+            autoFollowupColumn &&
+            effectiveColumnId !== autoFollowupColumn.id;
+
+        if (shouldMoveToMeeting) {
+            onAutoMoved?.(lead.id);
+            dispatch({
+                type: "MOVE_LEAD_ORDERED",
+                workspaceId: workspace.id,
+                leadId: lead.id,
+                toColumnId: meetingColumn.id,
+                toIndex: null,
+            });
+            effectiveColumnId = meetingColumn.id;
+        } else if (shouldMoveToFollowup) {
             onAutoMoved?.(lead.id);
             dispatch({
                 type: "MOVE_LEAD_ORDERED",
@@ -171,7 +195,7 @@ export const CallNoteModal = ({
                 overdue: false,
             };
             patch.nextAction = {
-                date: dueAt.slice(0, 10),
+                date: toLocalDateKey(dueAt),
                 dueAt,
                 label: stageLabels[nextStage],
                 auto: true,
@@ -179,14 +203,13 @@ export const CallNoteModal = ({
             };
         }
 
-        // Rendez-vous détecté dans la note → nextAction (prioritaire sur le rappel auto)
+        // Rendez-vous détecté dans la note → nextAction normalisé (📅 RDV + meeting)
         if (appointment) {
-            patch.nextAction = {
-                date: appointment.iso.slice(0, 10),
+            patch.nextAction = makeRdvNextAction({
+                date: toLocalDateKey(appointment.iso),
                 dueAt: appointment.iso,
-                label: `📅 RDV détecté · ${appointment.label}`,
-                auto: false,
-            };
+                label: `RDV détecté · ${appointment.label}`,
+            });
         }
 
         if (Object.keys(patch).length > 0) {

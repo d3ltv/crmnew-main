@@ -41,6 +41,7 @@ import { ColorPickerRow } from "./ColorPickerRow";
 import { getColumnColor } from "@/lib/columnColors";
 import { useCrm } from "@/context/CrmContext";
 import { isContactedColumn } from "@/constants/columnPatterns";
+import { isManualRdv } from "@/lib/nextActionUtils";
 
 // Wrapper local : accepte un nom de colonne string
 const isContactedCol = (name = "") => isContactedColumn(name);
@@ -218,7 +219,7 @@ export const KanbanColumn = ({
         // Tri appliqué, mais les RDV urgents restent en tête (gérés par KanbanBoard)
         const now = Date.now();
         const hasUrgentRdv = (lead) => {
-            if (!lead.nextAction?.label?.startsWith("📅 RDV")) return false;
+            if (!isManualRdv(lead.nextAction)) return false;
             const t = new Date(lead.nextAction.dueAt || lead.nextAction.date).getTime();
             return t > now - 60000 && t - now < 24 * 3600 * 1000;
         };
@@ -329,7 +330,7 @@ export const KanbanColumn = ({
 
             {/* ── Header ── */}
             <div
-                className="px-1 pt-1 pb-2 flex items-center gap-2 group"
+                className="px-1 pt-1 pb-2 flex items-center gap-1.5 group"
                 draggable
                 onDragStart={(e) => onColumnDragStart(e, column.id)}
             >
@@ -360,7 +361,7 @@ export const KanbanColumn = ({
                     <button
                         data-testid={`column-title-${column.id}`}
                         onDoubleClick={() => setEditing(true)}
-                        className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold text-white ${color.dot} shrink-0 max-w-[160px] truncate`}
+                        className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold text-white ${color.dot} shrink-0 max-w-[180px] truncate`}
                         title="Double-cliquez pour renommer"
                     >
                         {column.name}
@@ -375,32 +376,20 @@ export const KanbanColumn = ({
                     {leads.length}
                 </span>
                 {sort && (
-                    <button
-                        onClick={clearSort}
-                        title={`Trié par ${sort.label} (${sort.dir === "asc" ? "↑" : "↓"}) — cliquer pour réinitialiser`}
-                        className="shrink-0 flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-medium hover:bg-primary/20 transition-colors"
+                    <span
+                        title={`Trié par ${sort.label}`}
+                        className="shrink-0 text-primary/70"
                     >
-                        {sort.dir === "asc" ? <ArrowUp size={9} /> : <ArrowDown size={9} />}
-                        <span className="max-w-[60px] truncate">{sort.label}</span>
-                    </button>
-                )}
-
-                {/* Mode rapide actif — badge discret */}
-                {quickMode && (
-                    <span className="shrink-0 flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-primary text-primary-foreground text-[10px] font-semibold">
-                        <Zap size={9} className="fill-primary-foreground" />
-                        Actif
+                        {sort.dir === "asc" ? <ArrowUp size={11} /> : <ArrowDown size={11} />}
                     </span>
                 )}
-
-                {/* Auto-followup badge */}
                 {column.autoFollowup && (
-                    <span title="Rappels automatiques" className="shrink-0 text-foreground/40">
+                    <span title="Rappels automatiques" className="shrink-0 text-foreground/35">
                         <BellRing size={11} data-testid={`column-followup-badge-${column.id}`} />
                     </span>
                 )}
 
-                {/* ⋯ Menu — toujours visible, pas seulement au hover */}
+                {/* ⋯ Menu */}
                 <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                         <button

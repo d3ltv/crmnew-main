@@ -9,6 +9,7 @@ import {
     findBestNouveauColumnId,
     findBestContactedColumnId,
 } from "@/constants/columnPatterns";
+import { isManualRdv } from "@/lib/nextActionUtils";
 
 // Wrapper local — colonnes "contacté" pour le tri stale
 const isContactedCol = (name = "") => isContactedColumn(name);
@@ -124,7 +125,7 @@ export const KanbanBoard = ({
 
         // Détecte si un lead a un RDV dans moins de 24h (non dépassé)
         const hasUrgentRdv = (lead) => {
-            if (!lead.nextAction?.label?.startsWith("📅 RDV")) return false;
+            if (!isManualRdv(lead.nextAction)) return false;
             const t = new Date(lead.nextAction.dueAt || lead.nextAction.date).getTime();
             return t > now - 60000 && t - now < 24 * 3600 * 1000;
         };

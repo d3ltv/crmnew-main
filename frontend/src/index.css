@@ -208,12 +208,12 @@ body {
     }
 }
 
-/* Bigger tap targets on touch devices */
+/* Bigger tap targets on touch devices — opt-in via .touch-target
+   (évite de gonfler les micro-contrôles des cartes / badges) */
 @media (hover: none) and (pointer: coarse) {
-    button,
-    [role="button"],
-    a {
+    .touch-target {
         min-height: 40px;
+        min-width: 40px;
     }
 }
 

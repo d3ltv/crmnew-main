@@ -330,7 +330,7 @@ export const WorkspacesPage = () => {
                         <Button
                             data-testid="create-workspace-header-btn"
                             onClick={() => setOpen(true)}
-                            className="h-8 rounded-lg px-3 gap-1.5 bg-foreground text-background hover:bg-foreground/85 text-[13px] font-medium"
+                            className="h-8 rounded-lg px-3 gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90 text-[13px] font-medium"
                         >
                             <Plus size={14} />
                             <span className="hidden sm:inline">Nouvel espace</span>
@@ -434,7 +434,7 @@ const OnboardingHero = ({ onCreate }) => (
             <Button
                 data-testid="create-first-workspace-btn"
                 onClick={onCreate}
-                className="h-11 rounded-xl px-6 text-[14px] font-medium bg-foreground text-background hover:bg-foreground/85 gap-2"
+                className="h-11 rounded-xl px-6 text-[14px] font-medium bg-primary text-primary-foreground hover:bg-primary/90 gap-2"
             >
                 <Plus size={16} />
                 Créer un espace

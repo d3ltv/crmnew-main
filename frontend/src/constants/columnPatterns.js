@@ -15,6 +15,8 @@ export const NOUVEAU_PATTERNS = [
     "prospect",
     "entrant",
     "candidature",
+    "à contacter",
+    "a contacter",
 ];
 
 // ── Colonnes "Contacté" — lead contacté, en attente de réponse ───────────────
@@ -23,6 +25,17 @@ export const CONTACTED_PATTERNS = [
     "appel",
     "relance",
     "call",
+];
+
+// Sous-chaînes "contact" qui NE sont PAS des colonnes contactées
+const CONTACTED_EXCLUSIONS = [
+    /à\s*contacter/,
+    /a\s*contacter/,
+    /non\s*contact/,
+    /pas\s*contact/,
+    /not\s*contacted/,
+    /to\s*contact/,
+    /recontact/,
 ];
 
 // ── Colonnes "Rendez-vous" — RDV planifié ────────────────────────────────────
@@ -67,6 +80,9 @@ export function isNouveauColumn(name = "") {
 /** @param {string} name */
 export function isContactedColumn(name = "") {
     const n = name.toLowerCase().trim();
+    if (!n) return false;
+    // Faux positifs : « À contacter », « Non contacté », etc.
+    if (CONTACTED_EXCLUSIONS.some((re) => re.test(n))) return false;
     return CONTACTED_PATTERNS.some((p) => n.includes(p));
 }
 
@@ -134,8 +150,9 @@ export function scoreNouveauColumn(name = "") {
     if (["prospect", "prospects"].includes(n)) return 90;
     if (["candidature", "candidatures"].includes(n)) return 90;
     if (["entrant", "entrants"].includes(n)) return 85;
+    if (/à\s*contacter|a\s*contacter/.test(n)) return 88;
     if (!isNouveauColumn(n)) return -1;
-    // Éviter les noms qui sont clairement une colonne contacté
+    // Éviter les noms qui sont clairement une colonne contacté (déjà exclus par isNouveau si « à contacter »)
     if (/contact[ée]s?/.test(n) || n.includes("contacted")) return -1;
     return 50;
 }
