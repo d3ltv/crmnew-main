@@ -21,6 +21,7 @@ import {
     isMeetingCol as isMeetingColumn,
 } from "@/constants/columnPatterns";
 import { isManualRdv } from "@/lib/nextActionUtils";
+import { PENDING_LEAD_EVENT } from "@/lib/calendarEvents";
 
 export const WorkspacePage = () => {
     const { state, dispatch, restoreEpoch } = useCrm();
@@ -158,24 +159,48 @@ export const WorkspacePage = () => {
         }
     }, [workspace?.leads, pendingOpenColumnId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // Ouvrir un lead depuis le dashboard (alertes stats)
+    // Ouvrir un lead depuis le dashboard / calendrier (alertes stats)
+    useEffect(() => {
+        if (!workspace) return;
+
+        const tryOpenPending = () => {
+            try {
+                const raw = sessionStorage.getItem("crm_pending_lead");
+                if (!raw) return;
+                const { workspaceId, leadId } = JSON.parse(raw);
+                if (workspaceId !== workspace.id) return;
+                if (!workspace.leads[leadId]) {
+                    sessionStorage.removeItem("crm_pending_lead");
+                    return;
+                }
+                setOpenLeadId(leadId);
+                sessionStorage.removeItem("crm_pending_lead");
+            } catch {
+                try { sessionStorage.removeItem("crm_pending_lead"); } catch { /* ignore */ }
+            }
+        };
+
+        tryOpenPending();
+        window.addEventListener(PENDING_LEAD_EVENT, tryOpenPending);
+        return () => window.removeEventListener(PENDING_LEAD_EVENT, tryOpenPending);
+    }, [workspace?.id, workspace?.leads]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Appliquer un filtre prérempli depuis la page d'accueil (badge colonne / en retard)
     useEffect(() => {
         if (!workspace) return;
         try {
-            const raw = sessionStorage.getItem("crm_pending_lead");
+            const raw = sessionStorage.getItem("crm_pending_filter");
             if (!raw) return;
-            const { workspaceId, leadId } = JSON.parse(raw);
+            const { workspaceId, filter: pendingFilter } = JSON.parse(raw);
             if (workspaceId !== workspace.id) return;
-            if (!workspace.leads[leadId]) {
-                sessionStorage.removeItem("crm_pending_lead");
-                return;
-            }
-            setOpenLeadId(leadId);
-            sessionStorage.removeItem("crm_pending_lead");
+            sessionStorage.removeItem("crm_pending_filter");
+            const tag = String(pendingFilter || "").trim();
+            if (!tag) return;
+            setActiveFilters((prev) => (prev.includes(tag) ? prev : [...prev, tag]));
         } catch {
-            try { sessionStorage.removeItem("crm_pending_lead"); } catch { /* ignore */ }
+            try { sessionStorage.removeItem("crm_pending_filter"); } catch { /* ignore */ }
         }
-    }, [workspace?.id, workspace?.leads]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [workspace?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
     if (!workspace) return null;
 
@@ -289,6 +314,7 @@ export const WorkspacePage = () => {
                     <ListView
                         workspace={workspace}
                         filter={filter}
+                        activeFilters={activeFilters}
                         onOpenLead={(l) => setOpenLeadId(l.id)}
                     />
                 )}
@@ -296,6 +322,7 @@ export const WorkspacePage = () => {
                     <TableView
                         workspace={workspace}
                         filter={filter}
+                        activeFilters={activeFilters}
                         onOpenLead={(l) => setOpenLeadId(l.id)}
                     />
                 )}
@@ -303,6 +330,7 @@ export const WorkspacePage = () => {
                     <PipelineView
                         workspace={workspace}
                         filter={filter}
+                        activeFilters={activeFilters}
                         onOpenLead={(l) => setOpenLeadId(l.id)}
                     />
                 )}

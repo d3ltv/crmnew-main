@@ -11,8 +11,8 @@
 const DB_NAME    = "crm_backups";
 const DB_VERSION = 1;
 const STORE_NAME = "snapshots";
-const MAX_BACKUPS = 10;
-const BACKUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_BACKUPS = 5;
+const BACKUP_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 
 let _db = null;
 

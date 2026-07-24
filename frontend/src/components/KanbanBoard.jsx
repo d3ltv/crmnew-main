@@ -10,6 +10,7 @@ import {
     findBestContactedColumnId,
 } from "@/constants/columnPatterns";
 import { isManualRdv } from "@/lib/nextActionUtils";
+import { filterLeads } from "@/lib/leadFilter";
 
 // Wrapper local — colonnes "contacté" pour le tri stale
 const isContactedCol = (name = "") => isContactedColumn(name);
@@ -63,53 +64,11 @@ export const KanbanBoard = ({
         };
     }, []);
 
-    // --- Filtered leads ---
-    // Chaque lead reçoit un score = nombre de filtres actifs qu'il satisfait.
-    // Un lead passe si : il matche le filtre texte simple ET au moins 1 filtre actif
-    // (ou tous, selon la config). On trie ensuite par score décroissant pour prioriser
-    // les leads qui matchent le plus de filtres.
-    const filtered = useMemo(() => {
-        const q = (filter || "").toLowerCase().trim();
-        const tags = (activeFilters || []).map((f) => f.toLowerCase().trim()).filter(Boolean);
-        const all = Object.values(workspace.leads);
-
-        // Fonction qui teste si une valeur de lead contient un terme
-        const matchesTerm = (lead, term) =>
-            (lead.company || "").toLowerCase().includes(term) ||
-            (lead.contact || "").toLowerCase().includes(term) ||
-            (lead.phone || "").toLowerCase().includes(term) ||
-            (lead.website || "").toLowerCase().includes(term) ||
-            (lead.email || "").toLowerCase().includes(term) ||
-            (lead.tags || []).some((t) => t.toLowerCase().includes(term)) ||
-            Object.entries(lead.extra || {}).some(([, v]) =>
-                String(v || "").toLowerCase().includes(term)
-            ) ||
-            (lead.customFields || []).some((cf) =>
-                (cf.label || "").toLowerCase().includes(term) ||
-                (cf.value || "").toLowerCase().includes(term)
-            );
-
-        let result = all;
-
-        // Filtre texte simple (barre de recherche)
-        if (q) result = result.filter((l) => matchesTerm(l, q));
-
-        // Filtres multiples actifs
-        if (tags.length > 0) {
-            // Ne garder que les leads qui matchent AU MOINS UN filtre actif
-            result = result.filter((l) => tags.some((tag) => matchesTerm(l, tag)));
-            // Ajouter le score pour le tri (nombre de filtres matchés)
-            result = result.map((l) => ({
-                lead: l,
-                score: tags.filter((tag) => matchesTerm(l, tag)).length,
-            }));
-            // Trier par score décroissant (ceux qui matchent le plus en premier)
-            result.sort((a, b) => b.score - a.score);
-            result = result.map((x) => x.lead);
-        }
-
-        return result;
-    }, [workspace.leads, filter, activeFilters]);
+    // --- Filtered leads (vigilance recalculée à la volée sur les données actuelles) ---
+    const filtered = useMemo(
+        () => filterLeads(Object.values(workspace.leads), { filter, activeFilters }, workspace),
+        [workspace, filter, activeFilters]
+    );
 
     // --- Leads ordered per column (respects leadOrder if present) ---
     const byColumn = useMemo(() => {

@@ -1,13 +1,15 @@
 /**
  * Ordre, visibilité & collapse des sections de la fiche lead (par workspace).
- * Zone A (brief « Information pertinente » + prochaine action) est fixe — hors de cette liste.
+ * Zone A (brief « Information pertinente ») est fixe — hors de cette liste.
+ * « calendar » est une section déplaçable comme les autres.
  */
 
 import { parseNote, detectPersonNames } from "@/lib/noteParser";
+import { rankContactNames } from "@/lib/contactRank";
 
 export const PANEL_SECTION_IDS = [
-    "watch",
     "imported",
+    "calendar",
     "contact",
     "notes",
     "relances",
@@ -17,8 +19,8 @@ export const PANEL_SECTION_IDS = [
 ];
 
 export const PANEL_SECTION_META = {
-    watch:    { label: "À surveiller", icon: "AlertTriangle" },
     imported: { label: "Données importées", icon: "Database" },
+    calendar: { label: "Calendrier", icon: "CalendarClock" },
     contact:  { label: "Contact & coordonnées", icon: "User" },
     notes:    { label: "Notes", icon: "MessageSquare" },
     relances: { label: "Relances", icon: "Repeat2" },
@@ -27,9 +29,9 @@ export const PANEL_SECTION_META = {
     history:  { label: "Historique de statut", icon: "History" },
 };
 
-/** Défaut métier annonces : À surveiller haut, import replié, historique bas. */
+/** Défaut : calendrier juste sous l'import, avant le contact. */
 export const DEFAULT_PANEL_SECTIONS = {
-    order: ["watch", "imported", "contact", "notes", "relances", "tags", "deal", "history"],
+    order: ["imported", "calendar", "contact", "notes", "relances", "tags", "deal", "history"],
     hidden: [],
     collapsed: ["imported"],
 };
@@ -200,6 +202,7 @@ export function extractLeadBrief(lead) {
     let notePhones = [];
     let noteEmails = [];
     const allNotes = (lead?.notes || []).map((n) => n.text).filter(Boolean).join("\n");
+    const noteList = lead?.notes || [];
     if (allNotes.trim()) {
         const detected = parseNote(allNotes);
         notePersons = detected.persons || detectPersonNames(allNotes);
@@ -207,19 +210,35 @@ export function extractLeadBrief(lead) {
         noteEmails = detected.emails || [];
     }
 
+    const rankedContacts = rankContactNames(
+        [
+            ...(lead?.contact ? [{ name: lead.contact, source: "lead", frequency: 1, lastNoteIndex: 0 }] : []),
+            ...(contactFromImport ? [{ name: contactFromImport, source: "import", frequency: 1, lastNoteIndex: 99 }] : []),
+            ...noteList.flatMap((n, idx) =>
+                detectPersonNames(n?.text || "").map((p) => ({
+                    name: p,
+                    source: "note",
+                    frequency: 1,
+                    lastNoteIndex: idx,
+                }))
+            ),
+            ...(lead?.customFields || [])
+                .filter((cf) => cf?.value && /contact|interlocuteur|personne|nom/i.test(cf.label || ""))
+                .map((cf) => ({ name: cf.value, source: "note", frequency: 1, lastNoteIndex: 40 })),
+        ],
+        { leadContact: lead?.contact, totalNotes: noteList.length || 1 }
+    );
+
     const contact =
         (lead?.contact || "").trim()
+        || rankedContacts[0]?.name
         || contactFromImport
         || notePersons[0]
         || null;
 
     const contactSource = lead?.contact
         ? "lead"
-        : contactFromImport
-            ? "import"
-            : notePersons[0]
-                ? "note"
-                : null;
+        : rankedContacts[0]?.source || (contactFromImport ? "import" : notePersons[0] ? "note" : null);
 
     const phone = lead?.phone || notePhones[0] || null;
     const email = lead?.email || noteEmails[0] || null;
@@ -248,24 +267,22 @@ export function extractLeadBrief(lead) {
         insights.push(item);
     };
 
-    for (const p of notePersons) {
+    for (const ranked of rankedContacts.slice(0, 8)) {
+        const p = ranked.name;
+        const isPrimary = lead?.contact
+            && lead.contact.trim().toLowerCase() === p.trim().toLowerCase();
         pushInsight({
             type: "person",
             value: p,
-            label: "Contact détecté",
-            actionable: !lead?.contact || lead.contact.trim().toLowerCase() !== p.toLowerCase(),
-            applyKey: "contact",
-            source: "note",
-        });
-    }
-    if (contactFromImport && (!lead?.contact || lead.contact.trim() !== contactFromImport)) {
-        pushInsight({
-            type: "person",
-            value: contactFromImport,
-            label: "Contact importé",
-            actionable: !lead?.contact,
-            applyKey: "contact",
-            source: "import",
+            label: isPrimary
+                ? "Contact principal"
+                : ranked.source === "import"
+                    ? "Contact importé"
+                    : "Contact détecté",
+            actionable: !isPrimary,
+            applyKey: isPrimary ? null : "contact",
+            source: ranked.source || "note",
+            score: ranked.score,
         });
     }
     for (const p of notePhones) {

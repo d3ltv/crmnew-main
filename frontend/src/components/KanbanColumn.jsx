@@ -42,6 +42,7 @@ import { getColumnColor } from "@/lib/columnColors";
 import { useCrm } from "@/context/CrmContext";
 import { isContactedColumn, isNouveauColumn } from "@/constants/columnPatterns";
 import { isManualRdv } from "@/lib/nextActionUtils";
+import { getLeadVigilance } from "@/lib/inconsistencyRules";
 
 // Wrapper local : accepte un nom de colonne string
 const isContactedCol = (name = "") => isContactedColumn(name);
@@ -172,11 +173,19 @@ export const KanbanColumn = ({
         return null;
     }); // null = ordre manuel | { key, dir: "asc"|"desc", label }
 
-    const applySort = (key, label) => {
+    const applySort = (key, label, { preferDesc = false } = {}) => {
         setSort((prev) => {
-            const next = prev?.key === key
-                ? (prev.dir === "asc" ? { key, dir: "desc", label } : null) // 3e clic = reset
-                : { key, dir: "asc", label };
+            let next;
+            if (prev?.key === key) {
+                if (preferDesc) {
+                    // desc → asc → reset (pour vigilance : rouge d’abord au 1er clic)
+                    next = prev.dir === "desc" ? { key, dir: "asc", label } : null;
+                } else {
+                    next = prev.dir === "asc" ? { key, dir: "desc", label } : null;
+                }
+            } else {
+                next = { key, dir: preferDesc ? "desc" : "asc", label };
+            }
             try { localStorage.setItem(SORT_KEY, JSON.stringify(next)); } catch {}
             return next;
         });
@@ -209,6 +218,9 @@ export const KanbanColumn = ({
             if (key === "email")       return (lead.email || "").toLowerCase();
             if (key === "dealValue")   return lead.dealValue ?? -Infinity;
             if (key === "contact")     return (lead.contact || "").toLowerCase();
+            if (key === "vigilance") {
+                return getLeadVigilance(lead, workspace.columns, workspace.inconsistencyConfig).score;
+            }
             if (key.startsWith("extra:")) {
                 const ek = key.slice(6);
                 return (lead.extra?.[ek] || "").toString().toLowerCase();
@@ -228,13 +240,17 @@ export const KanbanColumn = ({
         const rest = [...leads.filter((l) => !hasUrgentRdv(l))].sort((a, b) => {
             const va = getValue(a), vb = getValue(b);
             if (va === vb) return 0;
+            if (key === "vigilance") {
+                if (va === 0 && vb === 0) return 0;
+                return va < vb ? -mul : mul;
+            }
             if (va === "" || va === -Infinity) return 1;
             if (vb === "" || vb === -Infinity) return -1;
             return va < vb ? -mul : mul;
         });
 
         return [...urgent, ...rest];
-    }, [leads, sort]);
+    }, [leads, sort, workspace.columns, workspace.inconsistencyConfig]);
 
     useEffect(() => {
         if (editing) inputRef.current?.select();
@@ -464,10 +480,14 @@ export const KanbanColumn = ({
                                     { key: "dealValue",   label: "Valeur deal" },
                                     { key: "createdAt",   label: "Date création" },
                                     { key: "lastContact", label: "Dernier contact" },
-                                ].map(({ key, label }) => {
+                                    { key: "vigilance",   label: "Vigilance", preferDesc: true },
+                                ].map(({ key, label, preferDesc }) => {
                                     const active = sort?.key === key;
                                     return (
-                                        <DropdownMenuItem key={key} onClick={() => applySort(key, label)}>
+                                        <DropdownMenuItem
+                                            key={key}
+                                            onClick={() => applySort(key, label, { preferDesc: !!preferDesc })}
+                                        >
                                             <span className="flex-1">{label}</span>
                                             {active && (
                                                 sort.dir === "asc"

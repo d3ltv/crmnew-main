@@ -4,6 +4,13 @@ import {
 } from "lucide-react";
 import { getColumnColor } from "@/lib/columnColors";
 import { telHref, mailtoHref, websiteHref } from "@/lib/actionLinks";
+import {
+    getAgencySuspicion,
+    isAgencyDetectionEnabled,
+} from "@/lib/agencyDetection";
+import { AgencySuspectBadge, AGENCY_NAME_CLS } from "./AgencySuspectBadge";
+import { filterLeads } from "@/lib/leadFilter";
+import { getLeadVigilance } from "@/lib/inconsistencyRules";
 
 function formatDate(iso) {
     if (!iso) return null;
@@ -46,29 +53,39 @@ function useVirtualList(items, containerRef) {
     return { range, attachScroll };
 }
 
-export const ListView = ({ workspace, filter, onOpenLead }) => {
+export const ListView = ({ workspace, filter, activeFilters = [], onOpenLead }) => {
     const containerRef = useRef(null);
 
     const { grouped, flatLeads } = useMemo(() => {
-        const q = (filter || "").toLowerCase().trim();
-        const all = Object.values(workspace.leads);
-        const filtered = !q ? all : all.filter((l) =>
-            (l.company || "").toLowerCase().includes(q) ||
-            (l.contact || "").toLowerCase().includes(q) ||
-            (l.phone || "").toLowerCase().includes(q) ||
-            (l.email || "").toLowerCase().includes(q) ||
-            (l.tags || []).some((t) => t.toLowerCase().includes(q))
+        const filtered = filterLeads(
+            Object.values(workspace.leads),
+            { filter, activeFilters },
+            workspace
         );
-        // Group by column order
+        // Group by column order — tri vigilance si filtre rouge actif
+        const onlyRed = (activeFilters || []).some(
+            (t) => String(t).toLowerCase().trim() === "vigilance rouge"
+        );
+        const sortByVig = (a, b) => {
+            if (!onlyRed) return 0;
+            const sa = getLeadVigilance(a, workspace.columns, workspace.inconsistencyConfig).score;
+            const sb = getLeadVigilance(b, workspace.columns, workspace.inconsistencyConfig).score;
+            return sb - sa;
+        };
         const grouped = {};
         workspace.columnOrder.forEach((cid) => { grouped[cid] = []; });
         filtered.forEach((l) => { if (grouped[l.columnId]) grouped[l.columnId].push(l); });
-        // Flat list for virtualisation (includes only leads, not group headers)
+        if (onlyRed) {
+            workspace.columnOrder.forEach((cid) => {
+                grouped[cid] = [...(grouped[cid] || [])].sort(sortByVig);
+            });
+        }
         const flatLeads = workspace.columnOrder.flatMap((cid) => grouped[cid] || []);
         return { grouped, flatLeads };
-    }, [workspace.leads, workspace.columnOrder, filter]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [workspace, filter, activeFilters]);
 
     const { range, attachScroll } = useVirtualList(flatLeads, containerRef);
+    const agencyOn = isAgencyDetectionEnabled(workspace);
 
     const setContainerRef = useCallback((el) => {
         containerRef.current = el;
@@ -101,7 +118,9 @@ export const ListView = ({ workspace, filter, onOpenLead }) => {
                             </div>
                             {/* Leads */}
                             <div className="rounded-xl border border-border overflow-hidden bg-card">
-                                {colLeads.map((lead, i) => (
+                                {colLeads.map((lead, i) => {
+                                    const agencySuspect = getAgencySuspicion(lead, agencyOn);
+                                    return (
                                     <button
                                         key={lead.id}
                                         onClick={() => onOpenLead(lead)}
@@ -112,7 +131,22 @@ export const ListView = ({ workspace, filter, onOpenLead }) => {
 
                                         {/* Name + contact */}
                                         <div className="flex-1 min-w-0">
-                                            <div className="font-semibold text-[13.5px] text-foreground truncate">{lead.company}</div>
+                                            <div className="flex items-center gap-1.5 min-w-0">
+                                                <div
+                                                    className={`font-semibold text-[13.5px] truncate ${
+                                                        agencySuspect ? AGENCY_NAME_CLS : "text-foreground"
+                                                    }`}
+                                                    title={agencySuspect ? agencySuspect.label : undefined}
+                                                >
+                                                    {lead.company}
+                                                </div>
+                                                {agencySuspect && (
+                                                    <AgencySuspectBadge
+                                                        score={agencySuspect.score}
+                                                        label={agencySuspect.label}
+                                                    />
+                                                )}
+                                            </div>
                                             {lead.contact && (
                                                 <div className="text-[12px] text-muted-foreground truncate">{lead.contact}</div>
                                             )}
@@ -166,7 +200,8 @@ export const ListView = ({ workspace, filter, onOpenLead }) => {
                                             </span>
                                         )}
                                     </button>
-                                ))}
+                                    );
+                                })}
                             </div>
                         </div>
                     );

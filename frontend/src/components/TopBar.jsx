@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useMemo, useState } from "react";
 import { useCrm } from "@/context/CrmContext";
 import {
     Search,
@@ -28,6 +28,8 @@ import {
     Info,
     MoreHorizontal,
     CheckCheck,
+    AlertTriangle,
+    CalendarDays,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -46,6 +48,13 @@ import {
     PopoverTrigger,
 } from "@/components/ui/popover";
 import {
+    Dialog,
+    DialogContent,
+    DialogHeader,
+    DialogTitle,
+    DialogDescription,
+} from "@/components/ui/dialog";
+import {
     AlertDialog,
     AlertDialogAction,
     AlertDialogCancel,
@@ -62,9 +71,28 @@ import {
 } from "@/components/ui/sheet";
 import { getColumnColor } from "@/lib/columnColors";
 import { formatShortDateTime } from "@/lib/dateUtils";
+import {
+    getWorkspaceFollowupNotifs,
+    markAllNotifsRead,
+    markNotifItemRead,
+    countUnreadWorkspaceNotifs,
+    isNotifItemUnread,
+} from "@/lib/followupNotifs";
+import { useNotifSeenMap } from "@/hooks/useNotifSeenMap";
+import {
+    collectCalendarEvents,
+    countActionableToday,
+} from "@/lib/calendarEvents";
 import { SidebarContent } from "./Sidebar";
 import { CardFieldsPanel } from "./CardFieldsPanel";
 import { DailyGoalWidget, DailyGoalEditor } from "./DailyGoalWidget";
+import { getBestProspectingSlot } from "@/lib/prospectingSlots";
+import { CrmCalendar } from "./CrmCalendar";
+
+const QUICK_FILTERS = [
+    { tag: "vigilance rouge", label: "Vigilance rouge", testId: "filter-vigilance-rouge" },
+    { tag: "en retard", label: "En retard", testId: "filter-en-retard" },
+];
 
 export const TopBar = ({
     workspace,
@@ -90,6 +118,7 @@ export const TopBar = ({
     const [searchOpen, setSearchOpen] = useState(false);
     const [goalEditorOpen, setGoalEditorOpen] = useState(false);
     const [filterInput, setFilterInput] = useState("");
+    const [calendarOpen, setCalendarOpen] = useState(false);
 
     const VIEWS = [
         { id: "kanban",   icon: <Trello size={15} />,      label: "Kanban" },
@@ -98,67 +127,52 @@ export const TopBar = ({
         { id: "pipeline", icon: <TrendingUp size={15} />,   label: "Pipeline" },
     ];
 
-    const followups = useMemo(() => {
-        const now = Date.now();
-        return Object.values(workspace.leads)
-            .filter((l) => l.autoFollowup)
-            .map((l) => ({
-                lead: l,
-                due: new Date(l.autoFollowup.dueAt).getTime(),
-                overdue:
-                    l.autoFollowup.overdue ||
-                    (l.autoFollowup.stage >= 3 &&
-                        new Date(l.autoFollowup.dueAt).getTime() <= now),
-                today:
-                    new Date(l.autoFollowup.dueAt).toDateString() ===
-                    new Date().toDateString(),
-            }))
-            .sort((a, b) => a.due - b.due);
-    }, [workspace.leads]);
+    const seenMap = useNotifSeenMap();
+
+    const prospectingSlot = useMemo(() => {
+        const allWs = state.order.map((id) => state.workspaces[id]).filter(Boolean);
+        return getBestProspectingSlot(allWs);
+    }, [state.workspaces, state.order]);
+
+    const allWorkspaces = useMemo(
+        () => state.order.map((id) => state.workspaces[id]).filter(Boolean),
+        [state.order, state.workspaces]
+    );
+
+    const calendarActionable = useMemo(
+        () => countActionableToday(collectCalendarEvents(allWorkspaces)),
+        [allWorkspaces]
+    );
+
+    const followups = useMemo(
+        () => getWorkspaceFollowupNotifs(workspace),
+        [workspace.leads] // eslint-disable-line react-hooks/exhaustive-deps
+    );
 
     const overdueCount = followups.filter((f) => f.overdue).length;
     const todayCount = followups.filter((f) => f.today && !f.overdue).length;
-    const totalNotifs = overdueCount + todayCount;
-
-    // Signature des notifs actives — change si une nouvelle arrive → badge revient
-    const notifSignature = useMemo(
-        () =>
-            followups
-                .filter((f) => f.overdue || f.today)
-                .map((f) => `${f.lead.id}:${f.lead.autoFollowup?.dueAt || ""}`)
-                .sort()
-                .join("|"),
-        [followups]
-    );
-
-    const notifStorageKey = `crm_notif_seen_${workspace.id}`;
-    const [notifsSeen, setNotifsSeen] = useState(false);
-
-    useEffect(() => {
-        try {
-            const saved = localStorage.getItem(notifStorageKey) || "";
-            setNotifsSeen(!!notifSignature && saved === notifSignature);
-        } catch {
-            setNotifsSeen(false);
-        }
-    }, [notifSignature, notifStorageKey]);
+    const totalNotifs = followups.length;
+    const badgeCount = countUnreadWorkspaceNotifs(workspace, seenMap);
+    const notifsSeen = badgeCount === 0 && totalNotifs > 0;
 
     const markNotifsAsRead = (e) => {
         e?.stopPropagation();
-        try {
-            localStorage.setItem(notifStorageKey, notifSignature);
-        } catch { /* ignore */ }
-        setNotifsSeen(true);
+        const allWs = state.order.map((id) => state.workspaces[id]).filter(Boolean);
+        markAllNotifsRead(allWs);
     };
 
-    const badgeCount = notifsSeen ? 0 : totalNotifs;
+    const openNotifLead = (lead) => {
+        markNotifItemRead(workspace.id, lead);
+        onOpenLead?.(lead);
+    };
 
     const exportCsv = () => {
         const leads = Object.values(workspace.leads).map((l) => ({
             ...l,
             _statusName: workspace.columns[l.columnId]?.name || "",
         }));
-        const csv = leadsToCsv(leads);
+        // BOM UTF-8 pour qu'Excel ouvre correctement les accents / colonnes FR
+        const csv = "\uFEFF" + leadsToCsv(leads);
         const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -278,11 +292,32 @@ export const TopBar = ({
                     <DailyGoalWidget
                         workspace={workspace}
                         onEditGoal={() => setGoalEditorOpen(true)}
+                        slotHint={prospectingSlot}
                     />
                 </div>
 
                 {/* ── Colonne droite : actions essentielles ── */}
                 <div className="flex items-center gap-1.5 justify-end min-w-0">
+                    {/* Calendrier */}
+                    <button
+                        type="button"
+                        data-testid="topbar-calendar-btn"
+                        aria-label="Ouvrir le calendrier"
+                        title="Calendrier"
+                        onClick={() => setCalendarOpen(true)}
+                        className="relative w-9 h-9 rounded-full hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors touch-target"
+                    >
+                        <CalendarDays size={16} />
+                        {calendarActionable > 0 && (
+                            <span
+                                data-testid="topbar-calendar-badge"
+                                className="absolute top-1 right-1 min-w-[15px] h-3.5 px-1 rounded-full text-[9px] font-semibold flex items-center justify-center text-white bg-rose-500"
+                            >
+                                {calendarActionable > 9 ? "9+" : calendarActionable}
+                            </span>
+                        )}
+                    </button>
+
                     {/* Recherche (ouvre une rangée pleine largeur) */}
                     <button
                         data-testid="topbar-search-btn"
@@ -308,6 +343,41 @@ export const TopBar = ({
                         )}
                     </button>
 
+                    {/* Filtre vigilance rouge — recalculé en live sur les données */}
+                    {(() => {
+                        const active = (activeFilters || []).some(
+                            (t) => t.toLowerCase() === "vigilance rouge"
+                        );
+                        return (
+                            <button
+                                type="button"
+                                data-testid="topbar-vigilance-rouge-btn"
+                                aria-label="Filtrer vigilance rouge"
+                                aria-pressed={active}
+                                title="Afficher uniquement les leads en vigilance rouge"
+                                onClick={() => {
+                                    setActiveFilters((prev) => {
+                                        const list = prev || [];
+                                        if (list.some((t) => t.toLowerCase() === "vigilance rouge")) {
+                                            return list.filter((t) => t.toLowerCase() !== "vigilance rouge");
+                                        }
+                                        return [...list, "vigilance rouge"];
+                                    });
+                                    setSearchOpen(true);
+                                    setFilterInput("");
+                                    setFilter("");
+                                }}
+                                className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors touch-target ${
+                                    active
+                                        ? "bg-rose-500/15 text-rose-600 dark:text-rose-400"
+                                        : "hover:bg-secondary text-muted-foreground hover:text-rose-600"
+                                }`}
+                            >
+                                <AlertTriangle size={15} strokeWidth={2.25} />
+                            </button>
+                        );
+                    })()}
+
                     {/* Notifications */}
                     <Popover>
                         <PopoverTrigger asChild>
@@ -320,7 +390,7 @@ export const TopBar = ({
                                 {badgeCount > 0 && (
                                     <span
                                         data-testid="notif-badge"
-                                        className={`absolute top-1.5 right-1.5 min-w-[15px] h-3.5 px-1 rounded-full text-[9px] font-semibold flex items-center justify-center text-white ${overdueCount > 0 ? "bg-rose-500 pulse-dot" : "bg-primary"}`}
+                                        className={`absolute top-1.5 right-1.5 min-w-[15px] h-3.5 px-1 rounded-full text-[9px] font-semibold flex items-center justify-center text-white ${overdueCount > 0 ? "bg-rose-500" : "bg-primary"}`}
                                     >
                                         {badgeCount}
                                     </span>
@@ -348,16 +418,17 @@ export const TopBar = ({
                                         type="button"
                                         onClick={markNotifsAsRead}
                                         disabled={notifsSeen}
-                                        title={notifsSeen ? "Notifications lues" : "Marquer comme lu"}
-                                        aria-label={notifsSeen ? "Notifications lues" : "Marquer les rappels comme lus"}
+                                        title={notifsSeen ? "Notifications lues" : "Tout lire (tous les espaces)"}
+                                        aria-label={notifsSeen ? "Notifications lues" : "Tout lire les notifications"}
                                         data-testid="notif-mark-read-btn"
-                                        className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
+                                        className={`shrink-0 h-8 px-2.5 rounded-full flex items-center gap-1 text-[11px] font-medium transition-colors ${
                                             notifsSeen
                                                 ? "text-emerald-600 dark:text-emerald-400 bg-emerald-500/10"
                                                 : "text-muted-foreground hover:text-emerald-600 hover:bg-emerald-500/10"
                                         }`}
                                     >
-                                        <CheckCheck size={16} strokeWidth={2} />
+                                        <CheckCheck size={14} strokeWidth={2} />
+                                        Tout lire
                                     </button>
                                 )}
                             </div>
@@ -370,16 +441,22 @@ export const TopBar = ({
                                 {followups.map(({ lead, overdue, today }) => {
                                     const col = workspace.columns[lead.columnId];
                                     const cc = getColumnColor(col);
+                                    const unread = isNotifItemUnread(workspace.id, lead, seenMap);
                                     return (
                                         <button
                                             key={lead.id}
                                             data-testid={`notif-item-${lead.id}`}
-                                            onClick={() => onOpenLead(lead)}
+                                            onClick={() => openNotifLead(lead)}
                                             className="w-full text-left px-4 py-3 border-b border-border/40 last:border-0 hover:bg-secondary/70 transition-colors flex gap-3"
                                         >
-                                            <span className={`shrink-0 w-2 h-2 mt-1.5 rounded-full ${overdue ? "bg-rose-500 pulse-dot" : today ? "bg-amber-500" : cc.dot}`} />
+                                            <span className={`shrink-0 w-2 h-2 mt-1.5 rounded-full ${overdue ? "bg-rose-500" : today ? "bg-amber-500" : cc.dot}`} />
                                             <div className="min-w-0 flex-1">
-                                                <div className="text-sm font-medium truncate">{lead.company}</div>
+                                                <div className="flex items-center gap-1.5">
+                                                    <div className="text-sm font-medium truncate">{lead.company}</div>
+                                                    {unread && (
+                                                        <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-rose-500" aria-hidden />
+                                                    )}
+                                                </div>
                                                 <div className="text-[11px] text-muted-foreground truncate">
                                                     {col?.name} · relance{" "}
                                                     {overdue ? "en retard" : today ? "aujourd'hui" : formatShortDateTime(lead.autoFollowup.dueAt)}{" "}
@@ -698,6 +775,45 @@ export const TopBar = ({
                             className="pl-8 pr-3 h-9 w-full rounded-lg bg-secondary/70 border-transparent focus-visible:bg-background transition-colors text-[13px]"
                         />
                     </div>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                        {QUICK_FILTERS.map(({ tag, label, testId }) => {
+                            const active = (activeFilters || []).some(
+                                (t) => t.toLowerCase() === tag.toLowerCase()
+                            );
+                            return (
+                                <button
+                                    key={tag}
+                                    type="button"
+                                    data-testid={testId}
+                                    onClick={() => {
+                                        setActiveFilters((prev) => {
+                                            const list = prev || [];
+                                            if (list.some((t) => t.toLowerCase() === tag.toLowerCase())) {
+                                                return list.filter((t) => t.toLowerCase() !== tag.toLowerCase());
+                                            }
+                                            return [...list, tag];
+                                        });
+                                        setFilterInput("");
+                                        setFilter("");
+                                    }}
+                                    className={`h-8 px-2.5 rounded-full text-[11px] font-medium border transition-colors ${
+                                        active
+                                            ? tag === "vigilance rouge"
+                                                ? "bg-rose-500/15 border-rose-500/40 text-rose-700 dark:text-rose-300"
+                                                : "bg-primary/12 border-primary/30 text-primary"
+                                            : "bg-secondary/60 border-transparent text-muted-foreground hover:text-foreground hover:bg-secondary"
+                                    }`}
+                                    title={
+                                        tag === "vigilance rouge"
+                                            ? "Afficher uniquement les leads en vigilance critique"
+                                            : undefined
+                                    }
+                                >
+                                    {label}
+                                </button>
+                            );
+                        })}
+                    </div>
                 </div>
             )}
 
@@ -728,6 +844,25 @@ export const TopBar = ({
 
         {/* Editor modal en dehors du header pour éviter les problèmes de z-index */}
         <DailyGoalEditor open={goalEditorOpen} onClose={() => setGoalEditorOpen(false)} />
+
+        <Dialog open={calendarOpen} onOpenChange={setCalendarOpen}>
+            <DialogContent
+                className="rounded-2xl sm:max-w-[min(1100px,94vw)] w-full max-h-[92vh] p-0 gap-0 overflow-hidden border-border bg-background"
+                data-testid="topbar-calendar-dialog"
+            >
+                <DialogHeader className="sr-only">
+                    <DialogTitle>Calendrier</DialogTitle>
+                    <DialogDescription>Agenda CRM</DialogDescription>
+                </DialogHeader>
+                <CrmCalendar
+                    workspaces={allWorkspaces}
+                    currentWorkspace={workspace}
+                    variant="dialog"
+                    className="border-0 rounded-2xl"
+                    onOpenLead={() => setCalendarOpen(false)}
+                />
+            </DialogContent>
+        </Dialog>
         </>
     );
 };

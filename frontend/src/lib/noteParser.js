@@ -136,6 +136,8 @@ export function parseNote(text) {
  *   newEmail: string | null,
  *   newAddress: string | null,
  *   newContact: string | null,
+ *   extraContacts: string[],
+ *   willAddPersons: string[],
  * }}
  */
 export function diffWithLead(detected, lead) {
@@ -161,13 +163,54 @@ export function diffWithLead(detected, lead) {
     );
     const newAddress = !addressFieldExists && addresses.length > 0 ? addresses[0] : null;
 
-    // Contact : ne jamais écraser un contact déjà renseigné
-    const existingContact = (lead.contact || "").trim().toLowerCase();
-    const newContact = !existingContact && persons.length > 0
-        ? persons[0]
+    // Contacts : remplir le champ principal si vide, et TOUJOURS ajouter
+    // les autres noms en customFields (même si un contact principal existe déjà).
+    const existingContact = (lead.contact || "").trim();
+    const existingContactNorm = existingContact.toLowerCase();
+    const existingPersonNorms = new Set();
+    if (existingContactNorm) existingPersonNorms.add(existingContactNorm);
+    (lead.customFields || []).forEach((cf) => {
+        if (!cf?.value) return;
+        if (!/contact|interlocuteur|personne|nom/i.test(cf.label || "")) return;
+        existingPersonNorms.add(String(cf.value).trim().toLowerCase());
+    });
+
+    const newContact = !existingContactNorm && persons.length > 0
+        ? [...persons].sort((a, b) => {
+            const score = (n) => (/^(m\.|mme|mlle|monsieur|madame)/i.test(n) ? 2 : 0)
+                + (String(n).trim().split(/\s+/).length >= 2 ? 1 : 0);
+            return score(b) - score(a);
+        })[0]
         : null;
 
-    return { newPhone, extraPhones, newEmail, newAddress, newContact };
+
+    const extraContacts = [];
+    for (const p of persons) {
+        const n = p.trim().toLowerCase();
+        if (!n) continue;
+        if (newContact && n === newContact.trim().toLowerCase()) continue;
+        // Même identité que le contact principal → pas de doublon custom
+        if (n === existingContactNorm) continue;
+        // Déjà en customFields → skip exact duplicate
+        if (existingPersonNorms.has(n)) continue;
+        extraContacts.push(p);
+        existingPersonNorms.add(n);
+    }
+
+    const willAddPersons = [
+        ...(newContact ? [newContact] : []),
+        ...extraContacts,
+    ];
+
+    return {
+        newPhone,
+        extraPhones,
+        newEmail,
+        newAddress,
+        newContact,
+        extraContacts,
+        willAddPersons,
+    };
 }
 
 export function formatDetected(detected) {

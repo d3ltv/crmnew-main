@@ -3,6 +3,13 @@ import { Trophy, ChevronUp, ChevronDown, Phone, Mail, Trash2, Globe, User } from
 import { getColumnColor } from "@/lib/columnColors";
 import { telHref, mailtoHref } from "@/lib/actionLinks";
 import { useCrm } from "@/context/CrmContext";
+import {
+    getAgencySuspicion,
+    isAgencyDetectionEnabled,
+} from "@/lib/agencyDetection";
+import { AgencySuspectBadge, AGENCY_NAME_CLS } from "./AgencySuspectBadge";
+import { filterLeads } from "@/lib/leadFilter";
+import { getLeadVigilance } from "@/lib/inconsistencyRules";
 
 function formatDate(iso) {
     if (!iso) return "—";
@@ -42,21 +49,18 @@ function useVirtualRange(totalCount, containerRef) {
     return { range, attachScroll };
 }
 
-export const TableView = ({ workspace, filter, onOpenLead }) => {
+export const TableView = ({ workspace, filter, activeFilters = [], onOpenLead }) => {
     const { dispatch } = useCrm();
     const [sortKey, setSortKey] = useState("company");
     const [sortDir, setSortDir] = useState("asc");
     const containerRef = useRef(null);
+    const agencyOn = isAgencyDetectionEnabled(workspace);
 
     const leads = useMemo(() => {
-        const q = (filter || "").toLowerCase().trim();
-        const all = Object.values(workspace.leads);
-        const filtered = !q ? all : all.filter((l) =>
-            (l.company || "").toLowerCase().includes(q) ||
-            (l.contact || "").toLowerCase().includes(q) ||
-            (l.phone || "").toLowerCase().includes(q) ||
-            (l.email || "").toLowerCase().includes(q) ||
-            (l.tags || []).some((t) => t.toLowerCase().includes(q))
+        const filtered = filterLeads(
+            Object.values(workspace.leads),
+            { filter, activeFilters },
+            workspace
         );
         return [...filtered].sort((a, b) => {
             let va, vb;
@@ -68,13 +72,17 @@ export const TableView = ({ workspace, filter, onOpenLead }) => {
             else if (sortKey === "dealValue") { va = a.dealValue ?? -1; vb = b.dealValue ?? -1; }
             else if (sortKey === "lastContact") { va = a.lastContact || ""; vb = b.lastContact || ""; }
             else if (sortKey === "contact") { va = a.contact || ""; vb = b.contact || ""; }
+            else if (sortKey === "vigilance") {
+                va = getLeadVigilance(a, workspace.columns, workspace.inconsistencyConfig).score;
+                vb = getLeadVigilance(b, workspace.columns, workspace.inconsistencyConfig).score;
+            }
             else { va = ""; vb = ""; }
             const cmp = typeof va === "number"
                 ? va - vb
                 : va.localeCompare(vb, "fr");
             return sortDir === "asc" ? cmp : -cmp;
         });
-    }, [workspace.leads, workspace.columns, filter, sortKey, sortDir]);
+    }, [workspace, filter, activeFilters, sortKey, sortDir]);
 
     const { range, attachScroll } = useVirtualRange(leads.length, containerRef);
 
@@ -86,7 +94,7 @@ export const TableView = ({ workspace, filter, onOpenLead }) => {
 
     const handleSort = (key) => {
         if (sortKey === key) setSortDir((d) => d === "asc" ? "desc" : "asc");
-        else { setSortKey(key); setSortDir("asc"); }
+        else { setSortKey(key); setSortDir(key === "vigilance" ? "desc" : "asc"); }
     };
 
     const Th = ({ label, k }) => (
@@ -118,6 +126,7 @@ export const TableView = ({ workspace, filter, onOpenLead }) => {
                             <Th label="Contact" k="contact" />
                             <th className="px-3 py-2.5 text-left text-[11px] font-semibold text-muted-foreground uppercase tracking-wider whitespace-nowrap">Tél. / Email</th>
                             <Th label="Statut" k="column" />
+                            <Th label="Vigilance" k="vigilance" />
                             <Th label="Deal" k="dealValue" />
                             <Th label="Dernier contact" k="lastContact" />
                             <th className="px-3 py-2.5 text-left text-[11px] font-semibold text-muted-foreground uppercase tracking-wider whitespace-nowrap">Relances</th>
@@ -128,7 +137,7 @@ export const TableView = ({ workspace, filter, onOpenLead }) => {
                         {/* Spacer haut — remplace les lignes non rendues au-dessus */}
                         {topSpacerHeight > 0 && (
                             <tr aria-hidden style={{ height: topSpacerHeight }}>
-                                <td colSpan={8} />
+                                <td colSpan={9} />
                             </tr>
                         )}
 
@@ -144,9 +153,27 @@ export const TableView = ({ workspace, filter, onOpenLead }) => {
                                 >
                                     {/* Entreprise */}
                                     <td className="px-3 py-2.5">
-                                        <span className={`font-semibold text-[13px] text-foreground ${lead.company?.startsWith("Sans nom") ? "opacity-40 italic" : ""}`}>
-                                            {lead.company}
-                                        </span>
+                                        {(() => {
+                                            const agencySuspect = getAgencySuspicion(lead, agencyOn);
+                                            return (
+                                                <div className="flex items-center gap-1.5 min-w-0">
+                                                    <span
+                                                        className={`font-semibold text-[13px] ${
+                                                            agencySuspect ? AGENCY_NAME_CLS : "text-foreground"
+                                                        } ${lead.company?.startsWith("Sans nom") ? "opacity-40 italic" : ""}`}
+                                                        title={agencySuspect ? agencySuspect.label : undefined}
+                                                    >
+                                                        {lead.company}
+                                                    </span>
+                                                    {agencySuspect && (
+                                                        <AgencySuspectBadge
+                                                            score={agencySuspect.score}
+                                                            label={agencySuspect.label}
+                                                        />
+                                                    )}
+                                                </div>
+                                            );
+                                        })()}
                                     </td>
                                     {/* Contact */}
                                     <td className="px-3 py-2.5 text-[12.5px] text-muted-foreground max-w-[140px]">
@@ -258,6 +285,28 @@ export const TableView = ({ workspace, filter, onOpenLead }) => {
                                             {col?.name || "—"}
                                         </span>
                                     </td>
+                                    {/* Vigilance — badge rouge critique uniquement */}
+                                    <td className="px-3 py-2.5">
+                                        {(() => {
+                                            const vig = getLeadVigilance(
+                                                lead,
+                                                workspace.columns,
+                                                workspace.inconsistencyConfig
+                                            );
+                                            if (vig.level !== "critical" || vig.criticalCount === 0) {
+                                                return <span className="text-muted-foreground/40 text-[12px]">—</span>;
+                                            }
+                                            return (
+                                                <span
+                                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-rose-600 text-white"
+                                                    title={vig.issues[0]?.message || ""}
+                                                >
+                                                    Rouge
+                                                    {vig.criticalCount > 1 ? ` · ${vig.criticalCount}` : ""}
+                                                </span>
+                                            );
+                                        })()}
+                                    </td>
                                     {/* Deal */}
                                     <td className="px-3 py-2.5">
                                         {lead.dealValue != null ? (
@@ -318,13 +367,13 @@ export const TableView = ({ workspace, filter, onOpenLead }) => {
                         {/* Spacer bas — remplace les lignes non rendues en dessous */}
                         {bottomSpacerHeight > 0 && (
                             <tr aria-hidden style={{ height: bottomSpacerHeight }}>
-                                <td colSpan={8} />
+                                <td colSpan={9} />
                             </tr>
                         )}
 
                         {leads.length === 0 && (
                             <tr>
-                                <td colSpan={8} className="px-4 py-12 text-center text-muted-foreground text-sm">
+                                <td colSpan={9} className="px-4 py-12 text-center text-muted-foreground text-sm">
                                     Aucun lead trouvé
                                 </td>
                             </tr>

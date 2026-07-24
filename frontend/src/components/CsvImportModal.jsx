@@ -24,19 +24,33 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import {
-    FileUp, Upload, ArrowLeft, CheckCircle2, AlertCircle,
-    MinusCircle, Zap, Settings2, Trash2, Search, X,
-    AlertTriangle, RotateCcw, GripVertical, Eye, EyeOff,
-    ChevronDown, ChevronUp, BookMarked, Sparkles, Star,
+    FileUp, Upload, ArrowLeft, CheckCircle2,
+    Zap, Settings2, Trash2, Search, X,
+    ChevronDown, ChevronUp, BookMarked, Sparkles, Star, Loader2,
 } from "lucide-react";
-import { parseCsv, autoDetectMapping, rowsToLeads, HEADER_TRANSLATIONS } from "@/lib/csvUtils";
+import { parseCsv, autoDetectMapping, rowsToLeads, translateHeader, normalizeHeader, findHeaderIndex, CRM_RESERVED_HEADERS, resolveColumnIdByName } from "@/lib/csvUtils";
 import {
     findBestProfile, applyProfile, saveProfile, touchProfile,
-    THRESHOLD_AUTO, THRESHOLD_SUGGEST,
+    updateProfileMapping, getProfile,
 } from "@/lib/importProfiles";
+import { isAgencyDetectionEnabled } from "@/lib/agencyDetection";
+import {
+    scanImportLeads,
+    applyImportQualityActions,
+    AGENCY_IMPORT_TAG,
+} from "@/lib/importQualityScan";
 import { ImportProfilesManager } from "./ImportProfilesManager";
 import { useCrm } from "@/context/CrmContext";
 import { toast } from "sonner";
+
+const EMPTY_QUALITY = {
+    agencyCount: 0,
+    closedAdCount: 0,
+    noContactCount: 0,
+    agencyIndexes: [],
+    closedAdIndexes: [],
+    noContactIndexes: [],
+};
 
 // ── Constantes ────────────────────────────────────────────────────────────────
 const NONE  = "__none__";   // ignorer la colonne
@@ -44,15 +58,201 @@ const EXTRA = "__extra__";  // garder comme champ extra
 
 // Champs CRM principaux disponibles comme cibles de mapping
 const CRM_FIELDS = [
-    { key: "company", label: "Entreprise",  required: true },
-    { key: "contact", label: "Contact" },
-    { key: "phone",   label: "Téléphone" },
-    { key: "email",   label: "Email" },
-    { key: "website", label: "Site web" },
+    { key: "company",      label: "Entreprise",         required: true },
+    { key: "contact",      label: "Contact" },
+    { key: "phone",        label: "Téléphone" },
+    { key: "email",        label: "Email" },
+    { key: "website",      label: "Site web" },
+    { key: "status",       label: "Colonne / Statut" },
+    { key: "tags",         label: "Tags" },
+    { key: "notes",        label: "Notes" },
+    { key: "next_action",  label: "Prochaine action" },
+    { key: "last_contact", label: "Dernier contact" },
+    { key: "deal_value",   label: "Valeur du deal" },
+    { key: "logo_url",     label: "Logo (URL)" },
+    { key: "crm_meta",     label: "Métadonnées CRM" },
 ];
 
-// Nombre max de colonnes affichées sans scroll horizontal dans l'éditeur
-const MAX_VISIBLE_COLS = 8;
+const CRM_LABEL = Object.fromEntries(CRM_FIELDS.map((f) => [f.key, f.label]));
+
+/** Estime le nombre net de leads après doublons fichier + skipExisting */
+function estimateNetImport({
+    headers, rows, colMapping, nameHeader,
+    dupStrategy, dupDominant, skipExisting, workspace,
+}) {
+    const summary = computeSummary(headers, rows, colMapping, nameHeader);
+    let afterDups = rows.length;
+    if (dupStrategy !== "ignore" && Object.keys(summary.duplicateGroups).length > 0) {
+        afterDups = applyDuplicateResolution(
+            rows, headers, summary.duplicateGroups, dupStrategy, dupDominant, colMapping, nameHeader
+        ).length;
+    }
+    const removedDups = rows.length - afterDups;
+
+    let skippedExisting = 0;
+    if (skipExisting && workspace?.leads && afterDups > 0) {
+        // Approximation rapide : simuler sur les lignes résolues via company/email mapping
+        const legacy = buildLegacyMapping(colMapping);
+        const preview = rowsToLeads(
+            headers,
+            dupStrategy !== "ignore" && Object.keys(summary.duplicateGroups).length > 0
+                ? applyDuplicateResolution(rows, headers, summary.duplicateGroups, dupStrategy, dupDominant, colMapping, nameHeader)
+                : rows,
+            legacy,
+            colMapping,
+            nameHeader
+        );
+        const companies = new Set();
+        const emails = new Set();
+        Object.values(workspace.leads).forEach((l) => {
+            const c = normalizeHeader(l.company || "");
+            const e = normalizeHeader(l.email || "");
+            if (c) companies.add(c);
+            if (e) emails.add(e);
+        });
+        for (const lead of preview) {
+            const c = normalizeHeader(lead.company || "");
+            const e = normalizeHeader(lead.email || "");
+            if ((c && companies.has(c)) || (e && emails.has(e))) {
+                skippedExisting++;
+                continue;
+            }
+            if (c) companies.add(c);
+            if (e) emails.add(e);
+        }
+    }
+
+    const net = Math.max(0, afterDups - skippedExisting);
+    return {
+        ...summary,
+        groupCount: Object.keys(summary.duplicateGroups).length,
+        removedDups,
+        afterDups,
+        skippedExisting,
+        net,
+    };
+}
+
+/**
+ * Brouillons leads après résolution doublons + skipExisting (même pipeline que doImport).
+ * @returns {object[]}
+ */
+function buildImportPreviewLeads({
+    headers, rows, colMapping, nameHeader,
+    dupStrategy, dupDominant, skipExisting, workspace,
+}) {
+    if (!headers?.length) return [];
+    const summary = computeSummary(headers, rows, colMapping, nameHeader);
+    let resolvedRows = rows;
+    if (dupStrategy !== "ignore" && Object.keys(summary.duplicateGroups).length > 0) {
+        resolvedRows = applyDuplicateResolution(
+            rows, headers, summary.duplicateGroups, dupStrategy, dupDominant, colMapping, nameHeader
+        );
+    }
+    const legacy = buildLegacyMapping(colMapping);
+    let leads = rowsToLeads(headers, resolvedRows, legacy, colMapping, nameHeader)
+        .map(({ _incomplete: _i, ...rest }) => rest);
+
+    if (skipExisting && workspace?.leads) {
+        const companies = new Set();
+        const emails = new Set();
+        Object.values(workspace.leads).forEach((l) => {
+            const c = normalizeHeader(l.company || "");
+            const e = normalizeHeader(l.email || "");
+            if (c) companies.add(c);
+            if (e) emails.add(e);
+        });
+        const kept = [];
+        for (const lead of leads) {
+            const c = normalizeHeader(lead.company || "");
+            const e = normalizeHeader(lead.email || "");
+            if ((c && companies.has(c)) || (e && emails.has(e))) continue;
+            if (c) companies.add(c);
+            if (e) emails.add(e);
+            kept.push(lead);
+        }
+        leads = kept;
+    }
+    return leads;
+}
+
+/** Stepper visuel compact */
+const ImportStepper = ({ step, fileLoaded }) => {
+    const steps = [
+        { id: "upload", label: "Fichier" },
+        { id: "edit", label: "Préparer" },
+        { id: "confirm", label: "Importer" },
+    ];
+    const active =
+        step === "upload" ? 0
+        : step === "advanced-edit" ? 1
+        : 2; // quick-summary | advanced-summary
+    return (
+        <div className="flex items-center gap-1.5 mb-1">
+            {steps.map((s, i) => {
+                const done = i < active || (i === 0 && fileLoaded && active === 0);
+                const current = i === active;
+                return (
+                    <div key={s.id} className="flex items-center gap-1.5">
+                        {i > 0 && <div className={`w-6 h-px ${i <= active ? "bg-primary/50" : "bg-border"}`} />}
+                        <div className={`flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                            current ? "bg-muted text-foreground"
+                            : done ? "text-muted-foreground"
+                            : "text-muted-foreground/40"
+                        }`}>
+                            <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold ${
+                                current ? "bg-foreground text-background"
+                                : done ? "bg-muted text-muted-foreground"
+                                : "bg-muted text-muted-foreground/40"
+                            }`}>
+                                {done && !current ? "✓" : i + 1}
+                            </span>
+                            {s.label}
+                        </div>
+                    </div>
+                );
+            })}
+        </div>
+    );
+};
+
+/** Chips de mapping — style neutre */
+const MappingChips = ({ headers, colMapping, nameHeader, max = 8 }) => {
+    const chips = headers.filter(Boolean).map((h) => {
+        const target = colMapping[h] ?? EXTRA;
+        if (target === NONE) return null;
+        const label = target === EXTRA
+            ? (translateHeader(h) !== h ? translateHeader(h) : "Extra")
+            : (CRM_LABEL[target] || target);
+        const isName = h === nameHeader || target === "company";
+        return { h, target, label, isName };
+    }).filter(Boolean);
+
+    const shown = chips.slice(0, max);
+    const rest = chips.length - shown.length;
+
+    return (
+        <div className="flex flex-wrap gap-1.5">
+            {shown.map(({ h, label, isName }) => (
+                <span
+                    key={h}
+                    title={`${h} → ${label}`}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] border border-border bg-muted/40 text-foreground"
+                >
+                    {isName && <Star size={8} className="text-muted-foreground fill-muted-foreground/40" />}
+                    <span className="text-muted-foreground max-w-[80px] truncate">{h}</span>
+                    <span className="text-muted-foreground/40">→</span>
+                    <span className="font-medium">{label}</span>
+                </span>
+            ))}
+            {rest > 0 && (
+                <span className="px-2 py-0.5 rounded-md bg-muted text-muted-foreground text-[11px]">
+                    +{rest}
+                </span>
+            )}
+        </div>
+    );
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -73,7 +273,23 @@ function buildInitialMapping(headers, rows = []) {
     const map = {};
     headers.forEach((h) => {
         if (!h) return;
-        map[h] = inverted[h] ?? EXTRA;
+        if (inverted[h]) {
+            map[h] = inverted[h];
+            return;
+        }
+        // Colonnes d'un export CRM natif → mapper automatiquement
+        const nh = normalizeHeader(h);
+        const reserved = CRM_RESERVED_HEADERS.find((k) => normalizeHeader(k) === nh);
+        if (reserved && !Object.values(map).includes(reserved) && !Object.values(inverted).includes(reserved)) {
+            map[h] = reserved;
+            return;
+        }
+        // Alias FR courants
+        if (nh === "statut" && !Object.values(map).includes("status")) {
+            map[h] = "status";
+            return;
+        }
+        map[h] = EXTRA;
     });
     return map;
 }
@@ -88,14 +304,15 @@ function computeSummary(headers, rows, colMapping, nameHeader = null) {
 
     // Détection de doublons sur la colonne "company" — retourne les groupes
     const companyHeader = Object.entries(colMapping).find(([, v]) => v === "company")?.[0];
-    const companyIdx    = companyHeader ? headers.indexOf(companyHeader) : -1;
+    const companyIdx    = companyHeader != null ? findHeaderIndex(headers, companyHeader) : -1;
     let duplicates = 0;
     // Map : clé normalisée → [{ rowIdx, row }]
     const duplicateGroups = {}; // { normalizedName: [{ rowIdx, row }] }
     if (companyIdx >= 0) {
         const seen = {}; // normalizedName → first rowIdx
         rows.forEach((r, rowIdx) => {
-            const v = (r[companyIdx] || "").trim().toLowerCase();
+            // Casse / accents / séparateurs ignorés pour détecter les doublons
+            const v = normalizeHeader(r[companyIdx] || "");
             if (!v) return;
             if (seen[v] !== undefined) {
                 // Ajouter au groupe
@@ -123,172 +340,160 @@ function computeSummary(headers, rows, colMapping, nameHeader = null) {
 /**
  * Applique la résolution de doublons sur les lignes.
  * @param {string[][]} rows
- * @param {number[]} headers
- * @param {Object} duplicateGroups  — résultat de computeSummary
- * @param {"keep_first"|"keep_last"|"merge"} strategy
- * @param {string|null} dominantHeader  — colonne dominante pour la fusion (header name)
- * @returns {string[][]} nouvelles lignes après résolution
+ * @param {string[]} headers
+ * @param {Object} duplicateGroups
+ * @param {"ignore"|"keep_first"|"keep_last"|"merge"} strategy
+ * @param {string|null} dominantHeader — pour merge : variante du nom d'entreprise à conserver
+ * @param {object} [colMapping] — pour identifier la colonne entreprise
+ * @returns {string[][]}
  */
-function applyDuplicateResolution(rows, headers, duplicateGroups, strategy, dominantHeader) {
-    if (!Object.keys(duplicateGroups).length) return rows;
+function applyDuplicateResolution(rows, headers, duplicateGroups, strategy, dominantHeader, colMapping = {}, nameHeader = null) {
+    if (!Object.keys(duplicateGroups).length || strategy === "ignore") return rows;
 
-    // Indices des lignes à supprimer / fusionner
     const rowsToRemove = new Set();
-    const mergedRows   = {}; // rowIdx_du_survivant → row fusionnée
+    const mergedRows   = {};
+
+    const companyHeader = Object.entries(colMapping).find(([, v]) => v === "company")?.[0] || null;
+    const companyIdx = companyHeader != null ? findHeaderIndex(headers, companyHeader) : -1;
+    const nameIdx = nameHeader ? findHeaderIndex(headers, nameHeader) : -1;
+
+    /** Valeurs uniques (casse/accents ignorés), jointes par virgule */
+    const mergeValues = (values) => {
+        const seen = new Set();
+        const out = [];
+        for (const raw of values) {
+            const t = (raw || "").trim();
+            if (!t) continue;
+            const key = normalizeHeader(t);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push(t);
+        }
+        return out.join(", ");
+    };
 
     Object.values(duplicateGroups).forEach((group) => {
-        // group = [{ rowIdx, row }, ...]
         if (strategy === "keep_first") {
-            // Garder la première, supprimer les autres
             group.slice(1).forEach(({ rowIdx }) => rowsToRemove.add(rowIdx));
-        } else if (strategy === "keep_last") {
-            // Garder la dernière, supprimer les autres
-            group.slice(0, -1).forEach(({ rowIdx }) => rowsToRemove.add(rowIdx));
-        } else if (strategy === "merge") {
-            // Fusion : on garde la ligne dominante (ou la première si pas de dominant)
-            const dominantIdx = dominantHeader ? headers.indexOf(dominantHeader) : -1;
-
-            // Choisir le survivant : la ligne qui a la valeur non-vide dans la colonne dominante
-            let survivorEntry = group[0];
-            if (dominantIdx >= 0) {
-                const withValue = group.filter(({ row }) => (row[dominantIdx] || "").trim() !== "");
-                if (withValue.length > 0) survivorEntry = withValue[0];
-            }
-            const { rowIdx: survivorIdx } = survivorEntry;
-
-            // Fusionner : pour chaque colonne, prendre la première valeur non-vide
-            // en priorisant la colonne dominante depuis sa ligne
-            const merged = headers.map((h, colIdx) => {
-                if (dominantIdx >= 0 && colIdx === dominantIdx) {
-                    // Toujours prendre la valeur du survivant pour la colonne dominante
-                    return survivorEntry.row[colIdx] || "";
-                }
-                // Pour les autres colonnes : première valeur non-vide dans le groupe
-                for (const { row } of group) {
-                    if ((row[colIdx] || "").trim()) return row[colIdx];
-                }
-                return "";
-            });
-
-            mergedRows[survivorIdx] = merged;
-            // Supprimer toutes les autres lignes du groupe
-            group.forEach(({ rowIdx }) => {
-                if (rowIdx !== survivorIdx) rowsToRemove.add(rowIdx);
-            });
+            return;
         }
+        if (strategy === "keep_last") {
+            group.slice(0, -1).forEach(({ rowIdx }) => rowsToRemove.add(rowIdx));
+            return;
+        }
+        if (strategy !== "merge") return;
+
+        // Survivant : 1ʳᵉ ligne, ou celle avec la variante de nom choisie
+        let survivorEntry = group[0];
+        if (dominantHeader && companyIdx >= 0) {
+            // dominantHeader ici = texte exact du nom d'entreprise à garder (optionnel)
+            const match = group.find(({ row }) => (row[companyIdx] || "").trim() === dominantHeader);
+            if (match) survivorEntry = match;
+        }
+        const survivorIdx = survivorEntry.rowIdx;
+
+        const merged = headers.map((h, colIdx) => {
+            // Nom d'entreprise / nom épinglé : une seule valeur
+            if (colIdx === companyIdx || colIdx === nameIdx) {
+                return (survivorEntry.row[colIdx] || "").trim();
+            }
+            // Autres colonnes : fusionner les valeurs distinctes avec ", "
+            return mergeValues(group.map(({ row }) => row[colIdx]));
+        });
+
+        mergedRows[survivorIdx] = merged;
+        group.forEach(({ rowIdx }) => {
+            if (rowIdx !== survivorIdx) rowsToRemove.add(rowIdx);
+        });
     });
 
     return rows
-        .map((row, idx) => {
-            if (mergedRows[idx]) return mergedRows[idx];
-            return row;
-        })
+        .map((row, idx) => (mergedRows[idx] ? mergedRows[idx] : row))
         .filter((_, idx) => !rowsToRemove.has(idx));
 }
 
-// ── Sous-composant : Résolution de doublons ──────────────────────────────────
-/**
- * Panneau affiché dans le récapitulatif quand des doublons sont détectés.
- * Permet de choisir :
- *   - Ignorer (importer quand même)
- *   - Garder le premier / le dernier
- *   - Fusionner (avec choix de la colonne dominante)
- */
+// ── Sous-composant : Résolution de doublons (sobre) ───────────────────────────
 const DuplicateResolutionPanel = ({
     duplicates,
     duplicateGroups,
     headers,
     colMapping,
     strategy,
-    dominantHeader,
     onStrategyChange,
-    onDominantChange,
+    survivingCount,
 }) => {
-    // Colonnes non-ignorées disponibles comme colonne dominante
-    const availableCols = headers.filter((h) => h && colMapping[h] !== NONE);
-
-    // Exemple de groupes pour la prévisualisation (max 2)
     const groupEntries = Object.entries(duplicateGroups).slice(0, 2);
+    const groupCount = Object.keys(duplicateGroups).length;
+    const companyHeader = Object.entries(colMapping).find(([, v]) => v === "company")?.[0];
+    const companyIdx = companyHeader != null ? findHeaderIndex(headers, companyHeader) : 0;
+
+    const options = [
+        { value: "ignore",     label: "Tout garder",      desc: "Importer chaque ligne" },
+        { value: "keep_first", label: "Garder le 1ᵉʳ",    desc: "Une seule ligne (la première)" },
+        { value: "keep_last",  label: "Garder le dernier", desc: "Une seule ligne (la dernière)" },
+        { value: "merge",      label: "Fusionner",        desc: "1 ligne · données jointes par virgule" },
+    ];
 
     return (
-        <div className="rounded-xl border border-amber-400/40 bg-amber-400/5 p-3.5 space-y-3">
-            {/* En-tête */}
-            <div className="flex items-center gap-2">
-                <AlertTriangle size={15} className="text-amber-500 shrink-0" />
-                <span className="text-sm font-semibold text-amber-700 dark:text-amber-400">
-                    {duplicates} doublon{duplicates > 1 ? "s" : ""} détecté{duplicates > 1 ? "s" : ""} — que faire ?
-                </span>
-            </div>
-
-            {/* Choix stratégie */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                {[
-                    { value: "ignore",     icon: "⚠️", label: "Importer quand même",  desc: "Tous les doublons sont conservés." },
-                    { value: "keep_first", icon: "1️⃣", label: "Garder le premier",    desc: "En cas de doublon, seule la 1ʳᵉ ligne est conservée." },
-                    { value: "keep_last",  icon: "🔚", label: "Garder le dernier",    desc: "En cas de doublon, seule la dernière ligne est conservée." },
-                    { value: "merge",      icon: "🔀", label: "Fusionner",             desc: "Les champs vides sont complétés par les autres lignes." },
-                ].map((opt) => (
-                    <button
-                        key={opt.value}
-                        onClick={() => onStrategyChange(opt.value)}
-                        className={`rounded-lg border px-3 py-2.5 text-left text-[12px] transition-colors flex flex-col gap-0.5 ${
-                            strategy === opt.value
-                                ? "border-amber-500 bg-amber-500/15 text-amber-800 dark:text-amber-300"
-                                : "border-border bg-background text-foreground hover:border-amber-400/60 hover:bg-amber-400/5"
-                        }`}
-                    >
-                        <span className="font-semibold">{opt.icon} {opt.label}</span>
-                        <span className="text-muted-foreground text-[11px] leading-snug">{opt.desc}</span>
-                    </button>
-                ))}
-            </div>
-
-            {/* Colonne dominante — visible uniquement en mode fusion */}
-            {strategy === "merge" && (
-                <div className="flex items-center gap-2 pt-1">
-                    <span className="text-[12px] text-muted-foreground shrink-0">Colonne dominante :</span>
-                    <select
-                        value={dominantHeader || ""}
-                        onChange={(e) => onDominantChange(e.target.value || null)}
-                        className="h-8 px-2 pr-6 rounded-lg border border-border bg-background text-[12px] appearance-none cursor-pointer focus:outline-none focus:ring-1 focus:ring-primary"
-                    >
-                        <option value="">— Aucune (première valeur non-vide) —</option>
-                        {availableCols.map((h) => (
-                            <option key={h} value={h}>{h}</option>
-                        ))}
-                    </select>
-                    <span className="text-[11px] text-muted-foreground">
-                        Les valeurs de cette colonne seront prioritaires.
+        <div className="rounded-xl border border-border bg-card p-3.5 space-y-3">
+            <div className="flex items-baseline justify-between gap-2">
+                <p className="text-sm font-medium text-foreground">
+                    Doublons
+                    <span className="font-normal text-muted-foreground">
+                        {" "}· {groupCount} groupe{groupCount > 1 ? "s" : ""} · {duplicates} ligne{duplicates > 1 ? "s" : ""} en trop
                     </span>
-                </div>
+                </p>
+                {strategy !== "ignore" && survivingCount != null && (
+                    <span className="text-[11px] text-muted-foreground tabular-nums">
+                        → {survivingCount} ligne{survivingCount > 1 ? "s" : ""}
+                    </span>
+                )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-1.5">
+                {options.map((opt) => {
+                    const selected = strategy === opt.value;
+                    return (
+                        <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() => onStrategyChange(opt.value)}
+                            className={`rounded-lg border px-3 py-2 text-left transition-colors ${
+                                selected
+                                    ? "border-foreground/25 bg-muted"
+                                    : "border-border bg-background hover:bg-muted/40"
+                            }`}
+                        >
+                            <span className="text-[12px] font-medium block">{opt.label}</span>
+                            <span className="text-[11px] text-muted-foreground leading-snug">{opt.desc}</span>
+                        </button>
+                    );
+                })}
+            </div>
+
+            {strategy === "merge" && (
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    Le nom d'entreprise est conservé tel quel. Les autres champs concatènent
+                    les valeurs distinctes séparées par une virgule.
+                </p>
             )}
 
-            {/* Aperçu des groupes concernés */}
             {groupEntries.length > 0 && strategy !== "ignore" && (
-                <div className="space-y-1.5">
-                    <p className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
-                        Aperçu des doublons
-                    </p>
-                    {groupEntries.map(([name, group]) => {
-                        const companyHeader = Object.entries(colMapping).find(([, v]) => v === "company")?.[0];
-                        const companyIdx    = companyHeader ? headers.indexOf(companyHeader) : 0;
-                        return (
-                            <div key={name} className="rounded-lg border border-border bg-background px-3 py-2 text-[11.5px]">
-                                <span className="font-semibold text-foreground">
-                                    « {group[0].row[companyIdx] || name} »
-                                </span>
-                                <span className="text-muted-foreground ml-1.5">
-                                    — {group.length} lignes
-                                    {strategy === "keep_first" && " → 1ʳᵉ conservée, autres supprimées"}
-                                    {strategy === "keep_last"  && " → dernière conservée, autres supprimées"}
-                                    {strategy === "merge"      && " → fusionnées en 1 ligne"}
-                                </span>
-                            </div>
-                        );
-                    })}
-                    {Object.keys(duplicateGroups).length > 2 && (
-                        <p className="text-[11px] text-muted-foreground pl-1">
-                            … et {Object.keys(duplicateGroups).length - 2} autre{Object.keys(duplicateGroups).length - 2 > 1 ? "s" : ""} groupe{Object.keys(duplicateGroups).length - 2 > 1 ? "s" : ""}
+                <div className="space-y-1 border-t border-border/60 pt-2">
+                    {groupEntries.map(([name, group]) => (
+                        <p key={name} className="text-[11.5px] text-muted-foreground truncate">
+                            <span className="text-foreground font-medium">
+                                {group[0].row[companyIdx] || name}
+                            </span>
+                            {" "}· {group.length} lignes
+                            {strategy === "merge" && " → 1 fusionnée"}
+                            {strategy === "keep_first" && " → 1ʳᵉ"}
+                            {strategy === "keep_last" && " → dernière"}
+                        </p>
+                    ))}
+                    {groupCount > 2 && (
+                        <p className="text-[11px] text-muted-foreground/70">
+                            … et {groupCount - 2} autre{groupCount - 2 > 1 ? "s" : ""}
                         </p>
                     )}
                 </div>
@@ -338,43 +543,87 @@ const DropZone = ({ onFile }) => {
     );
 };
 
-// ── Sous-composant : Récapitulatif ────────────────────────────────────────────
-const Summary = ({ fileName, rowCount, summary, headers, colMapping, nameHeader, dupStrategy, dupDominant, onDupStrategyChange, onDupDominantChange, skipExisting, onSkipExistingChange, existingLeadCount }) => {
-    const { mapped, extra, ignored, noCompany, duplicates, duplicateGroups } = summary;
+// ── Sous-composant : Récapitulatif (sobre) ────────────────────────────────────
+const Summary = ({
+    fileName, rowCount, summary, headers, colMapping, nameHeader,
+    dupStrategy, onDupStrategyChange,
+    skipExisting, onSkipExistingChange, existingLeadCount,
+    netEstimate, onEditMapping,
+    qualityScan = EMPTY_QUALITY,
+    agencyDetectionOn = true,
+    tagAgencies = false,
+    onTagAgenciesChange,
+    excludeClosedAds = false,
+    onExcludeClosedAdsChange,
+}) => {
+    const { mapped, extra, ignored, noCompany, duplicates, duplicateGroups, missingValues } = summary;
+    const net = netEstimate?.net ?? rowCount;
+    const removedDups = netEstimate?.removedDups ?? 0;
+    const skippedExisting = netEstimate?.skippedExisting ?? 0;
+    const hasQuality =
+        qualityScan.agencyCount > 0
+        || qualityScan.closedAdCount > 0
+        || qualityScan.noContactCount > 0;
+
     return (
-        <div className="space-y-4">
-            <div className="rounded-xl border border-border bg-card p-4 space-y-3">
-                <h3 className="text-sm font-semibold flex items-center gap-2">
-                    <CheckCircle2 size={15} className="text-emerald-500" />
-                    Prêt à importer
-                </h3>
-                <div className="grid grid-cols-2 gap-2 text-sm">
-                    <div className="rounded-lg bg-muted/40 px-3 py-2">
-                        <div className="text-2xl font-bold text-foreground">{rowCount}</div>
-                        <div className="text-xs text-muted-foreground">ligne{rowCount > 1 ? "s" : ""}</div>
-                    </div>
-                    <div className="rounded-lg bg-muted/40 px-3 py-2">
-                        <div className="text-2xl font-bold text-foreground">{mapped.length}</div>
-                        <div className="text-xs text-muted-foreground">champ{mapped.length > 1 ? "s" : ""} mappé{mapped.length > 1 ? "s" : ""}</div>
-                    </div>
-                    {extra.length > 0 && (
-                        <div className="rounded-lg bg-primary/5 border border-primary/20 px-3 py-2">
-                            <div className="text-2xl font-bold text-primary">{extra.length}</div>
-                            <div className="text-xs text-muted-foreground">champ{extra.length > 1 ? "s" : ""} extra</div>
-                        </div>
-                    )}
-                    {ignored.length > 0 && (
-                        <div className="rounded-lg bg-muted/40 px-3 py-2 opacity-60">
-                            <div className="text-2xl font-bold text-foreground">{ignored.length}</div>
-                            <div className="text-xs text-muted-foreground">ignoré{ignored.length > 1 ? "s" : ""}</div>
-                        </div>
-                    )}
+        <div className="space-y-5">
+            <div className="flex items-end justify-between gap-4 pb-4 border-b border-border">
+                <div className="min-w-0">
+                    <p className="text-sm font-medium text-foreground">Prêt à importer</p>
+                    <p className="text-[12px] text-muted-foreground truncate mt-0.5" title={fileName}>{fileName}</p>
+                </div>
+                <div className="text-right shrink-0">
+                    <p className="text-3xl font-semibold tabular-nums tracking-tight leading-none">{net}</p>
+                    <p className="text-[11px] text-muted-foreground mt-1">lead{net !== 1 ? "s" : ""}</p>
                 </div>
             </div>
 
-            {/* Ne pas réimporter les leads déjà dans l'espace */}
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[12px] text-muted-foreground">
+                <span>{rowCount} ligne{rowCount > 1 ? "s" : ""} fichier</span>
+                {removedDups > 0 && <span>− {removedDups} doublon{removedDups > 1 ? "s" : ""}</span>}
+                {skippedExisting > 0 && <span>− {skippedExisting} déjà présent{skippedExisting > 1 ? "s" : ""}</span>}
+                {excludeClosedAds && qualityScan.closedAdCount > 0 && (
+                    <span>− {qualityScan.closedAdCount} annonce{qualityScan.closedAdCount > 1 ? "s" : ""} fermée{qualityScan.closedAdCount > 1 ? "s" : ""}</span>
+                )}
+                <span className="text-border">·</span>
+                <span>{mapped.length} mappé{mapped.length > 1 ? "s" : ""}</span>
+                {extra.length > 0 && <span>{extra.length} extra</span>}
+                {ignored.length > 0 && <span>{ignored.length} ignoré{ignored.length > 1 ? "s" : ""}</span>}
+            </div>
+
+            {missingValues > 0 && (
+                <p className="text-[11px] text-muted-foreground -mt-3">
+                    {missingValues} cellule{missingValues > 1 ? "s" : ""} vide{missingValues > 1 ? "s" : ""} dans les champs mappés
+                </p>
+            )}
+
+            <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                    <span className="text-[12px] font-medium text-foreground">Colonnes</span>
+                    {onEditMapping && (
+                        <button type="button" onClick={onEditMapping}
+                            className="text-[12px] text-muted-foreground hover:text-foreground underline-offset-2 hover:underline">
+                            Modifier
+                        </button>
+                    )}
+                </div>
+                <MappingChips headers={headers} colMapping={colMapping} nameHeader={nameHeader} />
+            </div>
+
+            {nameHeader && (
+                <p className="text-[12px] text-muted-foreground">
+                    Nom du lead : <span className="text-foreground font-medium">« {nameHeader} »</span>
+                </p>
+            )}
+
+            {noCompany && (
+                <p className="text-[12px] text-muted-foreground rounded-lg border border-border bg-muted/30 px-3 py-2">
+                    Aucun nom défini — mappez une colonne sur <span className="font-medium text-foreground">Entreprise</span> ou épinglez-en une avec ⭐.
+                </p>
+            )}
+
             {existingLeadCount > 0 && (
-                <label className="flex items-start gap-2.5 rounded-xl border border-border bg-card px-3 py-2.5 text-sm cursor-pointer hover:bg-muted/30 transition-colors">
+                <label className="flex items-start gap-2.5 rounded-lg border border-border px-3 py-2.5 text-sm cursor-pointer hover:bg-muted/30 transition-colors">
                     <input
                         type="checkbox"
                         checked={skipExisting}
@@ -383,34 +632,14 @@ const Summary = ({ fileName, rowCount, summary, headers, colMapping, nameHeader,
                     />
                     <span>
                         <span className="font-medium text-foreground">Ignorer les leads déjà présents</span>
-                        <span className="block text-xs text-muted-foreground mt-0.5">
-                            Même entreprise ou e-mail que les {existingLeadCount} lead{existingLeadCount > 1 ? "s" : ""} de cet espace.
+                        <span className="block text-[12px] text-muted-foreground mt-0.5">
+                            Même entreprise ou e-mail ({existingLeadCount} dans l'espace)
+                            {skipExisting && skippedExisting > 0 ? ` · ≈ ${skippedExisting} concerné${skippedExisting > 1 ? "s" : ""}` : ""}.
                         </span>
                     </span>
                 </label>
             )}
 
-            {/* Colonne nom épinglée */}
-            {nameHeader && (
-                <div className="flex items-center gap-2 rounded-xl border border-amber-400/40 bg-amber-400/5 px-3 py-2.5 text-sm">
-                    <Star size={13} className="text-amber-400 fill-amber-400 shrink-0" />
-                    <span className="text-amber-700 dark:text-amber-400">
-                        Nom du lead : colonne <strong>« {nameHeader} »</strong>
-                    </span>
-                </div>
-            )}
-
-            {/* Alerte : pas de nom du tout */}
-            {noCompany && (
-                <div className="flex items-start gap-2.5 rounded-xl border border-amber-400/40 bg-amber-400/5 px-3 py-2.5 text-sm">
-                    <AlertTriangle size={15} className="text-amber-500 shrink-0 mt-0.5" />
-                    <span className="text-amber-700 dark:text-amber-400">
-                        Aucun nom défini — épinglez une colonne avec ⭐ ou mappez une colonne sur <strong>Entreprise</strong>.
-                    </span>
-                </div>
-            )}
-
-            {/* Panneau de résolution de doublons */}
             {duplicates > 0 && (
                 <DuplicateResolutionPanel
                     duplicates={duplicates}
@@ -418,23 +647,71 @@ const Summary = ({ fileName, rowCount, summary, headers, colMapping, nameHeader,
                     headers={headers}
                     colMapping={colMapping}
                     strategy={dupStrategy}
-                    dominantHeader={dupDominant}
                     onStrategyChange={onDupStrategyChange}
-                    onDominantChange={onDupDominantChange}
+                    survivingCount={netEstimate?.afterDups}
                 />
             )}
 
-            {/* Colonnes conservées */}
-            {mapped.length > 0 && (
-                <div className="text-xs text-muted-foreground">
-                    <span className="font-medium text-foreground">Colonnes mappées : </span>
-                    {mapped.join(", ")}
-                </div>
-            )}
-            {extra.length > 0 && (
-                <div className="text-xs text-muted-foreground">
-                    <span className="font-medium text-foreground">Champs extra : </span>
-                    {extra.slice(0, 6).join(", ")}{extra.length > 6 ? ` +${extra.length - 6}…` : ""}
+            {hasQuality && (
+                <div className="space-y-2.5 rounded-lg border border-border px-3 py-2.5" data-testid="csv-quality-scan">
+                    <p className="text-[12px] font-medium text-foreground">Qualité</p>
+                    <div className="flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-muted-foreground">
+                        {qualityScan.agencyCount > 0 && (
+                            <span data-testid="csv-quality-agency">
+                                {qualityScan.agencyCount} suspect{qualityScan.agencyCount > 1 ? "s" : ""} cabinet
+                            </span>
+                        )}
+                        {qualityScan.closedAdCount > 0 && (
+                            <span data-testid="csv-quality-closed">
+                                {qualityScan.closedAdCount} annonce{qualityScan.closedAdCount > 1 ? "s" : ""} fermée{qualityScan.closedAdCount > 1 ? "s" : ""}
+                            </span>
+                        )}
+                        {qualityScan.noContactCount > 0 && (
+                            <span data-testid="csv-quality-nocontact">
+                                {qualityScan.noContactCount} sans tél/email
+                            </span>
+                        )}
+                    </div>
+
+                    {agencyDetectionOn && qualityScan.agencyCount > 0 && (
+                        <label className="flex items-start gap-2.5 text-sm cursor-pointer">
+                            <input
+                                type="checkbox"
+                                checked={tagAgencies}
+                                onChange={(e) => onTagAgenciesChange?.(e.target.checked)}
+                                className="mt-0.5 rounded border-border"
+                                data-testid="csv-tag-agencies"
+                            />
+                            <span>
+                                <span className="font-medium text-foreground">
+                                    Taguer automatiquement les cabinets
+                                </span>
+                                <span className="block text-[12px] text-muted-foreground mt-0.5">
+                                    Ajoute le tag « {AGENCY_IMPORT_TAG} » (filtre TopBar).
+                                </span>
+                            </span>
+                        </label>
+                    )}
+
+                    {qualityScan.closedAdCount > 0 && (
+                        <label className="flex items-start gap-2.5 text-sm cursor-pointer">
+                            <input
+                                type="checkbox"
+                                checked={excludeClosedAds}
+                                onChange={(e) => onExcludeClosedAdsChange?.(e.target.checked)}
+                                className="mt-0.5 rounded border-border"
+                                data-testid="csv-exclude-closed"
+                            />
+                            <span>
+                                <span className="font-medium text-foreground">
+                                    Exclure les annonces fermées de l&apos;import
+                                </span>
+                                <span className="block text-[12px] text-muted-foreground mt-0.5">
+                                    Statut importé fermé / pourvu / expiré.
+                                </span>
+                            </span>
+                        </label>
+                    )}
                 </div>
             )}
         </div>
@@ -443,7 +720,8 @@ const Summary = ({ fileName, rowCount, summary, headers, colMapping, nameHeader,
 
 // ── Sous-composant : Sélecteur de mapping pour une colonne ───────────────────
 const MappingSelect = ({ header, value, usedFields, onChange, index }) => {
-    const translatedLabel = HEADER_TRANSLATIONS[(header || "").toLowerCase().trim()];
+    const translated = translateHeader(header);
+    const translatedLabel = translated !== header ? translated : undefined;
     const isAutoMapped = value !== NONE && value !== EXTRA;
     const isIgnored    = value === NONE;
 
@@ -490,427 +768,359 @@ const MappingSelect = ({ header, value, usedFields, onChange, index }) => {
     );
 };
 
-// ── Sous-composant : Éditeur avancé ──────────────────────────────────────────
-// Tableau éditable : renommer colonnes, mapping, supprimer lignes, chercher/filtrer
+// ── Sous-composant : Éditeur avancé (layout colonnes + aperçu) ───────────────
 const AdvancedEditor = ({ headers, rows, colMapping, nameHeader, onHeadersChange, onRowsChange, onMappingChange, onNameHeaderChange }) => {
-    const [search, setSearch]           = useState("");
-    const [searchOpen, setSearchOpen]   = useState(false);
-    const [colFilter, setColFilter]     = useState("all");
-    const [editingHeader, setEditingHeader] = useState(null); // index de la colonne en édition
+    const [search, setSearch] = useState("");
+    const [colFilter, setColFilter] = useState("all");
+    const [editingHeader, setEditingHeader] = useState(null);
     const [headerDraft, setHeaderDraft] = useState("");
-    const [showColPanel, setShowColPanel] = useState(true);
+    const [selectedCol, setSelectedCol] = useState(null); // index colonne focus
     const tableRef = useRef(null);
+    const lastCrmRef = useRef({});
 
-    // Colonnes visibles selon le filtre
-    const visibleColIndices = useMemo(() => {
-        return headers.map((h, i) => ({ h, i })).filter(({ h }) => {
+    const colEntries = useMemo(() => (
+        headers.map((h, i) => ({ h, i })).filter(({ h }) => {
             if (!h) return false;
             const target = colMapping[h] ?? EXTRA;
             if (colFilter === "mapped")  return target !== NONE && target !== EXTRA;
             if (colFilter === "extra")   return target === EXTRA;
             if (colFilter === "ignored") return target === NONE;
             return true;
-        });
-    }, [headers, colMapping, colFilter]);
+        })
+    ), [headers, colMapping, colFilter]);
 
-    // Lignes filtrées par recherche
     const filteredRows = useMemo(() => {
-        const q = search.trim().toLowerCase();
+        const q = normalizeHeader(search);
         if (!q) return rows.map((r, i) => ({ r, origIdx: i }));
         return rows
             .map((r, i) => ({ r, origIdx: i }))
-            .filter(({ r }) => r.some((cell) => (cell || "").toLowerCase().includes(q)));
+            .filter(({ r }) => r.some((cell) => normalizeHeader(cell || "").includes(q)));
     }, [rows, search]);
 
-    // Champs CRM déjà utilisés
     const usedFields = useMemo(() => {
         const s = new Set();
         Object.values(colMapping).forEach((v) => { if (v !== NONE && v !== EXTRA) s.add(v); });
         return s;
     }, [colMapping]);
 
-    // Swap-aware mapping change : si on assigne un champ CRM déjà pris par une autre
-    // colonne, l'ancienne colonne est rétrogradée en EXTRA automatiquement.
+    /** Première valeur non vide d'une colonne (aperçu) */
+    const sampleOf = useCallback((colIdx) => {
+        for (const r of rows) {
+            const v = (r[colIdx] || "").trim();
+            if (v) return v;
+        }
+        return "";
+    }, [rows]);
+
     const onMappingChangeWithSwap = useCallback((header, newValue) => {
         const updated = { ...colMapping };
-        // Si c'est un champ CRM (pas NONE/EXTRA), retirer l'ancienne affectation
         if (newValue !== NONE && newValue !== EXTRA) {
+            lastCrmRef.current[header] = newValue;
             Object.keys(updated).forEach((k) => {
                 if (k !== header && updated[k] === newValue) {
                     updated[k] = EXTRA;
+                    toast.message(`« ${k} » repassé en Extra`, {
+                        description: `${CRM_LABEL[newValue] || newValue} est maintenant sur « ${header} ».`,
+                        duration: 2500,
+                    });
                 }
             });
+        } else if (colMapping[header] && colMapping[header] !== NONE && colMapping[header] !== EXTRA) {
+            lastCrmRef.current[header] = colMapping[header];
         }
         updated[header] = newValue;
         onMappingChange(updated);
     }, [colMapping, onMappingChange]);
+
+    const toggleInclude = useCallback((header, include) => {
+        if (include) onMappingChangeWithSwap(header, lastCrmRef.current[header] || EXTRA);
+        else {
+            const cur = colMapping[header] ?? EXTRA;
+            if (cur !== NONE && cur !== EXTRA) lastCrmRef.current[header] = cur;
+            onMappingChangeWithSwap(header, NONE);
+        }
+    }, [colMapping, onMappingChangeWithSwap]);
 
     const deleteRow = useCallback((origIdx) => {
         onRowsChange(rows.filter((_, i) => i !== origIdx));
     }, [rows, onRowsChange]);
 
     const editCell = useCallback((origIdx, colIdx, value) => {
-        const updated = rows.map((r, i) => {
+        onRowsChange(rows.map((r, i) => {
             if (i !== origIdx) return r;
             const copy = [...r];
             copy[colIdx] = value;
             return copy;
-        });
-        onRowsChange(updated);
+        }));
     }, [rows, onRowsChange]);
 
     const commitHeaderRename = useCallback((colIdx) => {
         const newName = headerDraft.trim();
         if (!newName || newName === headers[colIdx]) { setEditingHeader(null); return; }
-        // Mettre à jour les headers
-        const newHeaders = headers.map((h, i) => i === colIdx ? newName : h);
-        // Transférer le mapping de l'ancien header vers le nouveau
         const oldName = headers[colIdx];
+        const newHeaders = headers.map((h, i) => i === colIdx ? newName : h);
         const newMapping = { ...colMapping };
         if (oldName && newMapping[oldName] !== undefined) {
             newMapping[newName] = newMapping[oldName];
             delete newMapping[oldName];
+            if (lastCrmRef.current[oldName]) {
+                lastCrmRef.current[newName] = lastCrmRef.current[oldName];
+                delete lastCrmRef.current[oldName];
+            }
         }
+        if (nameHeader === oldName) onNameHeaderChange(newName);
         onHeadersChange(newHeaders, newMapping);
         setEditingHeader(null);
-    }, [headerDraft, headers, colMapping, onHeadersChange]);
+    }, [headerDraft, headers, colMapping, onHeadersChange, nameHeader, onNameHeaderChange]);
 
-    const toggleIgnoreAll = () => {
-        const allIgnored = visibleColIndices.every(({ h }) => colMapping[h] === NONE);
-        const patch = {};
-        visibleColIndices.forEach(({ h }) => { patch[h] = allIgnored ? EXTRA : NONE; });
-        onMappingChange({ ...colMapping, ...patch });
-    };
+    const mappedCount = headers.filter((h) => h && colMapping[h] !== NONE && colMapping[h] !== EXTRA).length;
+    const extraCount = headers.filter((h) => h && colMapping[h] === EXTRA).length;
+    const ignoredCount = headers.filter((h) => h && colMapping[h] === NONE).length;
 
     return (
-        <div className="flex flex-col gap-3 h-full">
-
-            {/* ── Barre d'outils ── */}
-            <div className="flex items-center gap-1.5 shrink-0">
-
-                {/* Loupe — expand on click */}
-                {searchOpen ? (
-                    <div className="relative">
-                        <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
-                        <Input
-                            autoFocus
-                            value={search}
-                            onChange={(e) => setSearch(e.target.value)}
-                            onKeyDown={(e) => { if (e.key === "Escape") { setSearch(""); setSearchOpen(false); } }}
-                            placeholder="Rechercher…"
-                            className="pl-7 pr-7 h-8 text-[12px] rounded-lg w-48"
-                        />
+        <div className="flex flex-col gap-3 h-full min-h-0">
+            {/* Toolbar */}
+            <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                <div className="relative flex-1 min-w-[160px] max-w-xs">
+                    <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+                    <Input
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                        placeholder="Filtrer les lignes…"
+                        className="pl-7 h-8 text-[12px] rounded-lg"
+                    />
+                </div>
+                <div className="flex rounded-lg border border-border overflow-hidden text-[11px]">
+                    {[
+                        { id: "all", label: `Tout (${headers.filter(Boolean).length})` },
+                        { id: "mapped", label: `CRM (${mappedCount})` },
+                        { id: "extra", label: `Extra (${extraCount})` },
+                        { id: "ignored", label: `Off (${ignoredCount})` },
+                    ].map((f) => (
                         <button
-                            onClick={() => { setSearch(""); setSearchOpen(false); }}
-                            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
-                            <X size={12} />
+                            key={f.id}
+                            type="button"
+                            onClick={() => setColFilter(f.id)}
+                            className={`px-2.5 h-8 transition-colors ${
+                                colFilter === f.id
+                                    ? "bg-primary/15 text-primary font-medium"
+                                    : "bg-secondary/40 text-muted-foreground hover:text-foreground"
+                            }`}
+                        >
+                            {f.label}
                         </button>
-                    </div>
-                ) : (
-                    <button
-                        onClick={() => setSearchOpen(true)}
-                        title="Rechercher dans les données"
-                        className={`w-8 h-8 rounded-lg flex items-center justify-center border border-border bg-secondary text-muted-foreground hover:text-foreground hover:bg-muted transition-colors ${search ? "text-primary border-primary/40 bg-primary/5" : ""}`}>
-                        <Search size={14} />
-                    </button>
-                )}
-
-                {/* Filtre colonnes */}
-                <select value={colFilter} onChange={(e) => setColFilter(e.target.value)}
-                    className="h-8 px-2 pr-6 rounded-lg border border-border bg-secondary text-[12px] appearance-none cursor-pointer focus:outline-none focus:ring-1 focus:ring-primary">
-                    <option value="all">Toutes ({headers.filter(Boolean).length})</option>
-                    <option value="mapped">Mappées ({headers.filter((h) => h && colMapping[h] !== NONE && colMapping[h] !== EXTRA).length})</option>
-                    <option value="extra">Extra ({headers.filter((h) => h && colMapping[h] === EXTRA).length})</option>
-                    <option value="ignored">Ignorées ({headers.filter((h) => h && colMapping[h] === NONE).length})</option>
-                </select>
-
-                {/* Toggle panneau mapping */}
-                <button onClick={() => setShowColPanel((v) => !v)}
-                    title={showColPanel ? "Masquer le panneau de mapping" : "Afficher le panneau de mapping"}
-                    className={`w-8 h-8 rounded-lg flex items-center justify-center border border-border transition-colors ${showColPanel ? "bg-primary/10 border-primary/30 text-primary" : "bg-secondary text-muted-foreground hover:text-foreground hover:bg-muted"}`}>
-                    {showColPanel ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
-
-                {/* Compteur en temps réel */}
-                <span className="ml-auto text-[11px] text-muted-foreground shrink-0">
-                    <span className="text-emerald-600 dark:text-emerald-400 font-medium">
-                        {headers.filter((h) => h && colMapping[h] !== NONE).length} col.
-                    </span>
-                    {headers.filter((h) => h && colMapping[h] === NONE).length > 0 && (
-                        <span className="text-muted-foreground/50">
-                            {" / "}{headers.filter((h) => h && colMapping[h] === NONE).length} ignorée{headers.filter((h) => h && colMapping[h] === NONE).length > 1 ? "s" : ""}
-                        </span>
-                    )}
-                    <span className="mx-1.5 opacity-30">·</span>
+                    ))}
+                </div>
+                <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">
                     {filteredRows.length} ligne{filteredRows.length !== 1 ? "s" : ""}
-                    {search && <span className="text-muted-foreground/50"> / {rows.length}</span>}
+                    {search ? ` / ${rows.length}` : ""}
                 </span>
             </div>
 
-            {/* ── Panneau mapping colonnes (repliable) ── */}
-            {showColPanel && (
-                <div className="shrink-0 rounded-xl border border-border bg-muted/30 overflow-hidden">
-                    <div className="px-3 py-2 border-b border-border/60 flex items-center justify-between gap-2">
-                        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground shrink-0">
-                            Association des colonnes
-                        </span>
-                        <div className="flex items-center gap-2 ml-auto">
-                            {/* Légende compacte */}
-                            <span className="text-[10px] text-muted-foreground hidden sm:flex items-center gap-2">
-                                <span className="flex items-center gap-1"><Star size={10} className="text-amber-400 fill-amber-400" />Nom du lead</span>
-                                <span className="flex items-center gap-1"><CheckCircle2 size={10} className="text-emerald-500" />Mappé</span>
-                                <span className="flex items-center gap-1"><AlertCircle size={10} className="text-amber-500" />Extra</span>
-                                <span className="flex items-center gap-1"><MinusCircle size={10} className="text-muted-foreground/40" />Ignoré</span>
-                            </span>
-                            {/* Tout cocher / tout décocher */}
-                            <button onClick={toggleIgnoreAll}
-                                className="text-[10px] text-muted-foreground hover:text-foreground px-2 py-0.5 rounded border border-border bg-background transition-colors shrink-0">
-                                {visibleColIndices.every(({ h }) => colMapping[h] === NONE)
-                                    ? "Tout activer" : "Tout ignorer"}
-                            </button>
-                        </div>
+            {/* Split : mapping | table */}
+            <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-3">
+                {/* Liste colonnes */}
+                <div className="rounded-xl border border-border bg-card overflow-hidden flex flex-col min-h-0 max-h-[40vh] lg:max-h-none">
+                    <div className="px-3 py-2 border-b border-border/60 shrink-0">
+                        <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                            Colonnes
+                        </p>
+                        <p className="text-[10px] text-muted-foreground/70 mt-0.5">
+                            Choisissez le champ CRM · ⭐ = nom du lead
+                        </p>
                     </div>
-
-                    {/* Cartes colonnes — scroll horizontal */}
-                    <div className="overflow-x-auto">
-                        <div className="flex gap-2 p-2.5 min-w-min">
-                            {visibleColIndices.map(({ h, i }) => {
-                                const target    = colMapping[h] ?? EXTRA;
-                                const isIgnored = target === NONE;
-                                const isName    = h === nameHeader;
-                                return (
-                                    <div key={i}
-                                        className={`shrink-0 rounded-lg border bg-card p-2 space-y-1.5 transition-all ${
-                                            isIgnored ? "opacity-40" : ""
-                                        } ${isName ? "border-amber-400/60 bg-amber-400/5 ring-1 ring-amber-400/30" : ""}`}
-                                        style={{ minWidth: "160px", maxWidth: "210px" }}>
-
-                                        {/* Ligne : checkbox + nom renommable + étoile */}
-                                        <div className="flex items-center gap-1.5">
+                    <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+                        {colEntries.map(({ h, i }) => {
+                            const target = colMapping[h] ?? EXTRA;
+                            const isIgnored = target === NONE;
+                            const isName = h === nameHeader;
+                            const sample = sampleOf(i);
+                            const selected = selectedCol === i;
+                            return (
+                                <div
+                                    key={i}
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={() => setSelectedCol(i)}
+                                    onKeyDown={(e) => { if (e.key === "Enter") setSelectedCol(i); }}
+                                    className={`rounded-lg border p-2 space-y-1.5 transition-all cursor-pointer ${
+                                        selected ? "border-primary/50 bg-primary/5 ring-1 ring-primary/20"
+                                        : isName ? "border-amber-400/50 bg-amber-400/5"
+                                        : isIgnored ? "border-border/50 opacity-50"
+                                        : "border-border bg-background hover:border-border/80"
+                                    }`}
+                                >
+                                    <div className="flex items-center gap-1.5">
+                                        <input
+                                            type="checkbox"
+                                            checked={!isIgnored}
+                                            onClick={(e) => e.stopPropagation()}
+                                            onChange={(e) => toggleInclude(h, e.target.checked)}
+                                            className="w-3.5 h-3.5 rounded accent-primary shrink-0"
+                                            title={isIgnored ? "Inclure" : "Ignorer"}
+                                        />
+                                        {editingHeader === i ? (
                                             <input
-                                                type="checkbox"
-                                                checked={!isIgnored}
-                                                onChange={(e) => onMappingChange({
-                                                    ...colMapping,
-                                                    [h]: e.target.checked ? EXTRA : NONE,
-                                                })}
-                                                title={isIgnored ? "Inclure" : "Exclure"}
-                                                className="w-3.5 h-3.5 rounded accent-primary shrink-0 cursor-pointer"
+                                                autoFocus
+                                                value={headerDraft}
+                                                onClick={(e) => e.stopPropagation()}
+                                                onChange={(e) => setHeaderDraft(e.target.value)}
+                                                onBlur={() => commitHeaderRename(i)}
+                                                onKeyDown={(e) => {
+                                                    e.stopPropagation();
+                                                    if (e.key === "Enter") commitHeaderRename(i);
+                                                    if (e.key === "Escape") setEditingHeader(null);
+                                                }}
+                                                className="flex-1 min-w-0 h-6 px-1.5 text-[11px] font-semibold bg-background border border-primary rounded outline-none"
                                             />
-                                            {editingHeader === i ? (
-                                                <input
-                                                    autoFocus
-                                                    value={headerDraft}
-                                                    onChange={(e) => setHeaderDraft(e.target.value)}
-                                                    onBlur={() => commitHeaderRename(i)}
-                                                    onKeyDown={(e) => {
-                                                        if (e.key === "Enter")  commitHeaderRename(i);
-                                                        if (e.key === "Escape") setEditingHeader(null);
-                                                    }}
-                                                    className="flex-1 min-w-0 h-6 px-1.5 text-[11px] font-semibold bg-background border border-primary rounded outline-none"
-                                                />
-                                            ) : (
-                                                <button
-                                                    onClick={() => { setEditingHeader(i); setHeaderDraft(h); }}
-                                                    title="Cliquer pour renommer"
-                                                    className="flex-1 min-w-0 text-left text-[11px] font-semibold text-foreground truncate hover:text-primary transition-colors group/pnl flex items-center gap-1">
-                                                    <span className="truncate">{h}</span>
-                                                    <span className="opacity-0 group-hover/pnl:opacity-50 shrink-0 text-[9px]">✎</span>
-                                                </button>
-                                            )}
-                                            {/* Bouton étoile — définir comme nom du lead, indépendant du mapping CRM */}
+                                        ) : (
                                             <button
-                                                onClick={() => onNameHeaderChange(isName ? null : h)}
-                                                title={isName ? "Retirer comme nom du lead" : "Épingler comme nom du lead ⭐"}
-                                                className={`shrink-0 w-5 h-5 rounded flex items-center justify-center transition-all ${
-                                                    isName
-                                                        ? "text-amber-400 hover:text-amber-300"
-                                                        : "text-muted-foreground/30 hover:text-amber-400 hover:scale-110"
-                                                }`}
+                                                type="button"
+                                                onClick={(e) => { e.stopPropagation(); setEditingHeader(i); setHeaderDraft(h); }}
+                                                className="flex-1 min-w-0 text-left text-[11px] font-semibold truncate hover:text-primary"
+                                                title="Renommer"
                                             >
-                                                <Star size={11} className={isName ? "fill-amber-400" : ""} />
+                                                {h}
                                             </button>
-                                        </div>
-
-                                        {/* Select mapping — totalement indépendant de l'étoile */}
+                                        )}
+                                        <button
+                                            type="button"
+                                            onClick={(e) => { e.stopPropagation(); onNameHeaderChange(isName ? null : h); }}
+                                            title={isName ? "Retirer comme nom" : "Nom du lead"}
+                                            className={`shrink-0 w-5 h-5 rounded flex items-center justify-center ${
+                                                isName ? "text-amber-400" : "text-muted-foreground/25 hover:text-amber-400"
+                                            }`}
+                                        >
+                                            <Star size={11} className={isName ? "fill-amber-400" : ""} />
+                                        </button>
+                                    </div>
+                                    {sample && !isIgnored && (
+                                        <p className="text-[10px] text-muted-foreground truncate pl-5" title={sample}>
+                                            ex. {sample}
+                                        </p>
+                                    )}
+                                    <div onClick={(e) => e.stopPropagation()}>
                                         <MappingSelect
                                             header={h} value={target} usedFields={usedFields} index={i}
                                             onChange={(v) => onMappingChangeWithSwap(h, v)}
                                         />
                                     </div>
-                                );
-                            })}
-                        </div>
+                                </div>
+                            );
+                        })}
+                        {colEntries.length === 0 && (
+                            <p className="text-xs text-muted-foreground text-center py-6">Aucune colonne dans ce filtre.</p>
+                        )}
                     </div>
                 </div>
-            )}
 
-            {/* ── Tableau de données ── */}
-            <div ref={tableRef} className="flex-1 overflow-auto rounded-xl border border-border min-h-0">
-                {filteredRows.length === 0 ? (
-                    <div className="flex items-center justify-center h-32 text-sm text-muted-foreground">
-                        {search ? "Aucun résultat pour cette recherche." : "Aucune donnée."}
-                    </div>
-                ) : (
-                    <table className="w-full text-[12px] border-collapse min-w-max">
-                        <thead className="sticky top-0 z-10 bg-muted/80 backdrop-blur-sm">
-                            <tr>
-                                {/* Numéro de ligne */}
-                                <th className="w-8 px-2 py-2.5 text-center text-muted-foreground/50 font-normal border-b border-border/60 text-[10px]">
-                                    #
-                                </th>
-                                {visibleColIndices.map(({ h, i }) => {
-                                    const target    = colMapping[h] ?? EXTRA;
-                                    const isIgnored = target === NONE;
-                                    const isMapped  = target !== NONE && target !== EXTRA;
-                                    const crmLabel  = CRM_FIELDS.find((f) => f.key === target)?.label;
-
-                                    return (
-                                        <th key={i}
-                                            className={`px-2 py-1.5 text-left border-b border-border/60 font-normal align-top transition-opacity ${isIgnored ? "opacity-40" : ""}`}
-                                            style={{ minWidth: "140px", maxWidth: "240px" }}>
-
-                                            <div className="flex flex-col gap-1">
-
-                                                {/* Ligne 1 : checkbox + renommage inline */}
-                                                <div className="flex items-center gap-1.5">
-                                                    {/* Checkbox inclure/exclure */}
-                                                    <input
-                                                        type="checkbox"
-                                                        checked={!isIgnored}
-                                                        onChange={(e) => onMappingChange({
-                                                            ...colMapping,
-                                                            [h]: e.target.checked ? EXTRA : NONE,
-                                                        })}
-                                                        title={isIgnored ? "Inclure cette colonne" : "Exclure cette colonne"}
-                                                        className="w-3.5 h-3.5 rounded accent-primary shrink-0 cursor-pointer"
-                                                    />
-
-                                                    {/* Renommage inline — double-clic ou clic sur l'icône */}
-                                                    {editingHeader === i ? (
-                                                        <input
-                                                            autoFocus
-                                                            value={headerDraft}
-                                                            onChange={(e) => setHeaderDraft(e.target.value)}
-                                                            onBlur={() => commitHeaderRename(i)}
-                                                            onKeyDown={(e) => {
-                                                                if (e.key === "Enter")  commitHeaderRename(i);
-                                                                if (e.key === "Escape") setEditingHeader(null);
-                                                            }}
-                                                            className="flex-1 min-w-0 h-6 px-1.5 text-[11px] font-semibold bg-background border border-primary rounded outline-none"
-                                                        />
-                                                    ) : (
-                                                        <span
-                                                            onDoubleClick={() => { setEditingHeader(i); setHeaderDraft(h); }}
-                                                            title={`${h}  ·  Double-cliquer pour renommer`}
-                                                            className="flex-1 min-w-0 text-[11.5px] font-semibold text-foreground truncate cursor-text group/hdr flex items-center gap-1 select-none">
-                                                            <span className="truncate">{h}</span>
-                                                            <span
-                                                                onClick={(e) => { e.stopPropagation(); setEditingHeader(i); setHeaderDraft(h); }}
-                                                                className="shrink-0 opacity-0 group-hover/hdr:opacity-40 hover:!opacity-100 text-[10px] cursor-pointer transition-opacity"
-                                                                title="Renommer">
-                                                                ✎
-                                                            </span>
-                                                        </span>
-                                                    )}
-
-                                                    {/* Étoile — définir comme nom du lead, indépendant du mapping CRM */}
-                                                    <button
-                                                        onClick={() => onNameHeaderChange(h === nameHeader ? null : h)}
-                                                        title={h === nameHeader ? "Retirer comme nom du lead" : "Épingler comme nom du lead ⭐"}
-                                                        className={`shrink-0 w-4 h-4 rounded flex items-center justify-center transition-all ${
-                                                            h === nameHeader
-                                                                ? "text-amber-400 hover:text-amber-300"
-                                                                : "text-muted-foreground/20 hover:text-amber-400 hover:scale-110"
-                                                        }`}
-                                                    >
-                                                        <Star size={10} className={h === nameHeader ? "fill-amber-400" : ""} />
-                                                    </button>
-                                                </div>
-
-                                                {/* Ligne 2 : badge de statut du mapping */}
-                                                {h === nameHeader ? (
-                                                    <span className="text-[10px] text-amber-500 font-medium pl-5 flex items-center gap-0.5">
-                                                        <Star size={8} className="fill-amber-400 text-amber-400" /> Nom du lead
-                                                    </span>
-                                                ) : isMapped ? (
-                                                    <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium pl-5">
-                                                        → {crmLabel}
-                                                    </span>
-                                                ) : isIgnored ? (
-                                                    <span className="text-[10px] text-muted-foreground/40 pl-5">Ignoré</span>
-                                                ) : (
-                                                    <span className="text-[10px] text-amber-500 pl-5">Extra</span>
-                                                )}
-                                            </div>
-                                        </th>
-                                    );
-                                })}
-                                {/* Colonne suppression */}
-                                <th className="w-8 px-1 py-2 border-b border-border/60" />
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {filteredRows.map(({ r, origIdx }, rowI) => (
-                                <tr key={origIdx}
-                                    className={`group border-t border-border/40 hover:bg-muted/30 transition-colors ${rowI % 2 === 0 ? "" : "bg-muted/10"}`}>
-                                    {/* Numéro */}
-                                    <td className="px-2 py-1.5 text-center text-muted-foreground/40 text-[10px] tabular-nums select-none">
-                                        {origIdx + 1}
-                                    </td>
-                                    {visibleColIndices.map(({ h, i }) => {
-                                        const isIgnored = colMapping[h] === NONE;
+                {/* Tableau */}
+                <div ref={tableRef} className="rounded-xl border border-border overflow-auto min-h-0 bg-card">
+                    {filteredRows.length === 0 ? (
+                        <div className="flex items-center justify-center h-32 text-sm text-muted-foreground">
+                            {search ? "Aucun résultat." : "Aucune donnée."}
+                        </div>
+                    ) : (
+                        <table className="w-full text-[12px] border-collapse min-w-max">
+                            <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur-sm">
+                                <tr>
+                                    <th className="w-8 px-2 py-2 text-center text-muted-foreground/50 font-normal border-b border-border/60 text-[10px]">#</th>
+                                    {colEntries.map(({ h, i }) => {
+                                        const target = colMapping[h] ?? EXTRA;
+                                        const isIgnored = target === NONE;
+                                        const isMapped = target !== NONE && target !== EXTRA;
+                                        const crmLabel = CRM_LABEL[target];
+                                        const isName = h === nameHeader;
+                                        const selected = selectedCol === i;
                                         return (
+                                            <th
+                                                key={i}
+                                                onClick={() => setSelectedCol(i)}
+                                                className={`px-2 py-2 text-left border-b font-normal align-bottom cursor-pointer transition-colors ${
+                                                    selected ? "bg-primary/10 border-primary/30" : "border-border/60"
+                                                } ${isIgnored ? "opacity-40" : ""}`}
+                                                style={{ minWidth: "110px", maxWidth: "200px" }}
+                                            >
+                                                <div className="flex flex-col gap-0.5 min-w-0">
+                                                    <span className="text-[11px] font-semibold truncate" title={h}>{h}</span>
+                                                    <span className={`text-[10px] font-medium ${
+                                                        isName ? "text-amber-500"
+                                                        : isMapped ? "text-emerald-600 dark:text-emerald-400"
+                                                        : isIgnored ? "text-muted-foreground/40"
+                                                        : "text-amber-500"
+                                                    }`}>
+                                                        {isName ? `⭐ Nom${isMapped && crmLabel ? ` · ${crmLabel}` : ""}`
+                                                            : isMapped ? `→ ${crmLabel}`
+                                                            : isIgnored ? "Ignoré"
+                                                            : "Extra"}
+                                                    </span>
+                                                </div>
+                                            </th>
+                                        );
+                                    })}
+                                    <th className="w-8 px-1 py-2 border-b border-border/60" />
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {filteredRows.map(({ r, origIdx }, rowI) => (
+                                    <tr key={origIdx}
+                                        className={`group border-t border-border/40 hover:bg-muted/30 ${rowI % 2 ? "bg-muted/10" : ""}`}>
+                                        <td className="px-2 py-1.5 text-center text-muted-foreground/40 text-[10px] tabular-nums">
+                                            {origIdx + 1}
+                                        </td>
+                                        {colEntries.map(({ h, i }) => (
                                             <td key={i}
-                                                className={`px-1 py-1 ${isIgnored ? "opacity-30" : ""}`}
-                                                style={{ maxWidth: "220px" }}>
+                                                className={`px-1 py-1 ${colMapping[h] === NONE ? "opacity-30" : ""} ${selectedCol === i ? "bg-primary/5" : ""}`}
+                                                style={{ maxWidth: "200px" }}>
                                                 <input
                                                     value={r[i] ?? ""}
                                                     onChange={(e) => editCell(origIdx, i, e.target.value)}
-                                                    className="w-full h-7 px-2 bg-transparent rounded hover:bg-background focus:bg-background border border-transparent hover:border-border focus:border-primary text-foreground outline-none transition-colors text-[12px] truncate"
+                                                    onFocus={() => setSelectedCol(i)}
+                                                    className="w-full h-7 px-2 bg-transparent rounded hover:bg-background focus:bg-background border border-transparent hover:border-border focus:border-primary outline-none text-[12px] truncate"
                                                     title={r[i] || ""}
                                                 />
                                             </td>
-                                        );
-                                    })}
-                                    {/* Supprimer la ligne */}
-                                    <td className="px-1 py-1 text-center">
-                                        <button onClick={() => deleteRow(origIdx)}
-                                            title="Supprimer cette ligne"
-                                            className="w-6 h-6 rounded flex items-center justify-center text-muted-foreground/30 hover:text-destructive hover:bg-destructive/10 transition-colors opacity-0 group-hover:opacity-100">
-                                            <Trash2 size={11} />
-                                        </button>
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                )}
+                                        ))}
+                                        <td className="px-1 py-1 text-center">
+                                            <button type="button" onClick={() => deleteRow(origIdx)}
+                                                title="Supprimer la ligne"
+                                                className="w-6 h-6 rounded flex items-center justify-center text-muted-foreground/30 hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                <Trash2 size={11} />
+                                            </button>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    )}
+                </div>
             </div>
         </div>
     );
 };
 
-// ── Bouton inline de sauvegarde de profil ─────────────────────────────────────
-const SaveProfileButton = ({ onSave }) => {
+// ── Bouton sauvegarde / mise à jour de profil ─────────────────────────────────
+const SaveProfileButton = ({ onSaveNew, onUpdate, appliedProfileName, appliedProfileId }) => {
     const [open, setOpen] = useState(false);
     const [name, setName] = useState("");
-    const commit = () => {
+
+    const commitNew = () => {
         if (!name.trim()) return;
-        onSave(name.trim());
+        onSaveNew(name.trim());
         setOpen(false);
         setName("");
     };
+
     if (open) {
         return (
             <div className="flex items-center gap-1.5">
                 <input autoFocus value={name} onChange={(e) => setName(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") { setOpen(false); setName(""); } }}
-                    placeholder="Nom du profil…"
-                    className="h-9 px-2.5 w-36 text-[12px] bg-background border border-border rounded-lg outline-none focus:border-primary" />
-                <button onClick={commit}
+                    onKeyDown={(e) => { if (e.key === "Enter") commitNew(); if (e.key === "Escape") { setOpen(false); setName(""); } }}
+                    placeholder="Nom du nouveau profil…"
+                    className="h-9 px-2.5 w-40 text-[12px] bg-background border border-border rounded-lg outline-none focus:border-primary" />
+                <button onClick={commitNew}
                     className="h-9 px-2.5 rounded-lg bg-primary text-primary-foreground text-[12px] font-medium hover:bg-primary/90 transition-colors flex items-center gap-1">
-                    <BookMarked size={12} />Sauvegarder
+                    <BookMarked size={12} />Créer
                 </button>
                 <button onClick={() => { setOpen(false); setName(""); }}
                     className="w-9 h-9 rounded-lg border border-border flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors">
@@ -919,12 +1129,22 @@ const SaveProfileButton = ({ onSave }) => {
             </div>
         );
     }
+
     return (
-        <Button variant="outline" onClick={() => setOpen(true)}
-            className="h-9 rounded-lg text-[12px] gap-1.5 border-border">
-            <BookMarked size={13} />
-            Sauvegarder comme profil
-        </Button>
+        <div className="flex items-center gap-1.5 flex-wrap">
+            {appliedProfileId && onUpdate && (
+                <Button variant="outline" onClick={onUpdate}
+                    className="h-9 rounded-lg text-[12px] gap-1.5 border-emerald-500/40 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/10">
+                    <BookMarked size={13} />
+                    Mettre à jour{appliedProfileName ? ` « ${appliedProfileName} »` : ""}
+                </Button>
+            )}
+            <Button variant="outline" onClick={() => setOpen(true)}
+                className="h-9 rounded-lg text-[12px] gap-1.5 border-border">
+                <BookMarked size={13} />
+                {appliedProfileId ? "Enregistrer comme nouveau" : "Sauvegarder comme profil"}
+            </Button>
+        </div>
     );
 };
 
@@ -957,17 +1177,26 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
     // Ignorer les leads déjà présents dans le workspace (company / email)
     const [skipExisting,  setSkipExisting]  = useState(true);
 
+    // ── Scan qualité pré-import ───────────────────────────────────────────────
+    const agencyDetectionOn = isAgencyDetectionEnabled(workspace);
+    const [tagAgencies, setTagAgencies] = useState(true);
+    const [excludeClosedAds, setExcludeClosedAds] = useState(false);
+
     // ── Colonne "nom du lead" épinglée via l'étoile ───────────────────────────
     // Indépendante du colMapping — n'importe quelle colonne peut être le nom,
     // même une colonne Extra. null = utiliser la colonne mappée sur "company".
     const [nameHeader, setNameHeader] = useState(null);
+    const [importing, setImporting] = useState(false);
 
     const reset = () => {
         setStep("upload"); setFileName(""); setHeaders([]); setRows([]); setColMapping({});
         setMatchedProfile(null); setAppliedProfileId(null); setShowProfiles(false);
         setDupStrategy("keep_first"); setDupDominant(null);
         setSkipExisting(true);
+        setTagAgencies(isAgencyDetectionEnabled(workspace));
+        setExcludeClosedAds(false);
         setNameHeader(null);
+        setImporting(false);
     };
 
     const handleClose = (v) => {
@@ -988,8 +1217,8 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
 
             let initMapping;
             if (match) {
-                // Profil trouvé (auto ou suggéré) → appliquer les colonnes connues
-                initMapping = applyProfile(h, match.profile);
+                // Profil trouvé (auto ou suggéré) → appliquer + auto-détecter le reste
+                initMapping = applyProfile(h, match.profile, r);
                 setAppliedProfileId(match.profile.id);
             } else {
                 // Aucun profil → détection automatique par nom/données
@@ -1009,12 +1238,15 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
 
     // Lance l'import effectif (commun aux deux modes)
     const doImport = useCallback((finalHeaders, finalRows, finalColMapping) => {
+        if (importing) return;
+        setImporting(true);
+        try {
         // Appliquer la résolution de doublons si nécessaire
         const currentSummary = computeSummary(finalHeaders, finalRows, finalColMapping, nameHeader);
         let resolvedRows = finalRows;
         if (dupStrategy !== "ignore" && Object.keys(currentSummary.duplicateGroups).length > 0) {
             resolvedRows = applyDuplicateResolution(
-                finalRows, finalHeaders, currentSummary.duplicateGroups, dupStrategy, dupDominant
+                finalRows, finalHeaders, currentSummary.duplicateGroups, dupStrategy, dupDominant, finalColMapping, nameHeader
             );
         }
 
@@ -1023,21 +1255,31 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
         const incomplete = leads.filter((l) => l._incomplete).length;
         let cleanLeads = leads.map(({ _incomplete: _i, ...rest }) => rest);
 
+        // Statuts exportés sans colonne correspondante dans le workspace
+        let unknownStatusCount = 0;
+        if (workspace) {
+            for (const lead of cleanLeads) {
+                if (lead._statusName && !resolveColumnIdByName(workspace, lead._statusName)) {
+                    unknownStatusCount++;
+                }
+            }
+        }
+
         // Filtrer les leads déjà présents dans le workspace (company / email)
         let skippedExisting = 0;
         if (skipExisting && workspace?.leads) {
             const companies = new Set();
             const emails = new Set();
             Object.values(workspace.leads).forEach((l) => {
-                const c = (l.company || "").trim().toLowerCase();
-                const e = (l.email || "").trim().toLowerCase();
+                const c = normalizeHeader(l.company || "");
+                const e = normalizeHeader(l.email || "");
                 if (c) companies.add(c);
                 if (e) emails.add(e);
             });
             const kept = [];
             for (const lead of cleanLeads) {
-                const c = (lead.company || "").trim().toLowerCase();
-                const e = (lead.email || "").trim().toLowerCase();
+                const c = normalizeHeader(lead.company || "");
+                const e = normalizeHeader(lead.email || "");
                 if ((c && companies.has(c)) || (e && emails.has(e))) {
                     skippedExisting++;
                     continue;
@@ -1048,6 +1290,14 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
             }
             cleanLeads = kept;
         }
+
+        const agencyOn = isAgencyDetectionEnabled(workspace);
+        const qualityResult = applyImportQualityActions(cleanLeads, {
+            agencyEnabled: agencyOn,
+            tagAgencies: agencyOn && tagAgencies,
+            excludeClosedAds,
+        });
+        cleanLeads = qualityResult.leads;
 
         const removedCount = finalRows.length - resolvedRows.length;
 
@@ -1075,17 +1325,57 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
                     incomplete > 0 ? `${incomplete} sans nom d'entreprise.` : null,
                     removedCount > 0 ? `${removedCount} doublon${removedCount > 1 ? "s" : ""} ${dupStrategy === "merge" ? "fusionné" : "supprimé"}${removedCount > 1 ? "s" : ""} dans le fichier.` : null,
                     skippedExisting > 0 ? `${skippedExisting} déjà présent${skippedExisting > 1 ? "s" : ""} dans l'espace (ignoré${skippedExisting > 1 ? "s" : ""}).` : null,
+                    qualityResult.excludedClosed > 0
+                        ? `${qualityResult.excludedClosed} annonce${qualityResult.excludedClosed > 1 ? "s" : ""} fermée${qualityResult.excludedClosed > 1 ? "s" : ""} exclue${qualityResult.excludedClosed > 1 ? "s" : ""}.`
+                        : null,
+                    qualityResult.taggedAgency > 0
+                        ? `${qualityResult.taggedAgency} tagué${qualityResult.taggedAgency > 1 ? "s" : ""} « ${AGENCY_IMPORT_TAG} ».`
+                        : null,
+                    unknownStatusCount > 0 ? `${unknownStatusCount} placé${unknownStatusCount > 1 ? "s" : ""} en 1ʳᵉ colonne (statut CSV inconnu dans ce pipeline).` : null,
                 ].filter(Boolean).join(" ") || undefined,
             }
         );
         handleClose(false);
-    }, [dispatch, batchDispatch, workspaceId, workspace, appliedProfileId, dupStrategy, dupDominant, nameHeader, skipExisting]); // eslint-disable-line react-hooks/exhaustive-deps
+        } catch (err) {
+            console.error("[CSV Import]", err);
+            toast.error("Échec de l'import", {
+                description: err?.message || String(err),
+            });
+            setImporting(false);
+        }
+    }, [importing, batchDispatch, workspaceId, workspace, appliedProfileId, dupStrategy, dupDominant, nameHeader, skipExisting, tagAgencies, excludeClosedAds]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Récapitulatif courant (recalculé à chaque changement)
     const summary = useMemo(
         () => (headers.length ? computeSummary(headers, rows, colMapping, nameHeader) : null),
         [headers, rows, colMapping, nameHeader]
     );
+
+    const netEstimate = useMemo(() => {
+        if (!headers.length) return null;
+        return estimateNetImport({
+            headers, rows, colMapping, nameHeader,
+            dupStrategy, dupDominant, skipExisting, workspace,
+        });
+    }, [headers, rows, colMapping, nameHeader, dupStrategy, dupDominant, skipExisting, workspace]);
+
+    const qualityScan = useMemo(() => {
+        if (!headers.length) return EMPTY_QUALITY;
+        const preview = buildImportPreviewLeads({
+            headers, rows, colMapping, nameHeader,
+            dupStrategy, dupDominant, skipExisting, workspace,
+        });
+        return scanImportLeads(preview, { agencyEnabled: agencyDetectionOn });
+    }, [headers, rows, colMapping, nameHeader, dupStrategy, dupDominant, skipExisting, workspace, agencyDetectionOn]);
+
+    const displayNetEstimate = useMemo(() => {
+        if (!netEstimate) return null;
+        const closedExcluded = excludeClosedAds ? (qualityScan.closedAdCount || 0) : 0;
+        return {
+            ...netEstimate,
+            net: Math.max(0, (netEstimate.net || 0) - closedExcluded),
+        };
+    }, [netEstimate, excludeClosedAds, qualityScan.closedAdCount]);
 
     const fileLoaded = headers.length > 0;
 
@@ -1112,7 +1402,8 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
                 }`}
                 style={isEditor ? { width: "95vw" } : undefined}
             >
-                <DialogHeader className="shrink-0">
+                <DialogHeader className="shrink-0 space-y-2">
+                    <ImportStepper step={step} fileLoaded={fileLoaded} />
                     <DialogTitle className="text-xl tracking-tight">{title}</DialogTitle>
                     <DialogDescription>{desc}</DialogDescription>
                 </DialogHeader>
@@ -1122,7 +1413,42 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
                 ════════════════════════════════════════ */}
                 {step === "upload" && (
                     <div className="flex-1 overflow-y-auto py-2 space-y-4">
-                        <DropZone onFile={handleFile} />
+                        {!fileLoaded ? (
+                            <DropZone onFile={handleFile} />
+                        ) : (
+                            <div className="flex items-center gap-3 rounded-xl border border-border bg-card px-3 py-2.5">
+                                <div className="w-9 h-9 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                                    <CheckCircle2 size={16} />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                    <p className="text-sm font-medium truncate">{fileName}</p>
+                                    <p className="text-[11px] text-muted-foreground">
+                                        {rows.length} ligne{rows.length > 1 ? "s" : ""} · {headers.filter(Boolean).length} colonne{headers.filter(Boolean).length > 1 ? "s" : ""}
+                                    </p>
+                                </div>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-8 rounded-lg text-[12px] shrink-0"
+                                    onClick={() => {
+                                        setFileName(""); setHeaders([]); setRows([]); setColMapping({});
+                                        setMatchedProfile(null); setAppliedProfileId(null); setNameHeader(null);
+                                    }}
+                                >
+                                    Changer
+                                </Button>
+                            </div>
+                        )}
+
+                        {fileLoaded && (
+                            <div className="space-y-2">
+                                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                                    Mapping détecté
+                                </p>
+                                <MappingChips headers={headers} colMapping={colMapping} nameHeader={nameHeader} />
+                            </div>
+                        )}
 
                         {/* ── Bandeau profil reconnu ── */}
                         {fileLoaded && matchedProfile && (
@@ -1173,7 +1499,7 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
                         {fileLoaded && (
                             <div className="space-y-3">
                                 <p className="text-sm text-muted-foreground text-center">
-                                    Fichier prêt — choisissez votre mode d'import
+                                    Choisissez votre mode d'import
                                 </p>
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                     {/* Import rapide */}
@@ -1188,17 +1514,8 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
                                             <span className="font-semibold text-[15px] text-foreground">Import rapide</span>
                                         </div>
                                         <p className="text-[12.5px] text-muted-foreground leading-relaxed">
-                                            Toutes les colonnes sont importées automatiquement.
-                                            Aucune étape supplémentaire.
+                                            Vérifiez le récap (doublons, colonnes) puis importez en un clic.
                                         </p>
-                                        <div className="mt-1 flex flex-wrap gap-1.5">
-                                            {headers.slice(0, 5).map((h) => (
-                                                <span key={h} className="px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[10.5px] font-medium">{h}</span>
-                                            ))}
-                                            {headers.length > 5 && (
-                                                <span className="px-2 py-0.5 rounded-full bg-muted text-muted-foreground text-[10.5px]">+{headers.length - 5}</span>
-                                            )}
-                                        </div>
                                     </button>
 
                                     {/* Mode avancé */}
@@ -1213,13 +1530,8 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
                                             <span className="font-semibold text-[15px] text-foreground">Modifier avant l'import</span>
                                         </div>
                                         <p className="text-[12.5px] text-muted-foreground leading-relaxed">
-                                            Éditez les données, renommez les colonnes, supprimez des lignes — sans ouvrir Excel.
+                                            Corrigez cellules, mapping et lignes — sans ouvrir Excel.
                                         </p>
-                                        <div className="mt-1 flex flex-wrap gap-1.5">
-                                            {["Tableau éditable", "Mapping colonnes", "Filtre & recherche"].map((t) => (
-                                                <span key={t} className="px-2 py-0.5 rounded-full bg-secondary text-muted-foreground text-[10.5px]">{t}</span>
-                                            ))}
-                                        </div>
                                     </button>
                                 </div>
                             </div>
@@ -1241,7 +1553,7 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
                                         currentColMapping={colMapping}
                                         canSave={fileLoaded}
                                         onApply={(profile) => {
-                                            const applied = applyProfile(headers, profile);
+                                            const applied = applyProfile(headers, profile, rows);
                                             setColMapping(applied);
                                             setAppliedProfileId(profile.id);
                                             setMatchedProfile({
@@ -1256,6 +1568,14 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
                                             setAppliedProfileId(saved.id);
                                             toast.success(`Profil « ${name} » enregistré`);
                                         }}
+                                        onUpdateProfile={(id) => {
+                                            const updated = updateProfileMapping(id, { headers, colMapping });
+                                            if (updated) {
+                                                setAppliedProfileId(updated.id);
+                                                toast.success(`Profil « ${updated.name} » mis à jour`);
+                                            }
+                                        }}
+                                        appliedProfileId={appliedProfileId}
                                     />
                                 </div>
                             )}
@@ -1282,6 +1602,14 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
                             skipExisting={skipExisting}
                             onSkipExistingChange={setSkipExisting}
                             existingLeadCount={Object.keys(workspace?.leads || {}).length}
+                            netEstimate={displayNetEstimate}
+                            onEditMapping={() => setStep("advanced-edit")}
+                            qualityScan={qualityScan}
+                            agencyDetectionOn={agencyDetectionOn}
+                            tagAgencies={tagAgencies}
+                            onTagAgenciesChange={setTagAgencies}
+                            excludeClosedAds={excludeClosedAds}
+                            onExcludeClosedAdsChange={setExcludeClosedAds}
                         />
                     </div>
                 )}
@@ -1326,6 +1654,14 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
                             skipExisting={skipExisting}
                             onSkipExistingChange={setSkipExisting}
                             existingLeadCount={Object.keys(workspace?.leads || {}).length}
+                            netEstimate={displayNetEstimate}
+                            onEditMapping={() => setStep("advanced-edit")}
+                            qualityScan={qualityScan}
+                            agencyDetectionOn={agencyDetectionOn}
+                            tagAgencies={tagAgencies}
+                            onTagAgenciesChange={setTagAgencies}
+                            excludeClosedAds={excludeClosedAds}
+                            onExcludeClosedAdsChange={setExcludeClosedAds}
                         />
                     </div>
                 )}
@@ -1352,10 +1688,17 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
                         Annuler
                     </Button>
 
-                    {/* Bouton sauvegarder profil — visible sur les étapes summary */}
-                    {(step === "quick-summary" || step === "advanced-summary") && !appliedProfileId && (
+                    {/* Bouton sauvegarder / mettre à jour profil */}
+                    {(step === "quick-summary" || step === "advanced-summary" || step === "advanced-edit") && (
                         <SaveProfileButton
-                            onSave={(name) => {
+                            appliedProfileId={appliedProfileId}
+                            appliedProfileName={appliedProfileId ? getProfile(appliedProfileId)?.name : null}
+                            onUpdate={() => {
+                                if (!appliedProfileId) return;
+                                const updated = updateProfileMapping(appliedProfileId, { headers, colMapping });
+                                if (updated) toast.success(`Profil « ${updated.name} » mis à jour`);
+                            }}
+                            onSaveNew={(name) => {
                                 const saved = saveProfile({ name, headers, colMapping });
                                 setAppliedProfileId(saved.id);
                                 toast.success(`Profil « ${name} » enregistré`);
@@ -1369,18 +1712,19 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
                             data-testid="csv-quick-confirm-btn"
                             className="bg-primary hover:bg-primary/90 text-primary-foreground gap-1.5">
                             <Zap size={14} />
-                            Import rapide
+                            Continuer →
                         </Button>
                     )}
 
                     {step === "quick-summary" && (
                         <Button data-testid="csv-confirm-btn"
+                            disabled={importing || (displayNetEstimate?.net === 0)}
                             onClick={() => doImport(headers, rows, colMapping)}
                             className="bg-primary hover:bg-primary/90 text-primary-foreground">
-                            <CheckCircle2 size={14} className="mr-1.5" />
-                            {dupStrategy !== "ignore" && summary?.duplicates > 0
-                                ? `Importer (${rows.length} → résolution doublons)`
-                                : `Importer ${rows.length} lead${rows.length > 1 ? "s" : ""}`}
+                            {importing ? <Loader2 size={14} className="mr-1.5 animate-spin" /> : <CheckCircle2 size={14} className="mr-1.5" />}
+                            {importing
+                                ? "Import…"
+                                : `Importer ${displayNetEstimate?.net ?? rows.length} lead${(displayNetEstimate?.net ?? rows.length) !== 1 ? "s" : ""}`}
                         </Button>
                     )}
 
@@ -1394,12 +1738,13 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
 
                     {step === "advanced-summary" && (
                         <Button data-testid="csv-confirm-btn"
+                            disabled={importing || (displayNetEstimate?.net === 0)}
                             onClick={() => doImport(headers, rows, colMapping)}
                             className="bg-primary hover:bg-primary/90 text-primary-foreground">
-                            <CheckCircle2 size={14} className="mr-1.5" />
-                            {dupStrategy !== "ignore" && summary?.duplicates > 0
-                                ? `Importer (${rows.length} → résolution doublons)`
-                                : `Importer ${rows.length} lead${rows.length > 1 ? "s" : ""}`}
+                            {importing ? <Loader2 size={14} className="mr-1.5 animate-spin" /> : <CheckCircle2 size={14} className="mr-1.5" />}
+                            {importing
+                                ? "Import…"
+                                : `Importer ${displayNetEstimate?.net ?? rows.length} lead${(displayNetEstimate?.net ?? rows.length) !== 1 ? "s" : ""}`}
                         </Button>
                     )}
                 </DialogFooter>

@@ -270,18 +270,108 @@ function hasActivityAfter(lead, afterIso) {
     return false;
 }
 
-function hasCallOrRelanceEvidence(lead) {
-    if (lead.lastContact) return true;
+/** Preuve structurée d'appel / relance (préfixes CallNote / LOG_RELANCE). */
+function hasStrictCallOrRelanceEvidence(lead) {
     if ((lead.relances || []).length > 0) return true;
     for (const n of lead.notes || []) {
         const t = String(n.text || "").trim();
         if (NOTE_NO_ANSWER_RE.test(t) || NOTE_REACHED_RE.test(t) || NOTE_RELANCE_RE.test(t)) return true;
+    }
+    return false;
+}
+
+/** Preuve large (inclut lastContact + emails envoyés). */
+function hasCallOrRelanceEvidence(lead) {
+    if (lead.lastContact) return true;
+    if (hasStrictCallOrRelanceEvidence(lead)) return true;
+    for (const n of lead.notes || []) {
+        const t = String(n.text || "").trim();
         if (NOTE_EMAIL_RE.test(t) && /envoy/i.test(t)) return true;
     }
     return false;
 }
 
-function hasPhoneAnywhere(lead) {
+/**
+ * Indices « doux » (email, note libre, lastContact…) pour enrichir un message
+ * sans inventer — uniquement des faits déjà présents sur le lead.
+ * @returns {{ at: string, canal: string, label: string } | null}
+ */
+function findSoftActivityHint(lead) {
+    let best = null;
+    let bestT = -1;
+
+    const consider = (at, canal) => {
+        if (!at || !canal) return;
+        const t = new Date(at).getTime();
+        if (!Number.isFinite(t)) return;
+        if (t >= bestT) {
+            bestT = t;
+            best = { at, canal, label: `dernier contact le ${formatFrDate(at)} par ${canal}` };
+        }
+    };
+
+    if (lead.lastContact) {
+        // Canal par défaut ; affiné si une note proche mentionne email / LinkedIn…
+        let canal = "contact";
+        for (const n of lead.notes || []) {
+            if (!n.at) continue;
+            const dt = Math.abs(new Date(n.at).getTime() - new Date(lead.lastContact).getTime());
+            if (dt > 2 * 86400000) continue;
+            const text = String(n.text || "");
+            if (NOTE_EMAIL_RE.test(text) || /e-?mail|mail/i.test(text)) { canal = "email"; break; }
+            if (/linkedin/i.test(text)) { canal = "LinkedIn"; break; }
+            if (NOTE_REACHED_RE.test(text) || NOTE_NO_ANSWER_RE.test(text)) { canal = "téléphone"; break; }
+        }
+        consider(lead.lastContact, canal);
+    }
+
+    for (const r of lead.relances || []) {
+        consider(r.at, r.canal || "relance");
+    }
+
+    for (const n of lead.notes || []) {
+        const text = String(n.text || "").trim();
+        if (!text || !n.at) continue;
+        if (NOTE_REACHED_RE.test(text)) {
+            consider(n.at, "téléphone");
+            continue;
+        }
+        if (NOTE_NO_ANSWER_RE.test(text)) {
+            consider(n.at, "appel (sans réponse)");
+            continue;
+        }
+        if (NOTE_RELANCE_RE.test(text)) {
+            const canalMatch = text.match(/Relance\s*#?\d*\s*·\s*([^·]+)/i);
+            consider(n.at, (canalMatch?.[1] || "relance").trim());
+            continue;
+        }
+        if (NOTE_EMAIL_RE.test(text) || /mail\s+envoy|envoyé\s+(un\s+)?mail|envoyé\s+(un\s+)?e-?mail/i.test(text)) {
+            consider(n.at, "email");
+            continue;
+        }
+        if (/linkedin|whatsapp|sms/i.test(text)) {
+            const canal = /linkedin/i.test(text) ? "LinkedIn"
+                : /whatsapp/i.test(text) ? "WhatsApp"
+                : "SMS";
+            consider(n.at, canal);
+        }
+    }
+
+    return best;
+}
+
+function daysInCurrentColumn(lead, now) {
+    const entered = enteredCurrentColumnAt(lead);
+    if (!entered) return null;
+    return calendarDaysBetween(entered, now);
+}
+
+function withFoundHint(message, hint) {
+    if (!hint?.label) return message;
+    return `${message}. Information trouvée : ${hint.label}`;
+}
+
+export function hasPhoneAnywhere(lead) {
     if ((lead.phone || "").trim()) return true;
     for (const cf of lead.customFields || []) {
         const v = String(cf?.value || "").trim();
@@ -290,7 +380,7 @@ function hasPhoneAnywhere(lead) {
     return false;
 }
 
-function hasEmailAnywhere(lead) {
+export function hasEmailAnywhere(lead) {
     if ((lead.email || "").trim()) return true;
     for (const cf of lead.customFields || []) {
         const v = String(cf?.value || "").trim();
@@ -308,6 +398,12 @@ function pickAnnonceStatut(lead) {
         }
     }
     return null;
+}
+
+/** True si un champ extra statut/état indique une annonce fermée / pourvue / expirée. */
+export function isClosedAdLead(lead) {
+    const statut = pickAnnonceStatut(lead);
+    return !!(statut && ANNONCE_CLOSED_RE.test(statut.value));
 }
 
 function enteredCurrentColumnAt(lead) {
@@ -378,13 +474,16 @@ export function detectInconsistencies(lead, columns = {}, configRaw = null, now 
 
     // ── 2. Colonne RDV sans date (critical) ──────────────────────────────────
     if (isMeetingColumn(colName) && !rdv && !isTerminal(colName)) {
+        const days = daysInCurrentColumn(lead, now);
         push(issue({
             id: "meeting_sans_rdv",
             severity: "critical",
             title: "Colonne RDV sans date",
-            message: `En « ${colName} » sans date de rendez-vous planifiée`,
-            relatedAt: lead.statusHistory?.slice(-1)?.[0]?.at || lead.createdAt || null,
-            facts: { column: colName },
+            message: days != null && days > 0
+                ? `En « ${colName} » depuis ${days} j — sans date de rendez-vous planifiée`
+                : `En « ${colName} » sans date de rendez-vous planifiée`,
+            relatedAt: enteredCurrentColumnAt(lead) || lead.createdAt || null,
+            facts: { column: colName, daysInColumn: days },
             fingerprint: `meeting_sans_rdv:${lead.columnId}`,
             dismissible: false,
         }));
@@ -404,15 +503,25 @@ export function detectInconsistencies(lead, columns = {}, configRaw = null, now 
         }));
     }
 
-    // ── 4. Contacté sans trace (critical) ────────────────────────────────────
-    if (isContactedColumn(colName) && !isTerminal(colName) && !hasCallOrRelanceEvidence(lead)) {
+    // ── 4. Contacté sans trace d'appel/relance (critical) ────────────────────
+    if (isContactedColumn(colName) && !isTerminal(colName) && !hasStrictCallOrRelanceEvidence(lead)) {
+        const days = daysInCurrentColumn(lead, now);
+        const hint = findSoftActivityHint(lead);
+        const base = days != null && days > 0
+            ? `En « ${colName} » depuis ${days} j — aucun appel ni relance enregistré`
+            : `En « ${colName} » — aucun appel ni relance enregistré`;
         push(issue({
             id: "contacted_sans_trace",
             severity: "critical",
             title: "Contacté sans trace",
-            message: `En « ${colName} » — aucun appel ni relance enregistré`,
-            relatedAt: lead.contactedColumnEnteredAt || null,
-            facts: { column: colName },
+            message: withFoundHint(base, hint),
+            relatedAt: lead.contactedColumnEnteredAt || enteredCurrentColumnAt(lead) || null,
+            facts: {
+                column: colName,
+                daysInColumn: days,
+                foundAt: hint?.at || null,
+                foundCanal: hint?.canal || null,
+            },
             fingerprint: `contacted_sans_trace:${lead.columnId}`,
             dismissible: false,
         }));
@@ -658,7 +767,7 @@ export function detectInconsistencies(lead, columns = {}, configRaw = null, now 
     return filtered;
 }
 
-/** Top signal carte : critiques uniquement (discipline 1 signal). */
+/** Top signal carte : uniquement les critiques (pas de badge orange/warning). */
 export function topCardInconsistency(lead, columns, configRaw, now = new Date()) {
     const config = normalizeInconsistencyConfig(configRaw);
     if (!config.showOnCard) return null;
@@ -672,4 +781,72 @@ export function countCriticalInconsistencies(issues) {
 
 export function countActionableInconsistencies(issues) {
     return (issues || []).filter((i) => i.severity === "critical" || i.severity === "warning").length;
+}
+
+/**
+ * Résumé de vigilance d’un lead (recalculé à chaque lecture — pure / proactif).
+ * @returns {{
+ *   level: 'critical'|'warning'|'info'|null,
+ *   issues: Array,
+ *   criticalCount: number,
+ *   warningCount: number,
+ *   actionableCount: number,
+ *   score: number,
+ * }}
+ */
+export function getLeadVigilance(lead, columns = {}, configRaw = null, now = new Date()) {
+    const issues = detectInconsistencies(lead, columns, configRaw, now);
+    let criticalCount = 0;
+    let warningCount = 0;
+    for (const i of issues) {
+        if (i.severity === "critical") criticalCount++;
+        else if (i.severity === "warning") warningCount++;
+    }
+    const level = criticalCount > 0
+        ? "critical"
+        : warningCount > 0
+            ? "warning"
+            : issues.length > 0
+                ? "info"
+                : null;
+    return {
+        level,
+        issues,
+        criticalCount,
+        warningCount,
+        actionableCount: criticalCount + warningCount,
+        // Score de tri : critiques d’abord, puis warnings, puis infos
+        score: criticalCount * 100 + warningCount * 10 + (issues.length - criticalCount - warningCount),
+    };
+}
+
+/** Mots-clés de filtre pour la vigilance (retourne null si le terme n’est pas un filtre vigilance). */
+export function matchVigilanceFilterTerm(term, lead, columns = {}, configRaw = null) {
+    const t = String(term || "").toLowerCase().trim()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "");
+    if (!t) return null;
+
+    const isRed = (
+        t === "vigilance rouge"
+        || t === "alerte rouge"
+        || t === "critique"
+        || t === "critiques"
+        || t === "vigilance:rouge"
+        || t === "vigilance=rouge"
+    );
+    const isAny = (
+        t === "vigilance"
+        || t === "a surveiller"
+        || t === "surveiller"
+        || t === "incoherence"
+        || t === "incoherences"
+        || t === "alerte"
+        || t === "alertes"
+    );
+    if (!isRed && !isAny) return null;
+
+    const vig = getLeadVigilance(lead, columns, configRaw);
+    if (isRed) return vig.level === "critical";
+    return vig.actionableCount > 0;
 }

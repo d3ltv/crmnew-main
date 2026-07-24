@@ -39,6 +39,8 @@ import {
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { countUnreadWorkspaceNotifs } from "@/lib/followupNotifs";
+import { useNotifSeenMap } from "@/hooks/useNotifSeenMap";
 
 const DRAG_THRESHOLD = 6;
 
@@ -108,6 +110,7 @@ export const SidebarContent = ({
     hideBrandHeader = false,
 }) => {
     const { state, dispatch } = useCrm();
+    const seenMap = useNotifSeenMap();
     const [createOpen, setCreateOpen] = useState(false);
     const [renamingId, setRenamingId] = useState(null);
     const [renameValue, setRenameValue] = useState("");
@@ -537,6 +540,14 @@ export const SidebarContent = ({
                                 ) : null;
 
                             if (item.type === "folder") {
+                                const folderNotifCount = (item.childOrder || []).reduce((sum, childId) => {
+                                    const child = sidebar.items[childId];
+                                    if (child?.type !== "workspace") return sum;
+                                    return sum + countUnreadWorkspaceNotifs(
+                                        state.workspaces[child.workspaceId],
+                                        seenMap
+                                    );
+                                }, 0);
                                 const body = (
                                     <div className="relative">
                                         {insertLine("before")}
@@ -616,9 +627,18 @@ export const SidebarContent = ({
                                                                 id,
                                                             })
                                                         }
-                                                        className="flex-1 min-w-0 h-full px-1 text-left truncate text-foreground/80 font-medium"
+                                                        className="flex-1 min-w-0 h-full px-1 text-left truncate text-foreground/80 font-medium relative"
                                                     >
-                                                        {item.name}
+                                                        <span className="truncate pr-6 block">{item.name}</span>
+                                                        {folderNotifCount > 0 && (
+                                                            <span
+                                                                className="absolute top-1/2 -translate-y-1/2 right-0 min-w-[16px] h-4 px-1 rounded-full text-[9px] font-bold bg-rose-500 text-white flex items-center justify-center tabular-nums"
+                                                                title={`${folderNotifCount} notification${folderNotifCount > 1 ? "s" : ""}`}
+                                                                data-testid={`sidebar-folder-notif-${id}`}
+                                                            >
+                                                                {folderNotifCount > 9 ? "9+" : folderNotifCount}
+                                                            </span>
+                                                        )}
                                                     </button>
                                                 ))}
                                             {!isCollapsed && itemMenu(item)}
@@ -635,6 +655,7 @@ export const SidebarContent = ({
                                         <TooltipTrigger asChild>{body}</TooltipTrigger>
                                         <TooltipContent side="right">
                                             {item.name}
+                                            {folderNotifCount > 0 ? ` · ${folderNotifCount} notif` : ""}
                                         </TooltipContent>
                                     </Tooltip>
                                 );
@@ -644,6 +665,7 @@ export const SidebarContent = ({
                             if (!ws) return null;
                             const active = state.currentId === ws.id;
                             const leadCount = Object.keys(ws.leads).length;
+                            const notifCount = countUnreadWorkspaceNotifs(ws, seenMap);
                             const shortcutIdx = workspaceIds.indexOf(ws.id);
                             const shortcutLabel =
                                 shortcutIdx >= 0 && shortcutIdx < 9
@@ -657,7 +679,7 @@ export const SidebarContent = ({
                                         data-nav-id={id}
                                         data-testid={`sidebar-ws-${ws.id}`}
                                         className={cn(
-                                            "group w-full h-11 rounded-lg text-sm flex items-center transition-colors",
+                                            "group w-full h-11 rounded-lg text-sm flex items-center transition-colors relative",
                                             active
                                                 ? "bg-primary/10 text-primary font-medium"
                                                 : "text-foreground/80 hover:bg-secondary",
@@ -740,6 +762,16 @@ export const SidebarContent = ({
                                                 aria-label={ws.name}
                                             />
                                         )}
+                                        {notifCount > 0 && (
+                                            <span
+                                                className="absolute top-1 right-1 min-w-[15px] h-3.5 px-1 rounded-full text-[9px] font-bold bg-rose-500 text-white flex items-center justify-center pointer-events-none z-10 tabular-nums"
+                                                title={`${notifCount} notification${notifCount > 1 ? "s" : ""}`}
+                                                data-testid={`sidebar-ws-notif-${ws.id}`}
+                                                aria-hidden
+                                            >
+                                                {notifCount > 9 ? "9+" : notifCount}
+                                            </span>
+                                        )}
                                         {!isCollapsed && itemMenu(item)}
                                     </div>
                                     {insertLine("after")}
@@ -754,6 +786,11 @@ export const SidebarContent = ({
                                     <TooltipTrigger asChild>{body}</TooltipTrigger>
                                     <TooltipContent side="right" className="flex items-center gap-2">
                                         <span>{ws.name}</span>
+                                        {notifCount > 0 && (
+                                            <span className="text-rose-400 font-medium">
+                                                {notifCount} notif
+                                            </span>
+                                        )}
                                         <span className="opacity-60">{leadCount}</span>
                                         {shortcutLabel && (
                                             <kbd className="px-1.5 py-0.5 rounded bg-muted border border-border font-mono text-[10px] text-muted-foreground">

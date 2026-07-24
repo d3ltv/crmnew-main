@@ -1,13 +1,15 @@
 import React, { useEffect, useState, useMemo } from "react";
-import { Phone, PhoneOff, Save, X, Sparkles, CalendarClock } from "lucide-react";
+import { Phone, PhoneOff, Save, X, Sparkles, CalendarClock, BellRing } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useCrm } from "@/context/CrmContext";
-import { formatDateTimeLong } from "@/lib/dateUtils";
+import { formatDateTimeLong, toLocalDateKey, addDaysSkippingWeekend, addDaysSkippingWeekendIso, formatFutureRelativeFr } from "@/lib/dateUtils";
 import { parseNote, diffWithLead, formatDetected, detectAppointment } from "@/lib/noteParser";
 import { isMeetingColumn } from "@/constants/columnPatterns";
 import { makeRdvNextAction } from "@/lib/nextActionUtils";
-import { toLocalDateKey } from "@/lib/dateUtils";
+import { normalizeInconsistencyConfig } from "@/lib/inconsistencyRules";
+
+const RELANCE_DAY_CHIPS = [1, 2, 3, 4, 5, 6, 7];
 
 export const CallNoteModal = ({
     open,
@@ -21,19 +23,25 @@ export const CallNoteModal = ({
     const { dispatch } = useCrm();
     const [text, setText] = useState("");
     const [outcome, setOutcome] = useState(null); // 'reached' | 'noanswer' | null
-    // true dès que l'utilisateur a cliqué manuellement sur un bouton outcome
     const [outcomeManual, setOutcomeManual] = useState(false);
+    const [suggestRelance, setSuggestRelance] = useState(true);
+    const [relanceDays, setRelanceDays] = useState(2);
+
+    const defaultRelanceDays = useMemo(() => {
+        const cfg = normalizeInconsistencyConfig(workspace?.inconsistencyConfig);
+        return cfg.thresholds?.noAnswerDays || 2;
+    }, [workspace?.inconsistencyConfig]);
 
     useEffect(() => {
         if (open) {
             setText("");
             setOutcome(null);
             setOutcomeManual(false);
+            setSuggestRelance(true);
+            setRelanceDays(defaultRelanceDays);
         }
-    }, [open, lead?.id]);
+    }, [open, lead?.id, defaultRelanceDays]);
 
-    // Auto-sélection : si l'utilisateur n'a pas choisi manuellement,
-    // on déduit l'outcome depuis le texte
     const handleTextChange = (e) => {
         const val = e.target.value;
         setText(val);
@@ -45,53 +53,52 @@ export const CallNoteModal = ({
     const handleOutcomeClick = (value) => {
         setOutcome(value);
         setOutcomeManual(true);
+        if (value === "noanswer") {
+            setSuggestRelance(true);
+            setRelanceDays(defaultRelanceDays);
+        } else if (value === "reached") {
+            setSuggestRelance(true);
+            setRelanceDays(defaultRelanceDays);
+        }
     };
 
-    useEffect(() => {
-        const onKey = (e) => {
-            if (e.key === "Escape" && open) onClose();
-            if (e.key === "Enter" && open) {
-                // Dans le textarea : seulement Cmd/Ctrl+Entrée
-                if (e.target.tagName === "TEXTAREA") {
-                    if (e.metaKey || e.ctrlKey) save();
-                } else {
-                    // Hors textarea : Entrée seul suffit — même sans texte ni outcome sélectionné
-                    // (fallback → "Pas de réponse" géré dans save())
-                    save();
-                }
-            }
-        };
-        document.addEventListener("keydown", onKey);
-        return () => document.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open, text, outcome, pendingMoveToColumnId]);
-
-    // ── Analyse du texte en temps réel ───────────────────────────────────────
     const detected = useMemo(() => parseNote(text), [text]);
     const diff = useMemo(
-        () => lead ? diffWithLead(detected, lead) : { newPhone: null, extraPhones: [], newEmail: null, newAddress: null, newContact: null },
+        () => (lead
+            ? diffWithLead(detected, lead)
+            : {
+                newPhone: null,
+                extraPhones: [],
+                newEmail: null,
+                newAddress: null,
+                newContact: null,
+                extraContacts: [],
+                willAddPersons: [],
+            }),
         [detected, lead]
     );
     const detectedItems = useMemo(() => formatDetected(detected), [detected]);
     const appointment = useMemo(() => detectAppointment(text), [text]);
 
-    const hasNewInfo = diff.newPhone || diff.extraPhones.length > 0 || diff.newEmail || diff.newAddress || diff.newContact;
+    const hasNewInfo = !!(
+        diff.newPhone
+        || diff.extraPhones.length > 0
+        || diff.newEmail
+        || diff.newAddress
+        || diff.newContact
+        || (diff.extraContacts || []).length > 0
+    );
 
-    if (!open || !lead) return null;
-
-    const columnName = workspace.columns[lead.columnId]?.name;
-
-    const autoFollowupColumn = workspace.columnOrder
-        .map((cid) => workspace.columns[cid])
-        .find((c) => c.autoFollowup);
+    const effectiveOutcome = outcome ?? (text.trim() ? "reached" : "noanswer");
+    const showRelanceSuggest = !appointment && (
+        effectiveOutcome === "noanswer" || effectiveOutcome === "reached"
+    );
 
     const save = () => {
-        // Si aucun choix manuel et pas de texte → pas de réponse par défaut
+        if (!lead || !open) return;
         const finalOutcome = outcome ?? "noanswer";
         const content = text.trim();
 
-        // ── 0. Mode rapide : déplacer vers Contacté seulement à l'enregistrement
-        //    (Échap / Passer ne déplacent pas — le lead reste dans sa colonne)
         let effectiveColumnId = lead.columnId;
         if (pendingMoveToColumnId && lead.columnId !== pendingMoveToColumnId) {
             onAutoMoved?.(lead.id);
@@ -105,7 +112,6 @@ export const CallNoteModal = ({
             effectiveColumnId = pendingMoveToColumnId;
         }
 
-        // ── 1. Sauvegarder la note ──────────────────────────────────────────
         const noteText = finalOutcome === "reached"
             ? (content ? `📞 Joint · ${content}` : "📞 Joint")
             : (content ? `📵 Pas de réponse · ${content}` : "📵 Pas de réponse");
@@ -117,7 +123,7 @@ export const CallNoteModal = ({
                 leadId: lead.id,
                 text: noteText,
             });
-        } else if (finalOutcome === "noanswer") {
+        } else {
             dispatch({
                 type: "ADD_NOTE",
                 workspaceId: workspace.id,
@@ -126,21 +132,22 @@ export const CallNoteModal = ({
             });
         }
 
-        // ── 1b. Déplacement colonne ─────────────────────────────────────────
-        // RDV détecté → colonne « Rendez-vous » si elle existe (jamais la colonne rappel).
-        // Pas de réponse (manuel) → colonne auto-followup / rappel.
         const meetingColumn = workspace.columnOrder
             .map((cid) => workspace.columns[cid])
             .find((c) => c && isMeetingColumn(c.name));
 
+        const autoFollowupColumn = workspace.columnOrder
+            .map((cid) => workspace.columns[cid])
+            .find((c) => c.autoFollowup);
+
         const shouldMoveToMeeting =
             !!appointment && meetingColumn && effectiveColumnId !== meetingColumn.id;
         const shouldMoveToFollowup =
-            !appointment &&
-            finalOutcome === "noanswer" &&
-            outcomeManual &&
-            autoFollowupColumn &&
-            effectiveColumnId !== autoFollowupColumn.id;
+            !appointment
+            && finalOutcome === "noanswer"
+            && outcomeManual
+            && autoFollowupColumn
+            && effectiveColumnId !== autoFollowupColumn.id;
 
         if (shouldMoveToMeeting) {
             onAutoMoved?.(lead.id);
@@ -164,53 +171,53 @@ export const CallNoteModal = ({
             effectiveColumnId = autoFollowupColumn.id;
         }
 
-        // ── 2. Injecter les infos détectées dans le lead ─────────────────
         const patch = {};
         if (diff.newPhone) patch.phone = diff.newPhone;
         if (diff.newEmail) patch.email = diff.newEmail;
         if (diff.newContact) patch.contact = diff.newContact;
 
-        // ── 2b. Rappel automatique "Pas de réponse" ───────────────────────
-        // Si pas de réponse et pas de RDV détecté dans la note :
-        // → programmer un rappel +1j / +2j / +3j selon le nombre de tentatives
-        // (basé sur le stage de l'autoFollowup existant, ou 1 si premier appel)
-        if (finalOutcome === "noanswer" && !appointment) {
-            // Calculer le stage : si le lead a déjà un autoFollowup en cours, avancer d'un cran
-            const currentStage = lead.autoFollowup?.stage ?? 0;
-            const nextStage = Math.min(currentStage + 1, 3); // max 3
-            const daysUntilReminder = nextStage; // +1j, +2j, +3j
-            const now = new Date().toISOString();
-            const dueAt = new Date(Date.now() + daysUntilReminder * 24 * 60 * 60 * 1000).toISOString();
-
-            const stageLabels = {
-                1: `📵 Pas de réponse · rappel dans 1 jour`,
-                2: `📵 Pas de réponse · rappel dans 2 jours`,
-                3: `📵 Pas de réponse · rappel dans 3 jours`,
-            };
-
-            patch.autoFollowup = {
-                stage: nextStage,
-                dueAt,
-                startedAt: lead.autoFollowup?.startedAt || now,
-                columnId: effectiveColumnId,
-                overdue: false,
-            };
-            patch.nextAction = {
-                date: toLocalDateKey(dueAt),
-                dueAt,
-                label: stageLabels[nextStage],
-                auto: true,
-                stage: nextStage,
-            };
-        }
-
-        // Rendez-vous détecté dans la note → nextAction normalisé (📅 RDV + meeting)
         if (appointment) {
             patch.nextAction = makeRdvNextAction({
                 date: toLocalDateKey(appointment.iso),
                 dueAt: appointment.iso,
                 label: `RDV détecté · ${appointment.label}`,
             });
+        } else if (suggestRelance && !appointment) {
+            const days = Math.min(Math.max(1, Number(relanceDays) || 1), 7);
+            const dueDate = addDaysSkippingWeekend(days);
+            dueDate.setHours(9, 0, 0, 0);
+            const dueAt = dueDate.toISOString();
+            const dateKey = toLocalDateKey(dueDate);
+            const relative = formatFutureRelativeFr(dueDate);
+
+            if (finalOutcome === "noanswer") {
+                const currentStage = lead.autoFollowup?.stage ?? 0;
+                const nextStage = Math.min(Math.max(currentStage + 1, Math.min(days, 3)), 3);
+                const now = new Date().toISOString();
+                patch.autoFollowup = {
+                    stage: nextStage,
+                    dueAt,
+                    startedAt: lead.autoFollowup?.startedAt || now,
+                    columnId: effectiveColumnId,
+                    overdue: false,
+                };
+                patch.nextAction = {
+                    date: dateKey,
+                    dueAt,
+                    label: `📵 Pas de réponse · rappel ${relative}`,
+                    auto: true,
+                    stage: nextStage,
+                };
+            } else if (finalOutcome === "reached") {
+                patch.nextAction = {
+                    date: dateKey,
+                    dueAt,
+                    label: `🔁 Relance suggérée · ${relative}`,
+                    auto: false,
+                    calendarReminder: true,
+                    suggestedDays: days,
+                };
+            }
         }
 
         if (Object.keys(patch).length > 0) {
@@ -222,7 +229,6 @@ export const CallNoteModal = ({
             });
         }
 
-        // Téléphones supplémentaires → customFields
         diff.extraPhones.forEach((phone) => {
             dispatch({
                 type: "ADD_CUSTOM_FIELD",
@@ -234,7 +240,18 @@ export const CallNoteModal = ({
             });
         });
 
-        // Adresse postale → customField "Adresse"
+        (diff.extraContacts || []).forEach((person) => {
+            dispatch({
+                type: "ADD_CUSTOM_FIELD",
+                workspaceId: workspace.id,
+                leadId: lead.id,
+                label: "Contact",
+                value: person,
+                pinned: false,
+                highlight: true,
+            });
+        });
+
         if (diff.newAddress) {
             dispatch({
                 type: "ADD_CUSTOM_FIELD",
@@ -249,9 +266,34 @@ export const CallNoteModal = ({
         onClose();
     };
 
-    const skip = () => onClose();
+    useEffect(() => {
+        const onKey = (e) => {
+            if (e.key === "Escape" && open) onClose();
+            if (e.key === "Enter" && open) {
+                if (e.target.tagName === "TEXTAREA") {
+                    if (e.metaKey || e.ctrlKey) save();
+                } else {
+                    save();
+                }
+            }
+        };
+        document.addEventListener("keydown", onKey);
+        return () => document.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [open, text, outcome, pendingMoveToColumnId, suggestRelance, relanceDays]);
 
+    if (!open || !lead) return null;
+
+    const columnName = workspace.columns[lead.columnId]?.name;
     const isMac = /iPhone|iPad|Macintosh/.test(navigator.userAgent);
+    const relanceDueDate = addDaysSkippingWeekendIso(relanceDays);
+    const relanceDueLabel = new Date(relanceDueDate).toLocaleDateString("fr-FR", {
+        weekday: "short",
+        day: "numeric",
+        month: "short",
+    });
+
+    const skip = () => onClose();
 
     return (
         <>
@@ -269,7 +311,6 @@ export const CallNoteModal = ({
                     maxHeight: "calc(100dvh - 2rem)",
                 }}
             >
-                {/* ── Header ── */}
                 <div className="px-5 pt-5 pb-3">
                     <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
@@ -277,7 +318,7 @@ export const CallNoteModal = ({
                                 {columnName}
                             </div>
                             <h3 className="text-lg font-semibold tracking-tight truncate mt-0.5">
-                                Note d'appel · {lead.company}
+                                Note d&apos;appel · {lead.company}
                             </h3>
                             <p className="text-xs text-muted-foreground mt-0.5">
                                 {formatDateTimeLong(new Date().toISOString())}
@@ -293,7 +334,6 @@ export const CallNoteModal = ({
                         </button>
                     </div>
 
-                    {/* ── Résultat de l'appel ── */}
                     <div className="mt-4 flex gap-2">
                         <button
                             data-testid="call-outcome-reached"
@@ -321,19 +361,18 @@ export const CallNoteModal = ({
                         </button>
                     </div>
 
-                    {/* ── Zone de note ── */}
                     <Textarea
                         data-testid="call-note-text"
                         value={text}
                         onChange={handleTextChange}
-                        placeholder="Note d'appel… Ex : « Rappeler M. Dupont au 06 12 34 56 78 »"
+                        placeholder="Note d'appel… Ex : « Rappeler M. Dupont mardi 14h »"
                         autoFocus
                         className="mt-3 min-h-[100px] resize-none rounded-xl text-sm"
                     />
                     <p className="text-[11px] text-muted-foreground mt-1.5 flex items-center gap-2 flex-wrap">
                         <span>
                             <kbd className="px-1.5 py-0.5 rounded bg-muted border border-border font-mono text-[10px]">Entrée</kbd>
-                            {" "}→ enregistrer « Pas de réponse » + rappel auto
+                            {" "}→ enregistrer
                         </span>
                         <span className="opacity-50">·</span>
                         <span>
@@ -342,7 +381,6 @@ export const CallNoteModal = ({
                         </span>
                     </p>
 
-                    {/* ── Rendez-vous détecté ── */}
                     {appointment && (
                         <div className="mt-3 rounded-xl border border-primary/30 bg-primary/8 p-3 flex items-center gap-3">
                             <CalendarClock size={16} className="text-primary shrink-0" />
@@ -360,7 +398,55 @@ export const CallNoteModal = ({
                         </div>
                     )}
 
-                    {/* ── Infos détectées ── */}
+                    {showRelanceSuggest && (
+                        <div
+                            className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/8 p-3 space-y-2.5"
+                            data-testid="call-relance-suggest"
+                        >
+                            <label className="flex items-start gap-2.5 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={suggestRelance}
+                                    onChange={(e) => setSuggestRelance(e.target.checked)}
+                                    className="mt-0.5 rounded border-border"
+                                    data-testid="call-relance-toggle"
+                                />
+                                <span className="min-w-0">
+                                    <span className="flex items-center gap-1.5 text-[12px] font-semibold text-amber-800 dark:text-amber-300">
+                                        <BellRing size={13} strokeWidth={2.25} />
+                                        {effectiveOutcome === "noanswer"
+                                            ? "Programmer un rappel"
+                                            : "Suggérer une relance"}
+                                    </span>
+                                    <span className="block text-[11px] text-muted-foreground mt-0.5">
+                                        {suggestRelance
+                                            ? `Prévu le ${relanceDueLabel} (hors week-end)`
+                                            : "Aucune relance ne sera créée"}
+                                    </span>
+                                </span>
+                            </label>
+                            {suggestRelance && (
+                                <div className="flex flex-wrap gap-1.5 pl-6">
+                                    {RELANCE_DAY_CHIPS.map((d) => (
+                                        <button
+                                            key={d}
+                                            type="button"
+                                            data-testid={`call-relance-days-${d}`}
+                                            onClick={() => setRelanceDays(d)}
+                                            className={`h-7 px-2.5 rounded-full text-[11px] font-medium transition-colors ${
+                                                relanceDays === d
+                                                    ? "bg-amber-600 text-white"
+                                                    : "bg-background border border-border text-muted-foreground hover:text-foreground"
+                                            }`}
+                                        >
+                                            +{d} j
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     {detectedItems.length > 0 && (
                         <div className="mt-3 rounded-xl border border-primary/20 bg-primary/5 p-3 space-y-2">
                             <div className="flex items-center gap-1.5 text-[11px] font-semibold text-primary uppercase tracking-wider">
@@ -369,12 +455,22 @@ export const CallNoteModal = ({
                             </div>
                             <div className="space-y-1">
                                 {detectedItems.map((item, i) => {
-                                    // Détecter si cet item est "nouveau" ou déjà présent
+                                    const willAddPerson = item.type === "person"
+                                        && (diff.willAddPersons || []).includes(item.value);
                                     const isNew =
-                                        (item.type === "person" && diff.newContact === item.value) ||
-                                        (item.type === "phone" && (diff.newPhone === item.value || diff.extraPhones.includes(item.value))) ||
-                                        (item.type === "email" && diff.newEmail === item.value) ||
-                                        (item.type === "address" && diff.newAddress === item.value);
+                                        willAddPerson
+                                        || (item.type === "phone" && (diff.newPhone === item.value || diff.extraPhones.includes(item.value)))
+                                        || (item.type === "email" && diff.newEmail === item.value)
+                                        || (item.type === "address" && diff.newAddress === item.value);
+                                    const personOnFile = item.type === "person"
+                                        && !willAddPerson
+                                        && (
+                                            (lead.contact || "").trim().toLowerCase() === item.value.trim().toLowerCase()
+                                            || (lead.customFields || []).some(
+                                                (cf) => /contact|interlocuteur|personne|nom/i.test(cf.label || "")
+                                                    && (cf.value || "").trim().toLowerCase() === item.value.trim().toLowerCase()
+                                            )
+                                        );
 
                                     return (
                                         <div
@@ -382,12 +478,20 @@ export const CallNoteModal = ({
                                             className={`flex items-center gap-2 text-[12px] rounded-lg px-2 py-1 ${
                                                 isNew
                                                     ? "text-foreground"
-                                                    : "text-muted-foreground line-through opacity-50"
+                                                    : personOnFile
+                                                        ? "text-muted-foreground"
+                                                        : "text-muted-foreground line-through opacity-50"
                                             }`}
                                         >
                                             <span className="text-base leading-none shrink-0">{item.icon}</span>
                                             <span className="truncate font-medium">{item.value}</span>
-                                            {!isNew && (
+                                            {isNew && item.type === "person" && (
+                                                <span className="ml-auto text-[10px] shrink-0 text-primary">sera ajouté</span>
+                                            )}
+                                            {personOnFile && (
+                                                <span className="ml-auto text-[10px] shrink-0 opacity-70">sur la fiche</span>
+                                            )}
+                                            {!isNew && !personOnFile && (
                                                 <span className="ml-auto text-[10px] shrink-0 opacity-70">déjà présent</span>
                                             )}
                                         </div>
@@ -398,26 +502,23 @@ export const CallNoteModal = ({
                     )}
                 </div>
 
-                {/* ── Footer ── */}
                 <div className="px-5 py-3 border-t border-border/60 flex items-center justify-between gap-2 bg-secondary/30">
-                    <div className="text-[11px] text-muted-foreground">
+                    <div className="text-[11px] text-muted-foreground min-w-0">
                         {hasNewInfo && (
                             <span className="text-primary font-medium">
                                 ✓ Fiche mise à jour automatiquement
                             </span>
                         )}
-                        {!hasNewInfo && !appointment && (outcome === "noanswer" || (!outcome && !text.trim())) && (() => {
-                            const currentStage = lead.autoFollowup?.stage ?? 0;
-                            const nextStage = Math.min(currentStage + 1, 3);
-                            const labels = { 1: "+1 jour", 2: "+2 jours", 3: "+3 jours" };
-                            return (
-                                <span className="text-amber-600 dark:text-amber-400 font-medium flex items-center gap-1">
-                                    🔔 Rappel automatique dans {labels[nextStage]}
-                                </span>
-                            );
-                        })()}
+                        {!hasNewInfo && appointment && (
+                            <span className="text-primary font-medium">RDV sera enregistré</span>
+                        )}
+                        {!hasNewInfo && !appointment && suggestRelance && showRelanceSuggest && (
+                            <span className="text-amber-600 dark:text-amber-400 font-medium truncate block">
+                                Relance · {relanceDueLabel}
+                            </span>
+                        )}
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex gap-2 shrink-0">
                         <Button
                             variant="ghost"
                             onClick={skip}

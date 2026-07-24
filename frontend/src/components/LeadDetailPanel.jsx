@@ -37,12 +37,21 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 import { getColumnColor } from "@/lib/columnColors";
-import { formatDateTimeLong } from "@/lib/dateUtils";
+import {
+    ensureWeekday,
+    formatDateTimeLong,
+    formatFutureRelativeFr,
+    toLocalDateKey,
+} from "@/lib/dateUtils";
 import { telHref, mailtoHref, websiteHref } from "@/lib/actionLinks";
 import { parseNote, detectAppointment, diffWithLead, formatDetected } from "@/lib/noteParser";
-import { isManualRdv, makeRdvNextAction } from "@/lib/nextActionUtils";
-import { toLocalDateKey } from "@/lib/dateUtils";
+import { isManualRdv, isSuggestedRelance, makeRdvNextAction } from "@/lib/nextActionUtils";
+import { AddToCalendarDialog, ConfirmSuggestedRelanceButton, QuickScheduleButton } from "./AddToCalendarDialog";
+import { scheduleLeadNextAction, clearLeadSchedule } from "@/lib/scheduleLead";
+import { getBestProspectingSlot } from "@/lib/prospectingSlots";
+import { normalizeInconsistencyConfig } from "@/lib/inconsistencyRules";
 import { PanelSectionCard, HiddenSectionsMenu, PanelSectionsOrganizer } from "./PanelSectionCard";
 import {
     normalizePanelSections,
@@ -56,12 +65,14 @@ import {
     displayUrl,
     reorderPanelSection,
 } from "@/lib/panelSections";
+import { detectInconsistencies } from "@/lib/inconsistencyRules";
 import {
-    detectInconsistencies,
-    countActionableInconsistencies,
-} from "@/lib/inconsistencyRules";
+    getAgencySuspicion,
+    isAgencyDetectionEnabled,
+} from "@/lib/agencyDetection";
+import { AgencySuspectBadge, AGENCY_NAME_CLS } from "./AgencySuspectBadge";
 
-const SECTION_ICONS = { AlertTriangle, Database, User, MessageSquare, Repeat2, Tag, Trophy, History };
+const SECTION_ICONS = { Database, User, MessageSquare, Repeat2, Tag, Trophy, History, CalendarClock };
 
 function formatDateTime(iso) {
     return formatDateTimeLong(iso);
@@ -264,10 +275,10 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
     const [cfLabel, setCfLabel] = useState("");
     const [cfValue, setCfValue] = useState("");
     const [lastAddedFieldLabel, setLastAddedFieldLabel] = useState(null);
-    // RDV direct (sans passer par la note)
-    const [rdvDate, setRdvDate] = useState("");
-    const [rdvTime, setRdvTime] = useState("");
-    const [rdvLabel, setRdvLabel] = useState("");
+    // RDV / calendrier
+    const [calendarDialogOpen, setCalendarDialogOpen] = useState(false);
+    const [calendarHint, setCalendarHint] = useState("");
+    const [calendarDefaultLabel, setCalendarDefaultLabel] = useState("");
     // Sections réordonnables (zone B)
     const [dragSectionId, setDragSectionId] = useState(null);
     const [dragOverId, setDragOverId] = useState(null);
@@ -292,7 +303,10 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
     // Détection en temps réel dans le draft de note
     const draftDetected = useMemo(() => parseNote(noteDraft), [noteDraft]);
     const draftDiff = useMemo(
-        () => local ? diffWithLead(draftDetected, local) : { newPhone: null, extraPhones: [], newEmail: null, newAddress: null, newContact: null },
+        () => local ? diffWithLead(draftDetected, local) : {
+            newPhone: null, extraPhones: [], newEmail: null, newAddress: null,
+            newContact: null, extraContacts: [], willAddPersons: [],
+        },
         [draftDetected, local]
     );
     const draftDetectedItems = useMemo(() => formatDetected(draftDetected), [draftDetected]);
@@ -303,6 +317,13 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
             ? detectInconsistencies(local, workspace.columns, workspace.inconsistencyConfig)
             : []),
         [local, workspace.columns, workspace.inconsistencyConfig]
+    );
+
+    const agencySuspect = useMemo(
+        () => (local
+            ? getAgencySuspicion(local, isAgencyDetectionEnabled(workspace))
+            : null),
+        [local, workspace.agencyDetectionEnabled]
     );
 
     useEffect(() => {
@@ -349,8 +370,6 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
 
     const sectionTitle = (id) => {
         switch (id) {
-            case "watch":
-                return "À surveiller";
             case "contact":
                 return isJobs ? "Entreprise & Recruteur" : "Contact & coordonnées";
             case "imported":
@@ -359,6 +378,8 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                 return isJobs ? "Salaire proposé" : "Valeur du deal";
             case "relances":
                 return "Relances";
+            case "calendar":
+                return "Calendrier";
             default:
                 return PANEL_SECTION_META[id]?.label || id;
         }
@@ -370,7 +391,41 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
 
     // ── Zone A : brief fixe ──
     const brief = extractLeadBrief(local);
-    const actionableInconsistencyCount = countActionableInconsistencies(inconsistencies);
+    const showBrief = brief.hasBrief || inconsistencies.length > 0;
+
+    const scheduleOverdue = useMemo(() => {
+        if (!local?.nextAction?.dueAt && !local?.nextAction?.date) return false;
+        const due = new Date(local.nextAction.dueAt || `${local.nextAction.date}T09:00:00`);
+        return !Number.isNaN(due.getTime()) && due.getTime() < Date.now() - 60000;
+    }, [local?.nextAction]);
+
+    const prospectSlot = useMemo(() => {
+        const allWs = (state.order || [])
+            .map((id) => state.workspaces?.[id])
+            .filter(Boolean);
+        return getBestProspectingSlot(allWs);
+    }, [state.workspaces, state.order]);
+
+    const defaultRelanceDays = useMemo(() => {
+        const cfg = normalizeInconsistencyConfig(workspace?.inconsistencyConfig);
+        return cfg.thresholds?.noAnswerDays || 2;
+    }, [workspace?.inconsistencyConfig]);
+
+    const needsCalendarNudge = useMemo(() => {
+        if (!local) return false;
+        const watchAsks = inconsistencies.some(
+            (i) => i.action?.type === "plan_rdv"
+                || ["rdv_overdue", "no_answer_gap", "no_answer", "contact_gap", "stale_contact"].includes(i.id)
+                || /rappel|relance|rdv|contact/i.test(`${i.title || ""} ${i.message || ""}`)
+        );
+        const fuOverdue = !!(local.autoFollowup && (
+            local.autoFollowup.overdue
+            || (local.autoFollowup.dueAt && new Date(local.autoFollowup.dueAt).getTime() <= Date.now())
+        ));
+        // Pas de prochain créneau futur → on propose d'en poser un
+        const noFutureSlot = !local.nextAction || scheduleOverdue;
+        return noFutureSlot && (watchAsks || fuOverdue || scheduleOverdue);
+    }, [local, inconsistencies, scheduleOverdue]);
 
     const dismissInconsistency = (fingerprint) => {
         dispatch({
@@ -390,24 +445,42 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
         });
     };
 
+    const openCalendarScheduler = ({ hint = "", label = "" } = {}) => {
+        setCalendarHint(hint);
+        setCalendarDefaultLabel(label);
+        setCalendarDialogOpen(true);
+    };
+
+    const applyCalendarReminder = (nextAction) => {
+        const result = scheduleLeadNextAction(dispatch, {
+            workspace,
+            leadId: local.id,
+            nextAction,
+            move: true,
+        });
+        toast.success("Ajouté au calendrier", {
+            description: result.moved && result.toColumnName
+                ? `${nextAction.label} · déplacé vers « ${result.toColumnName} »`
+                : nextAction.label,
+        });
+    };
+
+    const clearSchedule = () => {
+        clearLeadSchedule(dispatch, {
+            workspaceId: workspace.id,
+            leadId: local.id,
+            dismissFollowup: true,
+        });
+        toast.success("Rendez-vous / rappel supprimé");
+    };
+
     const runInconsistencyAction = (item) => {
         const action = item?.action;
         if (!action) return;
-        if (action.type === "plan_rdv" && action.dueAt) {
-            const due = new Date(action.dueAt);
-            if (Number.isNaN(due.getTime())) return;
-            dispatch({
-                type: "SET_NEXT_ACTION",
-                workspaceId: workspace.id,
-                leadId: local.id,
-                nextAction: makeRdvNextAction({
-                    date: toLocalDateKey(due),
-                    dueAt: due.toISOString(),
-                    label: action.label || "",
-                }),
-            });
-            toast.success("RDV planifié", {
-                description: action.label || due.toLocaleDateString("fr-FR"),
+        if (action.type === "plan_rdv") {
+            openCalendarScheduler({
+                hint: item.message || "RDV / relance suggéré par la vigilance.",
+                label: action.label || `Rappeler ${local.company || ""}`.trim(),
             });
             return;
         }
@@ -463,34 +536,40 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
         draftDiff.extraPhones.forEach((phone) => {
             dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label: "Téléphone", value: phone, pinned: false });
         });
+        (draftDiff.extraContacts || []).forEach((person) => {
+            dispatch({
+                type: "ADD_CUSTOM_FIELD",
+                workspaceId: workspace.id,
+                leadId: local.id,
+                label: "Contact",
+                value: person,
+                pinned: false,
+                highlight: true,
+            });
+        });
         if (draftDiff.newAddress) {
             dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label: "Adresse", value: draftDiff.newAddress, pinned: false });
         }
 
+        const noteText = noteDraft.trim();
         setNoteDraft("");
-    };
 
-    const saveRdvDirect = () => {
-        if (!rdvDate) return;
-        const iso = rdvTime ? new Date(`${rdvDate}T${rdvTime}`).toISOString() : new Date(`${rdvDate}T09:00`).toISOString();
-        const d = new Date(iso);
-        const label = rdvLabel.trim() || `RDV ${d.toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" })}${rdvTime ? ` à ${rdvTime.replace(":", "h")}` : ""}`;
-        dispatch({
-            type: "UPDATE_LEAD",
-            workspaceId: workspace.id,
-            leadId: local.id,
-            patch: {
-                nextAction: makeRdvNextAction({
-                    date: rdvDate,
-                    dueAt: iso,
-                    label,
-                }),
-            },
-        });
-        toast.success("RDV enregistré", { description: label });
-        setRdvDate("");
-        setRdvTime("");
-        setRdvLabel("");
+        if (draftAppointment) {
+            toast.success("Note + RDV au calendrier", {
+                description: draftAppointment.label,
+            });
+        } else if (/pas\s*de\s*r[eé]ponse|ne\s*r[eé]pond|rappeler|relancer|📵|📞/i.test(noteText)) {
+            toast.message("Note enregistrée", {
+                description: "Placez un rappel calendrier ?",
+                action: {
+                    label: "Calendrier",
+                    onClick: () => openCalendarScheduler({
+                        hint: "Suite à votre note — choisissez quand rappeler.",
+                        label: `Rappeler ${local.company || ""}`.trim(),
+                    }),
+                },
+            });
+        }
     };
 
     const addTag = () => {
@@ -653,9 +732,25 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                             data-testid="lead-company-input"
                             value={local.company || ""}
                             onChange={(e) => patch({ company: e.target.value })}
-                            className="w-full bg-transparent text-xl sm:text-2xl font-semibold tracking-tight outline-none focus:ring-2 focus:ring-primary rounded px-1 -mx-1"
+                            className={`w-full bg-transparent text-xl sm:text-2xl font-semibold tracking-tight outline-none focus:ring-2 focus:ring-primary rounded px-1 -mx-1 ${
+                                agencySuspect ? AGENCY_NAME_CLS : ""
+                            }`}
                             placeholder={isJobs ? "Nom de l'entreprise / Poste" : "Nom de l'entreprise"}
                         />
+                        {agencySuspect && (
+                            <div
+                                className="mt-2 flex flex-wrap items-center gap-2"
+                                data-testid="lead-agency-suspect-banner"
+                            >
+                                <AgencySuspectBadge
+                                    score={agencySuspect.score}
+                                    label={agencySuspect.label}
+                                />
+                                <span className="text-[12px] text-orange-700/90 dark:text-orange-300/90">
+                                    {agencySuspect.label}
+                                </span>
+                            </div>
+                        )}
                         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                             <span
                                 className={`w-2 h-2 rounded-full ${getColumnColor(workspace.columns[local.columnId]).dot} shrink-0`}
@@ -713,13 +808,13 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                     {/* ═══════════ ZONE A — fixe : Information pertinente + prochaine action ═══════════ */}
 
                     {/* 🧾 Brief interactif — personnalisé par lead (import + notes) */}
-                    {brief.hasBrief && (
+                    {showBrief && (
                         <div
                             className="rounded-xl border border-border bg-card p-3.5 space-y-2.5 shadow-sm"
                             data-testid="lead-brief-strip"
                         >
                             {/* Badge info pertinente */}
-                            {brief.hasPertinent && (
+                            {(brief.hasPertinent || inconsistencies.length > 0) && (
                                 <div className="flex items-center gap-1.5 text-[11px] font-medium text-primary">
                                     <Sparkles size={12} strokeWidth={2} className="sparkle-icon shrink-0" />
                                     <span>Information pertinente</span>
@@ -865,137 +960,103 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                     ))}
                                 </div>
                             )}
+
+                            {/* À surveiller — uniquement si pertinent, sous les infos / sites */}
+                            {inconsistencies.length > 0 && (
+                                <div
+                                    className="pt-2 mt-0.5 border-t border-border/70 space-y-1.5"
+                                    data-testid="lead-inconsistency-strip"
+                                >
+                                    <div className="flex items-center gap-2 text-[11px] font-semibold text-rose-700 dark:text-rose-300">
+                                        <AlertTriangle size={12} strokeWidth={2.25} className="shrink-0" />
+                                        <span>À surveiller</span>
+                                        <span className="tabular-nums text-rose-600/80 dark:text-rose-400/80 font-bold">
+                                            · {inconsistencies.length}
+                                        </span>
+                                    </div>
+                                    <ul className="space-y-1.5">
+                                        {inconsistencies.map((item) => {
+                                            const isCrit = item.severity === "critical";
+                                            const isWarn = item.severity === "warning";
+                                            return (
+                                                <li
+                                                    key={item.fingerprint}
+                                                    className={`flex items-start gap-2 rounded-lg px-2.5 py-2 text-[12.5px] leading-snug ${
+                                                        isCrit
+                                                            ? "bg-rose-500/12 text-rose-800 dark:text-rose-200"
+                                                            : isWarn
+                                                                ? "bg-amber-500/10 text-amber-900 dark:text-amber-100"
+                                                                : "bg-muted/60 text-foreground/80"
+                                                    }`}
+                                                    data-testid={`lead-inconsistency-${item.id}`}
+                                                >
+                                                    <span
+                                                        className={`mt-1.5 w-1.5 h-1.5 rounded-full shrink-0 ${
+                                                            isCrit ? "bg-rose-500" : isWarn ? "bg-amber-500" : "bg-muted-foreground/50"
+                                                        }`}
+                                                        aria-hidden
+                                                    />
+                                                    <div className="flex-1 min-w-0">
+                                                        <div className="font-semibold text-[12px]">{item.title}</div>
+                                                        <div className="text-[12px] opacity-90 mt-0.5">{item.message}</div>
+                                                    </div>
+                                                    {item.action && item.action.type !== "plan_rdv" && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => runInconsistencyAction(item)}
+                                                            className="shrink-0 h-7 px-2 rounded-md text-[11px] font-semibold bg-background/80 border border-border/80 hover:bg-background text-foreground"
+                                                            data-testid={`inconsistency-action-${item.id}`}
+                                                        >
+                                                            Enregistrer
+                                                        </button>
+                                                    )}
+                                                    {item.dismissible !== false && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => dismissInconsistency(item.fingerprint)}
+                                                            title="Ignorer cette alerte"
+                                                            aria-label="Ignorer"
+                                                            className="shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-background/60"
+                                                            data-testid={`dismiss-inconsistency-${item.id}`}
+                                                        >
+                                                            <X size={13} strokeWidth={2} />
+                                                        </button>
+                                                    )}
+                                                </li>
+                                            );
+                                        })}
+                                    </ul>
+                                </div>
+                            )}
                         </div>
                     )}
 
-                    {/* 📅 Prochaine action / RDV — carte unifiée */}
-                    <div className="rounded-xl border border-border bg-card p-4 space-y-3 shadow-sm" data-testid="lead-next-action-card">
-                        <div className="flex items-center justify-between">
-                            <h3 className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold flex items-center gap-1.5">
-                                <CalendarClock size={13} strokeWidth={2.5} />
-                                {isJobs ? "Prochain entretien / rappel" : "Prochaine action / RDV"}
-                                {local.nextAction?.auto && (
-                                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium normal-case tracking-normal ml-1">
-                                        auto {local.nextAction.stage || 1}/3
-                                    </span>
-                                )}
-                            </h3>
-                            {local.nextAction && (
-                                <button
-                                    onClick={() => {
-                                        patch({ nextAction: null });
-                                        if (local.autoFollowup) {
-                                            dispatch({
-                                                type: "DISMISS_FOLLOWUP",
-                                                workspaceId: workspace.id,
-                                                leadId: local.id,
-                                            });
-                                        }
-                                    }}
-                                    data-testid="lead-clear-next-action"
-                                    className="text-[11px] text-muted-foreground hover:text-destructive"
-                                >
-                                    Effacer
-                                </button>
-                            )}
+                    {needsCalendarNudge && (
+                        <div
+                            className="flex items-center gap-2.5 rounded-xl border border-violet-500/30 bg-violet-500/[0.08] px-3 py-2.5"
+                            data-testid="lead-calendar-nudge"
+                        >
+                            <div className="min-w-0 flex-1">
+                                <p className="text-[12px] font-semibold text-violet-800 dark:text-violet-200 leading-snug">
+                                    Bloquez un moment pour rappeler
+                                </p>
+                                <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
+                                    {scheduleOverdue
+                                        ? "Le rappel en cours est dépassé — choisissez un nouveau créneau."
+                                        : "Prenez un créneau dans votre journée pour rappeler ce prospect."}
+                                </p>
+                            </div>
+                            <QuickScheduleButton
+                                company={local.company || ""}
+                                defaultLabel={`Rappeler ${local.company || ""}`.trim()}
+                                hint="Choisissez quand rappeler ce prospect."
+                                size="sm"
+                                testId="lead-watch-schedule-btn"
+                                onConfirm={applyCalendarReminder}
+                                className="border-violet-500/40 bg-violet-500/15 text-violet-700 dark:text-violet-300 hover:bg-violet-500/25"
+                            />
                         </div>
-
-                        {/* RDV existant */}
-                        {isManualRdv(local.nextAction) && (
-                            <div className="flex items-center justify-between gap-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1.5 text-[12px] text-emerald-700 dark:text-emerald-400">
-                                <div className="flex items-center gap-1.5">
-                                    <CalendarClock size={12} strokeWidth={2.5} />
-                                    <span className="font-medium">{local.nextAction.label.replace("📅 RDV détecté · ", "")}</span>
-                                </div>
-                                <button
-                                    onClick={() => patch({ nextAction: null })}
-                                    className="opacity-50 hover:opacity-100 transition-opacity"
-                                    title="Supprimer le RDV"
-                                >
-                                    <X size={12} />
-                                </button>
-                            </div>
-                        )}
-
-                        {/* Planifier un RDV direct */}
-                        <div className="space-y-2">
-                            <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-                                Planifier un RDV
-                            </p>
-                            <div className="flex gap-2">
-                                <input
-                                    type="date"
-                                    value={rdvDate}
-                                    onChange={(e) => setRdvDate(e.target.value)}
-                                    className="flex-1 h-8 px-2 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-                                />
-                                <input
-                                    type="time"
-                                    value={rdvTime}
-                                    onChange={(e) => setRdvTime(e.target.value)}
-                                    className="w-24 h-8 px-2 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-                                />
-                            </div>
-                            <div className="flex gap-2">
-                                <input
-                                    type="text"
-                                    value={rdvLabel}
-                                    onChange={(e) => setRdvLabel(e.target.value)}
-                                    placeholder="Objet du RDV (optionnel)"
-                                    onKeyDown={(e) => e.key === "Enter" && saveRdvDirect()}
-                                    className="flex-1 h-8 px-2 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-                                />
-                                <Button
-                                    onClick={saveRdvDirect}
-                                    disabled={!rdvDate}
-                                    className="h-8 px-3 rounded-lg text-xs bg-primary text-primary-foreground hover:bg-primary/90"
-                                >
-                                    Enregistrer
-                                </Button>
-                            </div>
-                        </div>
-
-                        <div className="h-px bg-border/60" />
-
-                        {/* Échéance simple (date / libellé) */}
-                        <div className="space-y-2">
-                            <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-                                Ou définir une échéance simple
-                            </p>
-                            <div className="grid grid-cols-2 gap-2">
-                                <Input
-                                    data-testid="lead-next-action-date"
-                                    type="date"
-                                    value={local.nextAction?.date || ""}
-                                    onChange={(e) =>
-                                        patch({
-                                            nextAction: {
-                                                ...(local.nextAction || {}),
-                                                date: e.target.value,
-                                                auto: false,
-                                            },
-                                        })
-                                    }
-                                    className="h-9"
-                                />
-                                <Input
-                                    data-testid="lead-next-action-label"
-                                    placeholder="ex. Relance"
-                                    value={local.nextAction?.label || ""}
-                                    onChange={(e) =>
-                                        patch({
-                                            nextAction: {
-                                                ...(local.nextAction || {}),
-                                                label: e.target.value,
-                                                auto: false,
-                                            },
-                                        })
-                                    }
-                                    className="h-9"
-                                />
-                            </div>
-                        </div>
-                    </div>
+                    )}
 
                     {/* ═══════════ ZONE B — sections réordonnables ═══════════ */}
                     <div className="flex items-center justify-between gap-2 -mb-1">
@@ -1222,6 +1283,106 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                 );
                             }
 
+                            case "calendar": {
+                                const na = local.nextAction;
+                                const overdue = scheduleOverdue;
+                                const suggested = isSuggestedRelance(na);
+                                const rawDue = na?.dueAt || (na?.date ? `${na.date}T09:00:00` : null);
+                                const displayDue = rawDue ? ensureWeekday(new Date(rawDue)) : null;
+                                const displayLabel = suggested && displayDue
+                                    ? `🔁 Relance suggérée · ${formatFutureRelativeFr(displayDue)}`
+                                    : isManualRdv(na)
+                                        ? (na.label || "").replace(/^📅\s*RDV détecté\s*·\s*/i, "")
+                                        : (na?.label || "Rappel");
+                                return (
+                                    <PanelSectionCard {...sectionProps}>
+                                        <div className="space-y-3" data-testid="lead-next-action-card">
+                                            <div className="flex items-center justify-end gap-1 -mt-1">
+                                                <QuickScheduleButton
+                                                    company={local.company || ""}
+                                                    defaultLabel={`Rappeler ${local.company || ""}`.trim()}
+                                                    hint="Date et heure du rappel ou RDV."
+                                                    size="sm"
+                                                    testId="lead-add-to-calendar-btn"
+                                                    onConfirm={applyCalendarReminder}
+                                                    className="border-border bg-background text-muted-foreground hover:text-foreground hover:bg-muted/60"
+                                                />
+                                                {na && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={clearSchedule}
+                                                        title="Supprimer du calendrier"
+                                                        aria-label="Supprimer"
+                                                        data-testid="lead-clear-next-action"
+                                                        className="h-8 w-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                                                    >
+                                                        <X size={14} />
+                                                    </button>
+                                                )}
+                                            </div>
+
+                                            {na ? (
+                                                <div
+                                                    className={cn(
+                                                        "rounded-xl border px-3 py-2.5",
+                                                        overdue
+                                                            ? "bg-rose-500/10 border-rose-500/25 text-rose-800 dark:text-rose-300"
+                                                            : isManualRdv(na)
+                                                                ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-800 dark:text-emerald-300"
+                                                                : "bg-violet-500/10 border-violet-500/20 text-violet-800 dark:text-violet-300"
+                                                    )}
+                                                >
+                                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                                        {na.auto && (
+                                                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-background/60 font-medium">
+                                                                auto {na.stage || 1}/3
+                                                            </span>
+                                                        )}
+                                                        {overdue && (
+                                                            <span className="text-[10px] font-semibold text-rose-600 dark:text-rose-400">
+                                                                en retard
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    <div className="flex items-start gap-2 mt-1">
+                                                        <div className="min-w-0 flex-1">
+                                                            <p className="text-[12px] font-semibold truncate">
+                                                                {displayLabel}
+                                                            </p>
+                                                            {displayDue && !Number.isNaN(displayDue.getTime()) && (
+                                                                <p className="text-[11px] opacity-80 mt-0.5">
+                                                                    {displayDue.toLocaleString("fr-FR", {
+                                                                        weekday: "short",
+                                                                        day: "numeric",
+                                                                        month: "short",
+                                                                        hour: "2-digit",
+                                                                        minute: "2-digit",
+                                                                    })}
+                                                                </p>
+                                                            )}
+                                                        </div>
+                                                        {suggested && (
+                                                            <ConfirmSuggestedRelanceButton
+                                                                company={local.company || ""}
+                                                                nextAction={na}
+                                                                defaultDays={defaultRelanceDays}
+                                                                bestDay={prospectSlot?.bestDay || null}
+                                                                bestHour={prospectSlot?.bestHour || null}
+                                                                onConfirm={applyCalendarReminder}
+                                                            />
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <p className="text-[12px] text-muted-foreground">
+                                                    Aucun créneau — utilisez l&apos;icône pour en ajouter un.
+                                                </p>
+                                            )}
+                                        </div>
+                                    </PanelSectionCard>
+                                );
+                            }
+
                             case "notes": {
                                 return (
                                     <PanelSectionCard {...sectionProps}>
@@ -1240,28 +1401,51 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                         />
 
                                         {/* ── Détection en temps réel ── */}
-                                        {(draftAppointment || draftDetectedItems.length > 0) && (
+                                        {(draftAppointment
+                                            || draftDetectedItems.length > 0
+                                            || /pas\s*de\s*r[eé]ponse|rappeler|relancer|📵/i.test(noteDraft)
+                                        ) && (
                                             <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 space-y-2">
                                                 <div className="flex items-center gap-1.5 text-[11px] font-semibold text-primary uppercase tracking-wider">
-                                                    <Sparkles size={11} /> Détecté — sera appliqué
+                                                    <Sparkles size={11} />
+                                                    {draftAppointment || draftDetectedItems.length > 0
+                                                        ? "Détecté — sera appliqué"
+                                                        : "Suggestion calendrier"}
                                                 </div>
                                                 {draftAppointment && (
-                                                    <div className="flex items-center gap-2 text-[12px] text-foreground font-medium">
-                                                        <CalendarClock size={12} className="text-primary shrink-0" />
-                                                        <span>RDV · {draftAppointment.label}</span>
+                                                    <div className="flex items-center justify-between gap-2 text-[12px] text-foreground font-medium">
+                                                        <div className="flex items-center gap-2 min-w-0">
+                                                            <CalendarClock size={12} className="text-primary shrink-0" />
+                                                            <span className="truncate">RDV → calendrier · {draftAppointment.label}</span>
+                                                        </div>
                                                     </div>
                                                 )}
+                                                {!draftAppointment && /pas\s*de\s*r[eé]ponse|rappeler|relancer|📵/i.test(noteDraft) && (
+                                                    <p className="text-[12px] text-muted-foreground">
+                                                        Astuce : après la note, utilisez l&apos;icône calendrier pour un rappel.
+                                                    </p>
+                                                )}
                                                 {draftDetectedItems.map((item, i) => {
+                                                    const willAddPerson = item.type === "person"
+                                                        && (draftDiff.willAddPersons || []).includes(item.value);
                                                     const isNew =
-                                                        (item.type === "person" && draftDiff.newContact === item.value) ||
-                                                        (item.type === "phone" && (draftDiff.newPhone === item.value || draftDiff.extraPhones.includes(item.value))) ||
-                                                        (item.type === "email" && draftDiff.newEmail === item.value) ||
-                                                        (item.type === "address" && draftDiff.newAddress === item.value);
+                                                        willAddPerson
+                                                        || (item.type === "phone" && (draftDiff.newPhone === item.value || draftDiff.extraPhones.includes(item.value)))
+                                                        || (item.type === "email" && draftDiff.newEmail === item.value)
+                                                        || (item.type === "address" && draftDiff.newAddress === item.value);
                                                     return (
-                                                        <div key={i} className={`flex items-center gap-2 text-[12px] rounded-lg px-2 py-0.5 ${isNew ? "text-foreground" : "text-muted-foreground line-through opacity-50"}`}>
+                                                        <div key={i} className={`flex items-center gap-2 text-[12px] rounded-lg px-2 py-0.5 ${isNew ? "text-foreground" : "text-muted-foreground opacity-70"}`}>
                                                             <span className="text-base leading-none shrink-0">{item.icon}</span>
                                                             <span className="font-medium">{item.value}</span>
-                                                            {!isNew && <span className="ml-auto text-[10px] opacity-70">déjà présent</span>}
+                                                            {willAddPerson && (
+                                                                <span className="ml-auto text-[10px] text-primary">sera ajouté</span>
+                                                            )}
+                                                            {!isNew && item.type === "person" && (
+                                                                <span className="ml-auto text-[10px] opacity-70">sur la fiche</span>
+                                                            )}
+                                                            {!isNew && item.type !== "person" && (
+                                                                <span className="ml-auto text-[10px] opacity-70">déjà présent</span>
+                                                            )}
                                                         </div>
                                                     );
                                                 })}
@@ -1478,6 +1662,15 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                     </Button>
                 </div>
             </aside>
+
+            <AddToCalendarDialog
+                open={calendarDialogOpen}
+                onOpenChange={setCalendarDialogOpen}
+                company={local.company || ""}
+                defaultLabel={calendarDefaultLabel}
+                hint={calendarHint}
+                onConfirm={applyCalendarReminder}
+            />
         </>
     );
 };

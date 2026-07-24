@@ -1,7 +1,7 @@
 // Small, dependency-free CSV parser + column auto-detector.
 // Handles: double-quoted fields, escaped quotes ("" -> "), commas & semicolons,
 // CRLF / LF line endings. Not a full RFC 4180 parser, but robust for MVP.
-import { resolveLogo } from "./logoUtils";
+import { resolveLogo } from "./_logoStub.js";
 
 /**
  * Normalise un nom de colonne / valeur pour comparaison :

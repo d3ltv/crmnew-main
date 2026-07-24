@@ -8,9 +8,11 @@
  * de similarité avec chaque profil enregistré. Score = % de colonnes reconnues.
  * Seuil : ≥60% → profil proposé. ≥90% → profil appliqué automatiquement.
  *
- * Évolution de fichier : si un profil est à 60-89%, on applique les colonnes
- * connues et on laisse les nouvelles colonnes en "Extra" pour complétion.
+ * Évolution de fichier : colonnes connues via le profil ; colonnes nouvelles
+ * auto-détectées (website, email…) puis Extra en dernier recours.
  */
+
+import { normalizeHeader, autoDetectMapping, CRM_RESERVED_HEADERS } from "./csvUtils";
 
 const STORAGE_KEY = "crm_import_profiles_v1";
 
@@ -81,6 +83,18 @@ export function renameProfile(id, newName) {
     saveProfiles(profiles);
 }
 
+/** Duplique un profil (copie indépendante) */
+export function duplicateProfile(id) {
+    const profiles = loadProfiles();
+    const src = profiles.find((p) => p.id === id);
+    if (!src) return null;
+    return saveProfile({
+        name: `${src.name} (copie)`,
+        headers: [...(src.headers || [])],
+        colMapping: { ...(src.colMapping || {}) },
+    });
+}
+
 /** Supprime un profil */
 export function deleteProfile(id) {
     saveProfiles(loadProfiles().filter((p) => p.id !== id));
@@ -99,32 +113,37 @@ export function touchProfile(id) {
     saveProfiles(profiles);
 }
 
+/**
+ * Met à jour le mapping / headers d'un profil existant (conserve le nom).
+ * @returns {object|null} profil mis à jour
+ */
+export function updateProfileMapping(id, { headers, colMapping }) {
+    const profiles = loadProfiles();
+    const idx = profiles.findIndex((p) => p.id === id);
+    if (idx < 0) return null;
+    const now = new Date().toISOString();
+    profiles[idx] = {
+        ...profiles[idx],
+        headers: (headers || profiles[idx].headers || []).filter(Boolean),
+        colMapping: colMapping || profiles[idx].colMapping,
+        lastUsedAt: now,
+    };
+    saveProfiles(profiles);
+    return profiles[idx];
+}
+
+/** Récupère un profil par id */
+export function getProfile(id) {
+    return loadProfiles().find((p) => p.id === id) || null;
+}
+
 // ── Matching ──────────────────────────────────────────────────────────────────
 
-/**
- * Normalise un nom de colonne pour la comparaison :
- * minuscules, sans accents, underscores/tirets → espaces.
- */
-function normCol(str) {
-    return (str || "")
-        .toLowerCase()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .replace(/[_\-]+/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-}
+const normCol = normalizeHeader;
 
 /**
  * Calcule le score de similarité entre un ensemble de headers CSV
  * et un profil enregistré.
- *
- * Score = (colonnes reconnues) / (max des deux ensembles)
- * Une colonne est "reconnue" si son nom normalisé est présent dans le profil.
- *
- * @param {string[]} headers — colonnes du CSV entrant
- * @param {object}   profile — profil enregistré
- * @returns {{ score: number, matchedHeaders: string[], newHeaders: string[] }}
  */
 export function scoreProfile(headers, profile) {
     const incoming  = headers.filter(Boolean).map(normCol);
@@ -134,7 +153,6 @@ export function scoreProfile(headers, profile) {
     const maxLen  = Math.max(incoming.length, reference.length, 1);
     const score   = matched.length / maxLen;
 
-    // Headers du CSV qui ne sont pas dans le profil → à compléter
     const newHeaders = headers.filter((h) => h && !reference.includes(normCol(h)));
 
     return { score, matchedHeaders: matched, newHeaders };
@@ -142,16 +160,6 @@ export function scoreProfile(headers, profile) {
 
 /**
  * Trouve le meilleur profil correspondant à un ensemble de headers CSV.
- *
- * @param {string[]} headers
- * @returns {{
- *   profile: object|null,
- *   score: number,
- *   matchedHeaders: string[],
- *   newHeaders: string[],
- *   isAuto: boolean,   — true si score ≥ THRESHOLD_AUTO
- *   isSuggested: boolean — true si score ≥ THRESHOLD_SUGGEST
- * } | null}
  */
 export function findBestProfile(headers) {
     const profiles = loadProfiles();
@@ -179,23 +187,62 @@ export function findBestProfile(headers) {
 
 /**
  * Applique un profil sur un ensemble de headers CSV entrants.
- * - Les colonnes reconnues reçoivent le mapping du profil
- * - Les nouvelles colonnes (absentes du profil) reçoivent EXTRA par défaut
+ * - Colonnes reconnues → mapping du profil
+ * - Colonnes nouvelles → auto-détection (website, email…) puis Extra
  *
  * @param {string[]} headers
  * @param {object}   profile
- * @returns {object} colMapping résultant { header → target }
+ * @param {string[][]} [rows] — pour heuristiques email/téléphone
+ * @returns {object} colMapping { header → target }
  */
-export function applyProfile(headers, profile) {
+export function applyProfile(headers, profile, rows = []) {
     const result = {};
     const refMapping = profile.colMapping || {};
+    const usedTargets = new Set();
 
+    // Passe 1 — profil sur colonnes connues
     headers.forEach((h) => {
         if (!h) return;
         const hn = normCol(h);
-        // Chercher dans le mapping du profil par nom normalisé
         const matchKey = Object.keys(refMapping).find((k) => normCol(k) === hn);
-        result[h] = matchKey ? refMapping[matchKey] : "__extra__";
+        if (!matchKey) return;
+        const target = refMapping[matchKey];
+        result[h] = target;
+        if (target && target !== "__extra__" && target !== "__none__") {
+            usedTargets.add(target);
+        }
+    });
+
+    // Passe 2 — auto-détecter le reste
+    const auto = autoDetectMapping(headers, rows);
+    const autoByHeader = {};
+    Object.entries(auto).forEach(([field, header]) => {
+        if (header) autoByHeader[normCol(header)] = field;
+    });
+
+    headers.forEach((h) => {
+        if (!h || result[h] !== undefined) return;
+
+        const field = autoByHeader[normCol(h)];
+        if (field && !usedTargets.has(field)) {
+            result[h] = field;
+            usedTargets.add(field);
+            return;
+        }
+
+        const reserved = CRM_RESERVED_HEADERS.find((k) => normCol(k) === normCol(h));
+        if (reserved && !usedTargets.has(reserved)) {
+            result[h] = reserved;
+            usedTargets.add(reserved);
+            return;
+        }
+        if (normCol(h) === "statut" && !usedTargets.has("status")) {
+            result[h] = "status";
+            usedTargets.add("status");
+            return;
+        }
+
+        result[h] = "__extra__";
     });
 
     return result;
@@ -203,7 +250,6 @@ export function applyProfile(headers, profile) {
 
 // ── Helpers UI ────────────────────────────────────────────────────────────────
 
-/** Formate une date ISO en texte lisible court */
 export function formatProfileDate(iso) {
     if (!iso) return "—";
     const d   = new Date(iso);
@@ -222,10 +268,12 @@ export function formatProfileDate(iso) {
     return d.toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" });
 }
 
-/** Labels lisibles pour les valeurs de mapping */
 const CRM_FIELD_LABELS = {
     company: "Entreprise", contact: "Contact", phone: "Téléphone",
     email: "Email", website: "Site web",
+    status: "Colonne / Statut", tags: "Tags", notes: "Notes",
+    next_action: "Prochaine action", last_contact: "Dernier contact",
+    deal_value: "Valeur du deal", logo_url: "Logo", crm_meta: "Métadonnées CRM",
     "__extra__": "Extra", "__none__": "Ignoré",
 };
 

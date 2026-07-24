@@ -39,7 +39,77 @@ export function formatRelative(iso) {
     if (hours < 24) return `il y a ${hours} h`;
     const days = Math.floor(hours / 24);
     if (days < 7) return `il y a ${days} j`;
-    return formatShortDateTime(iso);
+    return d.toLocaleDateString("fr-FR");
+}
+
+/**
+ * Décale samedi → lundi et dimanche → lundi (relances en semaine uniquement).
+ * @param {Date} date
+ * @returns {Date}
+ */
+export function ensureWeekday(date) {
+    const d = date instanceof Date ? new Date(date.getTime()) : new Date(date);
+    if (Number.isNaN(d.getTime())) return d;
+    const wd = d.getDay();
+    if (wd === 6) d.setDate(d.getDate() + 2);
+    else if (wd === 0) d.setDate(d.getDate() + 1);
+    return d;
+}
+
+/**
+ * Ajoute N jours calendaires, puis décale samedi → lundi et dimanche → lundi.
+ * (Les relances commerciales se font rarement le week-end.)
+ * @param {number} days
+ * @param {Date} [from]
+ * @returns {Date}
+ */
+export function addDaysSkippingWeekend(days, from = new Date()) {
+    const n = Math.max(0, Math.floor(Number(days) || 0));
+    const d = new Date(from);
+    d.setHours(12, 0, 0, 0);
+    d.setDate(d.getDate() + n);
+    return ensureWeekday(d);
+}
+
+/** @param {number} days @param {Date} [from] @returns {string} ISO */
+export function addDaysSkippingWeekendIso(days, from = new Date()) {
+    return addDaysSkippingWeekend(days, from).toISOString();
+}
+
+/**
+ * Libellé relatif futur FR : « demain », « dans 2 jours »…
+ * @param {Date | string | number} isoOrDate
+ * @returns {string}
+ */
+export function formatFutureRelativeFr(isoOrDate) {
+    const d = isoOrDate instanceof Date ? isoOrDate : new Date(isoOrDate);
+    if (Number.isNaN(d.getTime())) return "";
+    const startToday = new Date();
+    startToday.setHours(0, 0, 0, 0);
+    const startTarget = new Date(d);
+    startTarget.setHours(0, 0, 0, 0);
+    const diffDays = Math.round((startTarget - startToday) / 86400000);
+    if (diffDays <= 0) return "aujourd'hui";
+    if (diffDays === 1) return "demain";
+    return `dans ${diffDays} jours`;
+}
+
+/**
+ * Plus petit décalage J+n (1–7) qui tombe un jour de semaine donné (0=dim…6=sam).
+ * Ignore samedi/dimanche comme cibles (retourne le 1er jour ouvré utile).
+ * @param {number} targetDow
+ * @param {Date} [from]
+ * @returns {number}
+ */
+export function daysUntilWeekday(targetDow, from = new Date()) {
+    const target = Number(targetDow);
+    if (!Number.isFinite(target) || target < 1 || target > 5) {
+        return 2;
+    }
+    for (let n = 1; n <= 7; n += 1) {
+        if (addDaysSkippingWeekend(n, from).getDay() === target) return n;
+    }
+    return 2;
 }
 
 export function formatDateTimeLong(iso) {

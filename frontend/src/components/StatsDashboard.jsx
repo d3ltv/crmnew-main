@@ -1,8 +1,16 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useCrm } from "@/context/CrmContext";
-import { computeWorkspaceStats, aggregateStats, formatDuration, computeCallStats } from "@/lib/statsUtils";
 import {
-    AlertTriangle, BarChart3, ChevronDown, Phone, Star, PhoneMissed, ChevronRight,
+    computeWorkspaceStats,
+    aggregateStats,
+    formatDuration,
+    computeCallStats,
+    computeActivitySeries,
+    computeMonthOverMonthTrends,
+    formatTrendLabel,
+} from "@/lib/statsUtils";
+import {
+    BarChart3, ChevronDown, Phone, Star, ChevronRight, Users,
 } from "lucide-react";
 import {
     Dialog,
@@ -11,6 +19,7 @@ import {
     DialogTitle,
     DialogDescription,
 } from "@/components/ui/dialog";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 // ---------- Helpers ----------
 function pct(n) {
@@ -41,6 +50,42 @@ function heatOpacity(intensity) {
 }
 
 const CHART_HUE = "220 10% 28%"; // gris-ardoise — une seule teinte
+const PENDING_LEAD_KEY = "crm_pending_lead";
+const PENDING_FILTER_KEY = "crm_pending_filter";
+
+/** Mini sparkline — série de valeurs numériques */
+export const MiniSparkline = ({ values = [], tone = "neutral", className = "" }) => {
+    const data = values.length ? values : [0];
+    const max = Math.max(...data, 1);
+    const min = Math.min(...data, 0);
+    const range = max - min || 1;
+    const W = 72;
+    const H = 28;
+    const pad = 2;
+    const points = data.map((v, i) => {
+        const x = pad + (i / Math.max(data.length - 1, 1)) * (W - pad * 2);
+        const y = H - pad - ((v - min) / range) * (H - pad * 2);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+    });
+    const stroke =
+        tone === "danger" ? "hsl(4 84% 55%)" :
+        tone === "success" ? "hsl(142 64% 40%)" :
+        "hsl(var(--muted-foreground))";
+
+    return (
+        <svg viewBox={`0 0 ${W} ${H}`} className={`w-[72px] h-7 ${className}`} aria-hidden>
+            <polyline
+                fill="none"
+                stroke={stroke}
+                strokeWidth="1.75"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                points={points.join(" ")}
+                opacity="0.85"
+            />
+        </svg>
+    );
+};
 
 // ---------- SVG Line Chart ----------
 const PriceChart = ({ timeline }) => {
@@ -182,7 +227,7 @@ const DistributionBars = ({ distribution }) => {
                 return (
                     <div key={b.label} className="flex items-center gap-3">
                         <span className="text-xs text-muted-foreground w-24 shrink-0 text-right">{b.label}</span>
-                        <div className="flex-1 h-2 rounded-full bg-black/[0.04] dark:bg-white/[0.06] overflow-hidden">
+                        <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
                             <div
                                 className="h-full rounded-full transition-all duration-500"
                                 style={{
@@ -202,29 +247,44 @@ const DistributionBars = ({ distribution }) => {
 
 // ---------- Sub-components ----------
 
-/** KPI tile — fond subtil, pas de bordure, typo hiérarchisée */
-const Tile = ({ label, value, sub, tone = "neutral" }) => {
+/** KPI tile — carte bordée, sparkline optionnelle, cliquable */
+const Tile = ({ label, value, sub, tone = "neutral", sparkline, onClick }) => {
     const valueClass =
         tone === "danger" ? "text-rose-600 dark:text-rose-400" :
         tone === "success" ? "text-emerald-700 dark:text-emerald-400" :
         "text-foreground";
 
+    const Comp = onClick ? "button" : "div";
+
     return (
-        <div className="rounded-xl bg-[#FAFAFA] dark:bg-white/[0.04] p-5 flex flex-col gap-1.5 min-h-[96px]">
-            <div className="text-[11px] uppercase tracking-[0.06em] font-medium text-muted-foreground/80">
-                {label}
+        <Comp
+            type={onClick ? "button" : undefined}
+            onClick={onClick}
+            className={`rounded-xl border border-border/60 bg-card p-5 flex flex-col gap-1.5 min-h-[104px] text-left w-full ${
+                onClick ? "hover:border-foreground/15 hover:bg-muted/30 cursor-pointer transition-colors" : ""
+            }`}
+        >
+            <div className="flex items-start justify-between gap-2">
+                <div className="text-[11px] uppercase tracking-[0.06em] font-medium text-muted-foreground">
+                    {label}
+                </div>
+                {sparkline && sparkline.some((v) => v > 0) && (
+                    <MiniSparkline
+                        values={sparkline}
+                        tone={tone === "danger" ? "danger" : tone === "success" ? "success" : "neutral"}
+                    />
+                )}
             </div>
-            <div className={`text-[28px] font-semibold tracking-tight leading-none tabular-nums ${valueClass}`}>
+            <div className={`text-[26px] font-semibold tracking-tight leading-none tabular-nums ${valueClass}`}>
                 {value}
             </div>
             {sub && <div className="text-[12px] text-muted-foreground mt-1 leading-snug">{sub}</div>}
-        </div>
+        </Comp>
     );
 };
 
-/** Panel sans bordure */
-const Panel = ({ children, className = "" }) => (
-    <div className={`rounded-xl bg-[#FAFAFA] dark:bg-white/[0.04] p-5 ${className}`}>
+const Panel = ({ children, className = "", id }) => (
+    <div id={id} className={`rounded-xl border border-border/60 bg-card p-5 ${className}`}>
         {children}
     </div>
 );
@@ -248,7 +308,7 @@ const ColumnBar = ({ byColumn }) => {
                 return (
                     <div key={c.id || c.name} className="flex items-center gap-3">
                         <span className="text-xs text-muted-foreground w-28 truncate shrink-0">{c.name}</span>
-                        <div className="flex-1 h-2 rounded-full bg-black/[0.04] dark:bg-white/[0.06] overflow-hidden">
+                        <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
                             <div
                                 className="h-full rounded-full transition-all duration-500"
                                 style={{
@@ -324,7 +384,7 @@ const AlertLeadsDialog = ({ open, onOpenChange, type, groups, onOpenLead }) => {
                     ) : (
                         groups.map(({ workspace, leads }) => (
                             <div key={workspace.id}>
-                                <div className="sticky top-0 z-10 px-5 py-2 bg-[#FAFAFA] dark:bg-white/[0.06] border-b border-border/40">
+                                <div className="sticky top-0 z-10 px-5 py-2 bg-muted/80 backdrop-blur-sm border-b border-border/40">
                                     <div className="flex items-center justify-between gap-2">
                                         <span className="text-[12px] font-semibold text-foreground truncate">
                                             {workspace.name}
@@ -344,7 +404,7 @@ const AlertLeadsDialog = ({ open, onOpenChange, type, groups, onOpenLead }) => {
                                                 type="button"
                                                 data-testid={`alert-lead-${lead.id}`}
                                                 onClick={() => onOpenLead(workspace.id, lead.id)}
-                                                className="w-full text-left px-5 py-3 flex items-center gap-3 hover:bg-black/[0.025] dark:hover:bg-white/[0.04] transition-colors group"
+                                                className="w-full text-left px-5 py-3 flex items-center gap-3 hover:bg-muted/50 transition-colors group"
                                             >
                                                 <div className="min-w-0 flex-1">
                                                     <div className="text-[14px] font-medium text-foreground truncate">
@@ -375,96 +435,175 @@ const AlertLeadsDialog = ({ open, onOpenChange, type, groups, onOpenLead }) => {
     );
 };
 
-/** Bandeau d'alertes — rupture visuelle, hors grille */
-const AlertsBanner = ({ overdue, noContact, onOpenAlert }) => {
-    const items = [];
-    if (overdue > 0) {
-        items.push({
+/** Grille Alertes & qualité — 4 tuiles cliquables */
+const AlertQualityGrid = ({ overdue, noContact, lost, active, onOpenAlert, onFocusLost, onFocusPipeline }) => {
+    const tiles = [
+        {
             key: "overdue",
-            icon: AlertTriangle,
-            count: overdue,
-            label: overdue === 1 ? "rappel en retard" : "rappels en retard",
-            detail: "Cliquer pour voir la liste",
-        });
-    }
-    if (noContact > 0) {
-        items.push({
+            label: "Rappels en retard",
+            value: overdue,
+            tone: overdue > 0 ? "danger" : "neutral",
+            onClick: overdue > 0 ? () => onOpenAlert("overdue") : undefined,
+        },
+        {
             key: "nocontact",
-            icon: PhoneMissed,
-            count: noContact,
-            label: noContact === 1 ? "lead sans coordonnées" : "leads sans coordonnées",
-            detail: "Cliquer pour voir la liste",
-        });
-    }
-    if (items.length === 0) return null;
+            label: "Sans coordonnées",
+            value: noContact,
+            tone: noContact > 0 ? "danger" : "neutral",
+            onClick: noContact > 0 ? () => onOpenAlert("nocontact") : undefined,
+        },
+        {
+            key: "lost",
+            label: "Leads perdus",
+            value: lost,
+            tone: "neutral",
+            onClick: onFocusLost,
+        },
+        {
+            key: "active",
+            label: "Pipeline actif",
+            value: active,
+            tone: "neutral",
+            onClick: onFocusPipeline,
+        },
+    ];
 
     return (
-        <div className="flex flex-col sm:flex-row gap-3" data-testid="stats-alerts-banner">
-            {items.map((item) => {
-                const Icon = item.icon;
-                return (
-                    <button
-                        key={item.key}
-                        type="button"
-                        onClick={() => onOpenAlert?.(item.key)}
-                        className="flex-1 flex items-center gap-4 rounded-xl bg-rose-50/80 dark:bg-rose-500/10 pl-0 pr-5 py-4 border-l-[3.5px] border-rose-500 text-left hover:bg-rose-100/80 dark:hover:bg-rose-500/15 transition-colors cursor-pointer"
-                    >
-                        <div className="pl-4 flex items-center gap-4 min-w-0 w-full">
-                            <Icon size={22} strokeWidth={1.75} className="text-rose-500 shrink-0" />
-                            <div className="min-w-0 flex-1">
-                                <div className="flex items-baseline gap-2 flex-wrap">
-                                    <span className="text-[26px] font-semibold tracking-tight text-rose-600 dark:text-rose-400 tabular-nums leading-none">
-                                        {item.count}
-                                    </span>
-                                    <span className="text-[14px] font-medium text-rose-700/90 dark:text-rose-300">
-                                        {item.label}
-                                    </span>
-                                </div>
-                                <div className="text-[12px] text-rose-600/60 dark:text-rose-400/60 mt-1">
-                                    {item.detail}
-                                </div>
+        <div>
+            <PanelLabel>Alertes & qualité</PanelLabel>
+            <div className="grid grid-cols-2 gap-2.5">
+                {tiles.map((t) => {
+                    const Comp = t.onClick ? "button" : "div";
+                    return (
+                        <Comp
+                            key={t.key}
+                            type={t.onClick ? "button" : undefined}
+                            onClick={t.onClick}
+                            className={`rounded-xl p-4 text-left border transition-colors ${
+                                t.tone === "danger"
+                                    ? "bg-rose-50/90 dark:bg-rose-500/10 border-rose-200/80 dark:border-rose-500/20 hover:bg-rose-100 dark:hover:bg-rose-500/15"
+                                    : "bg-muted/40 border-border/50 hover:bg-muted/70"
+                            } ${t.onClick ? "cursor-pointer" : ""}`}
+                        >
+                            <div
+                                className={`text-[22px] font-semibold tabular-nums leading-none ${
+                                    t.tone === "danger"
+                                        ? "text-rose-600 dark:text-rose-400"
+                                        : "text-foreground"
+                                }`}
+                            >
+                                {t.value}
                             </div>
-                            <ChevronRight size={16} className="text-rose-400/70 shrink-0" />
-                        </div>
-                    </button>
-                );
-            })}
+                            <div
+                                className={`text-[12px] mt-1.5 font-medium ${
+                                    t.tone === "danger"
+                                        ? "text-rose-700/80 dark:text-rose-300/80"
+                                        : "text-muted-foreground"
+                                }`}
+                            >
+                                {t.label}
+                            </div>
+                        </Comp>
+                    );
+                })}
+            </div>
         </div>
     );
 };
 
-/** Onglets soulignés — style outil pro */
-const StatsTabs = ({ tabs, active, onChange }) => (
-    <div className="border-b border-border/70" role="tablist">
-        <div className="flex gap-6 -mb-px overflow-x-auto">
-            {tabs.map((tab) => {
-                const isActive = active === tab.id;
-                return (
-                    <button
-                        key={tab.id}
-                        role="tab"
-                        aria-selected={isActive}
-                        onClick={() => onChange(tab.id)}
-                        className={`relative pb-3 pt-1 text-[14px] whitespace-nowrap transition-colors group ${
-                            isActive
-                                ? "text-foreground font-medium"
-                                : "text-muted-foreground hover:text-foreground"
-                        }`}
-                    >
-                        {tab.label}
-                        <span
-                            className={`absolute left-0 right-0 bottom-0 h-[2px] rounded-full origin-left transition-transform duration-200 ${
-                                isActive
-                                    ? "bg-foreground scale-x-100"
-                                    : "bg-foreground/25 scale-x-0 group-hover:scale-x-100"
-                            }`}
-                        />
-                    </button>
-                );
-            })}
+/** Vigilance critique/warning + cabinets + conversion croisée */
+const VigilanceAgencyPanel = ({
+    critical,
+    warning,
+    agencyCount,
+    agencyRate,
+    agencyConversion,
+    directConversion,
+    onFocusCritical,
+    onFocusWarning,
+    onFocusAgency,
+}) => {
+    const tiles = [
+        {
+            key: "critical",
+            label: "Vigilance critique",
+            value: critical,
+            tone: critical > 0 ? "danger" : "neutral",
+            onClick: critical > 0 ? onFocusCritical : undefined,
+        },
+        {
+            key: "warning",
+            label: "Vigilance warning",
+            value: warning,
+            tone: warning > 0 ? "danger" : "neutral",
+            onClick: warning > 0 ? onFocusWarning : undefined,
+        },
+        {
+            key: "agency",
+            label: "Suspects cabinet",
+            value: agencyCount,
+            sub: agencyRate != null ? `${agencyRate.toFixed(0)} % du pipeline` : null,
+            tone: "neutral",
+            onClick: agencyCount > 0 ? onFocusAgency : undefined,
+        },
+        {
+            key: "conv",
+            label: "Conv. cabinet / direct",
+            value:
+                agencyConversion == null && directConversion == null
+                    ? "—"
+                    : `${agencyConversion != null ? agencyConversion.toFixed(0) : "—"} / ${directConversion != null ? directConversion.toFixed(0) : "—"} %`,
+            sub: "Taux gagné parmi chaque groupe",
+            tone: "neutral",
+        },
+    ];
+
+    return (
+        <div data-testid="stats-vigilance-agency">
+            <PanelLabel>Vigilance & cabinets</PanelLabel>
+            <div className="grid grid-cols-2 gap-2.5">
+                {tiles.map((t) => {
+                    const Comp = t.onClick ? "button" : "div";
+                    return (
+                        <Comp
+                            key={t.key}
+                            type={t.onClick ? "button" : undefined}
+                            onClick={t.onClick}
+                            data-testid={`stats-vigilance-${t.key}`}
+                            className={`rounded-xl p-4 text-left border transition-colors ${
+                                t.tone === "danger"
+                                    ? "bg-rose-50/90 dark:bg-rose-500/10 border-rose-200/80 dark:border-rose-500/20 hover:bg-rose-100 dark:hover:bg-rose-500/15"
+                                    : "bg-muted/40 border-border/50 hover:bg-muted/70"
+                            } ${t.onClick ? "cursor-pointer" : ""}`}
+                        >
+                            <div
+                                className={`text-[22px] font-semibold tabular-nums leading-none ${
+                                    t.tone === "danger"
+                                        ? "text-rose-600 dark:text-rose-400"
+                                        : "text-foreground"
+                                }`}
+                            >
+                                {t.value}
+                            </div>
+                            <div
+                                className={`text-[12px] mt-1.5 font-medium ${
+                                    t.tone === "danger"
+                                        ? "text-rose-700/80 dark:text-rose-300/80"
+                                        : "text-muted-foreground"
+                                }`}
+                            >
+                                {t.label}
+                            </div>
+                            {t.sub && (
+                                <div className="text-[11px] text-muted-foreground mt-1">{t.sub}</div>
+                            )}
+                        </Comp>
+                    );
+                })}
+            </div>
         </div>
-    </div>
-);
+    );
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Call Analytics
@@ -566,7 +705,7 @@ const DayOfWeekBars = ({ byDayOfWeek }) => {
                 return (
                     <div key={d.day} className="flex items-center gap-3">
                         <span className="text-xs text-muted-foreground w-8 shrink-0 font-medium">{d.label}</span>
-                        <div className="flex-1 h-5 rounded-md bg-black/[0.04] dark:bg-white/[0.06] overflow-hidden relative">
+                        <div className="flex-1 h-5 rounded-md bg-muted overflow-hidden relative">
                             <div
                                 className="h-full rounded-md transition-all duration-500"
                                 style={{
@@ -687,17 +826,21 @@ const CallSparkline = ({ last30Days }) => {
     );
 };
 
-const CallStatsSection = ({ callStats }) => {
-    const { totalCalls, totalAnswered, globalAnswerRate, byHour, byDayOfWeek, last30Days, bestHour, bestDay, streak } = callStats;
+const PhoneActivityBlock = ({ callStats }) => {
+    const { totalCalls, totalAnswered, globalAnswerRate, streak, byHour, byDayOfWeek, last30Days, bestHour, bestDay } = callStats;
+    const [detailsOpen, setDetailsOpen] = useState(false);
 
     if (totalCalls === 0) {
         return (
-            <div className="rounded-xl bg-[#FAFAFA] dark:bg-white/[0.04] p-10 text-center">
-                <Phone size={20} className="mx-auto text-muted-foreground/40 mb-2" />
-                <p className="text-sm text-muted-foreground">
-                    Aucun appel enregistré. Les statistiques s'afficheront après vos premiers appels.
-                </p>
-            </div>
+            <Panel>
+                <PanelLabel>Activité téléphonique</PanelLabel>
+                <div className="py-6 text-center">
+                    <Phone size={18} className="mx-auto text-muted-foreground/40 mb-2" />
+                    <p className="text-sm text-muted-foreground">
+                        Aucun appel enregistré. Les stats apparaîtront après vos premiers appels.
+                    </p>
+                </div>
+            </Panel>
         );
     }
 
@@ -708,103 +851,99 @@ const CallStatsSection = ({ callStats }) => {
         "neutral";
 
     return (
-        <div className="space-y-8">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <Tile
-                    label="Total appels"
-                    value={totalCalls}
-                    sub="Tous appels confondus"
-                />
-                <Tile
-                    label="Décrochés"
-                    value={totalAnswered}
-                    sub={`${totalCalls - totalAnswered} non répondus`}
-                    tone={totalAnswered > 0 ? "success" : "neutral"}
-                />
-                <Tile
-                    label="Taux de décrochage"
-                    value={globalAnswerRate !== null ? `${globalAnswerRate.toFixed(1)} %` : "—"}
-                    sub="Sur l'ensemble des appels"
-                    tone={answerTone}
-                />
-                <Tile
-                    label="Jours consécutifs"
-                    value={streak}
-                    sub="Série d'appels en cours"
-                />
+        <Panel>
+            <PanelLabel hint={`${totalCalls} appel${totalCalls > 1 ? "s" : ""}`}>Activité téléphonique</PanelLabel>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+                <div>
+                    <div className="text-[11px] text-muted-foreground uppercase tracking-[0.06em] font-medium">Total</div>
+                    <div className="text-[22px] font-semibold tabular-nums mt-1">{totalCalls}</div>
+                </div>
+                <div>
+                    <div className="text-[11px] text-muted-foreground uppercase tracking-[0.06em] font-medium">Décrochés</div>
+                    <div className="text-[22px] font-semibold tabular-nums mt-1 text-emerald-700 dark:text-emerald-400">{totalAnswered}</div>
+                </div>
+                <div>
+                    <div className="text-[11px] text-muted-foreground uppercase tracking-[0.06em] font-medium">Taux</div>
+                    <div className={`text-[22px] font-semibold tabular-nums mt-1 ${
+                        answerTone === "success" ? "text-emerald-700 dark:text-emerald-400" :
+                        answerTone === "danger" ? "text-rose-600 dark:text-rose-400" : ""
+                    }`}>
+                        {globalAnswerRate !== null ? `${globalAnswerRate.toFixed(1)} %` : "—"}
+                    </div>
+                </div>
+                <div>
+                    <div className="text-[11px] text-muted-foreground uppercase tracking-[0.06em] font-medium">Série</div>
+                    <div className="text-[22px] font-semibold tabular-nums mt-1">{streak} j</div>
+                </div>
             </div>
 
-            {(bestHour || bestDay) && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {bestHour && (
-                        <div className="rounded-xl bg-[#FAFAFA] dark:bg-white/[0.04] p-5 flex items-start gap-3">
-                            <Star size={18} className="text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
-                            <div>
-                                <div className="text-[11px] uppercase tracking-[0.06em] text-muted-foreground/80 font-medium">Meilleure heure</div>
-                                <div className="text-[22px] font-semibold mt-1 tracking-tight tabular-nums">{bestHour.hour}h00 – {bestHour.hour + 1}h00</div>
-                                <div className="text-[12px] text-muted-foreground mt-1">
-                                    <span className="text-emerald-700 dark:text-emerald-400 font-medium">{bestHour.rate.toFixed(0)} %</span>
-                                    {" de décrochage · "}{bestHour.total} appels
+            <CallSparkline last30Days={last30Days} />
+
+            <Collapsible open={detailsOpen} onOpenChange={setDetailsOpen}>
+                <CollapsibleTrigger className="mt-4 text-[13px] font-medium text-primary hover:underline inline-flex items-center gap-1">
+                    {detailsOpen ? "Masquer le détail" : "Voir heures & jours"}
+                    <ChevronDown size={14} className={`transition-transform ${detailsOpen ? "rotate-180" : ""}`} />
+                </CollapsibleTrigger>
+                <CollapsibleContent className="mt-4 space-y-6">
+                    {(bestHour || bestDay) && (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            {bestHour && (
+                                <div className="rounded-xl bg-muted/40 p-4 flex items-start gap-3">
+                                    <Star size={16} className="text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                                    <div>
+                                        <div className="text-[11px] uppercase tracking-[0.06em] text-muted-foreground font-medium">Meilleure heure</div>
+                                        <div className="text-[18px] font-semibold mt-1 tabular-nums">{bestHour.hour}h00 – {bestHour.hour + 1}h00</div>
+                                        <div className="text-[12px] text-muted-foreground mt-1">
+                                            <span className="text-emerald-700 dark:text-emerald-400 font-medium">{bestHour.rate.toFixed(0)} %</span>
+                                            {" · "}{bestHour.total} appels
+                                        </div>
+                                    </div>
                                 </div>
-                            </div>
+                            )}
+                            {bestDay && (
+                                <div className="rounded-xl bg-muted/40 p-4 flex items-start gap-3">
+                                    <Star size={16} className="text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                                    <div>
+                                        <div className="text-[11px] uppercase tracking-[0.06em] text-muted-foreground font-medium">Meilleur jour</div>
+                                        <div className="text-[18px] font-semibold mt-1">{bestDay.label}</div>
+                                        <div className="text-[12px] text-muted-foreground mt-1">
+                                            <span className="text-emerald-700 dark:text-emerald-400 font-medium">{bestDay.rate.toFixed(0)} %</span>
+                                            {" · "}{bestDay.total} appels
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     )}
-                    {bestDay && (
-                        <div className="rounded-xl bg-[#FAFAFA] dark:bg-white/[0.04] p-5 flex items-start gap-3">
-                            <Star size={18} className="text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
-                            <div>
-                                <div className="text-[11px] uppercase tracking-[0.06em] text-muted-foreground/80 font-medium">Meilleur jour</div>
-                                <div className="text-[22px] font-semibold mt-1 tracking-tight">{bestDay.label}</div>
-                                <div className="text-[12px] text-muted-foreground mt-1">
-                                    <span className="text-emerald-700 dark:text-emerald-400 font-medium">{bestDay.rate.toFixed(0)} %</span>
-                                    {" de décrochage · "}{bestDay.total} appels
-                                </div>
-                            </div>
-                        </div>
-                    )}
-                </div>
-            )}
-
-            <Panel>
-                <PanelLabel hint="Hauteur = volume · Opacité = taux">Décrochage par heure (7h–21h)</PanelLabel>
-                <HourHeatmap byHour={byHour} />
-            </Panel>
-
-            <Panel>
-                <PanelLabel>Décrochage par jour de la semaine</PanelLabel>
-                <DayOfWeekBars byDayOfWeek={byDayOfWeek} />
-            </Panel>
-
-            <Panel>
-                <PanelLabel
-                    hint={`${last30Days.reduce((s, d) => s + d.total, 0)} appels · ${last30Days.reduce((s, d) => s + d.answered, 0)} décrochés`}
-                >
-                    Activité sur 30 jours
-                </PanelLabel>
-                <CallSparkline last30Days={last30Days} />
-            </Panel>
-        </div>
+                    <div>
+                        <PanelLabel hint="7h–21h">Décrochage par heure</PanelLabel>
+                        <HourHeatmap byHour={byHour} />
+                    </div>
+                    <div>
+                        <PanelLabel>Par jour de la semaine</PanelLabel>
+                        <DayOfWeekBars byDayOfWeek={byDayOfWeek} />
+                    </div>
+                </CollapsibleContent>
+            </Collapsible>
+        </Panel>
     );
 };
 
-const TABS = [
-    { id: "overview", label: "Vue d'ensemble" },
-    { id: "timing", label: "Timing & vélocité" },
-    { id: "calls", label: "Téléphonie" },
-];
-
 // ---------- Main component ----------
-const PENDING_LEAD_KEY = "crm_pending_lead";
-
-export const StatsDashboard = () => {
+export const StatsDashboard = ({ alertRequest = null, onAlertRequestHandled }) => {
     const { state, dispatch } = useCrm();
     const workspaces = state.order.map((id) => state.workspaces[id]).filter(Boolean);
     const [view, setView] = useState("total");
-    const [tab, setTab] = useState("overview");
-    const [alertType, setAlertType] = useState(null); // "nocontact" | "overdue" | null
+    const [alertType, setAlertType] = useState(null);
+
+    useEffect(() => {
+        if (!alertRequest) return;
+        setAlertType(alertRequest);
+        onAlertRequestHandled?.();
+    }, [alertRequest, onAlertRequestHandled]);
 
     const statsPerWs = useMemo(
-        () => workspaces.map((ws) => ({ ws, stats: computeWorkspaceStats(ws) })),
+        () => workspaces.map((ws) => ({ ws, stats: computeWorkspaceStats(ws, { includeQuality: true }) })),
         // eslint-disable-next-line react-hooks/exhaustive-deps
         [state.workspaces]
     );
@@ -825,6 +964,18 @@ export const StatsDashboard = () => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [state.workspaces, view]);
 
+    const activity = useMemo(
+        () => computeActivitySeries(scopedWorkspaces),
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [state.workspaces, view]
+    );
+
+    const trends = useMemo(
+        () => computeMonthOverMonthTrends(scopedWorkspaces),
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [state.workspaces, view]
+    );
+
     const alertGroups = useMemo(
         () => (alertType ? collectAlertLeads(scopedWorkspaces, alertType) : []),
         [scopedWorkspaces, alertType]
@@ -836,10 +987,43 @@ export const StatsDashboard = () => {
 
     const openLeadFromAlert = (workspaceId, leadId) => {
         try {
-            sessionStorage.setItem(PENDING_LEAD_KEY, JSON.stringify({ workspaceId, leadId }));
+            sessionStorage.setItem(
+                PENDING_LEAD_KEY,
+                JSON.stringify({ workspaceId, leadId, t: Date.now() })
+            );
         } catch { /* ignore */ }
         setAlertType(null);
         dispatch({ type: "SELECT_WORKSPACE", id: workspaceId });
+        try {
+            window.dispatchEvent(
+                new CustomEvent("crm:pending-lead", { detail: { workspaceId, leadId } })
+            );
+        } catch { /* ignore */ }
+    };
+
+    const openWorkspace = (workspaceId) => {
+        dispatch({ type: "SELECT_WORKSPACE", id: workspaceId });
+    };
+
+    const openWorkspaceWithFilter = (workspaceId, filterTag) => {
+        try {
+            if (filterTag) {
+                sessionStorage.setItem(
+                    PENDING_FILTER_KEY,
+                    JSON.stringify({ workspaceId, filter: filterTag })
+                );
+            }
+        } catch { /* ignore */ }
+        dispatch({ type: "SELECT_WORKSPACE", id: workspaceId });
+    };
+
+    const pickWsByStat = (statKey) => {
+        if (view !== "total") {
+            return statsPerWs.find((s) => s.ws.id === view) || null;
+        }
+        return [...statsPerWs].sort(
+            (a, b) => (b.stats[statKey] || 0) - (a.stats[statKey] || 0)
+        )[0] || null;
     };
 
     if (!workspaces.length) return null;
@@ -847,20 +1031,23 @@ export const StatsDashboard = () => {
     const conversionTone =
         current?.conversionRate == null ? "neutral" :
         current.conversionRate >= 30 ? "success" :
+        current.conversionRate === 0 && current.total > 0 ? "danger" :
         "neutral";
 
+    const lostTone =
+        current?.lostRate != null && current.lostRate >= 20 ? "danger" : "neutral";
+
     return (
-        <div className="space-y-8">
-            {/* Toolbar : filtre espace */}
+        <div className="space-y-8" data-testid="stats-dashboard">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <p className="text-sm text-muted-foreground">
-                    Vue d'ensemble de votre activité commerciale
+                    Indicateurs pour comprendre où le pipeline freine
                 </p>
                 <div className="relative self-start sm:self-auto">
                     <select
                         value={view}
                         onChange={(e) => setView(e.target.value)}
-                        className="appearance-none h-9 pl-3.5 pr-8 rounded-lg bg-[#FAFAFA] dark:bg-white/[0.04] text-sm font-medium text-foreground cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/30"
+                        className="appearance-none h-9 pl-3.5 pr-8 rounded-lg border border-border/60 bg-card text-sm font-medium text-foreground cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/30"
                         aria-label="Choisir la vue des statistiques"
                     >
                         <option value="total">Tous les espaces</option>
@@ -882,193 +1069,233 @@ export const StatsDashboard = () => {
 
             {current && current.total > 0 ? (
                 <div className="space-y-8">
-                    {/* Alertes — hors grille, premier regard */}
-                    <AlertsBanner
-                        overdue={current.overdueFollowups || 0}
-                        noContact={current.noContact || 0}
-                        onOpenAlert={setAlertType}
-                    />
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                        <Tile
+                            label="Total leads"
+                            value={current.total}
+                            sub={formatTrendLabel(trends.leadsPct) || `${current.active} actifs`}
+                            sparkline={activity.leadsCreatedValues}
+                            tone={trends.leadsPct != null && trends.leadsPct > 0 ? "success" : "neutral"}
+                        />
+                        <Tile
+                            label="Taux de conversion"
+                            value={pct(current.conversionRate)}
+                            sub={`${current.won} gagné${current.won > 1 ? "s" : ""}`}
+                            tone={conversionTone}
+                        />
+                        <Tile
+                            label="Taux de perte"
+                            value={pct(current.lostRate)}
+                            sub={`${current.lost} perdu${current.lost > 1 ? "s" : ""}`}
+                            tone={lostTone}
+                        />
+                        <Tile
+                            label="Notes totales"
+                            value={current.totalNotes}
+                            sub={formatTrendLabel(trends.notesPct) || `Activité ${relativeDate(current.lastActivityAt)}`}
+                            sparkline={activity.notesValues}
+                        />
+                    </div>
 
-                    {/* Onglets */}
-                    <StatsTabs tabs={TABS} active={tab} onChange={setTab} />
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <Tile
+                            label="Délai moyen avant contact"
+                            value={formatDuration(current.avgTimeToContact)}
+                            sub="De Nouveau au 1er contact"
+                        />
+                        <Tile
+                            label="Durée moy. dans le pipeline"
+                            value={formatDuration(current.avgPipelineDuration)}
+                            sub="Leads actifs uniquement"
+                        />
+                        <Tile
+                            label="Durée moy. pour closer"
+                            value={formatDuration(current.avgClosingDuration)}
+                            sub="De création à Gagné"
+                        />
+                    </div>
 
-                    {/* ── Vue d'ensemble ── */}
-                    {tab === "overview" && (
-                        <div className="space-y-10">
-                            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        <Panel>
+                            <PanelLabel>Distribution par colonne</PanelLabel>
+                            <ColumnBar byColumn={current.byColumn} />
+                        </Panel>
+                        <Panel>
+                            <AlertQualityGrid
+                                overdue={current.overdueFollowups || 0}
+                                noContact={current.noContact || 0}
+                                lost={current.lost || 0}
+                                active={current.active || 0}
+                                onOpenAlert={setAlertType}
+                                onFocusLost={() => {
+                                    const worst = [...statsPerWs].sort((a, b) => (b.stats.lost || 0) - (a.stats.lost || 0))[0];
+                                    if (worst?.stats.lost > 0) openWorkspace(worst.ws.id);
+                                }}
+                                onFocusPipeline={() => {
+                                    document.getElementById("stats-perf-table")?.scrollIntoView({ behavior: "smooth" });
+                                }}
+                            />
+                        </Panel>
+                    </div>
+
+                    <Panel>
+                        <VigilanceAgencyPanel
+                            critical={current.vigilanceCriticalCount || 0}
+                            warning={current.vigilanceWarningCount || 0}
+                            agencyCount={current.agencySuspectCount || 0}
+                            agencyRate={current.agencyRate}
+                            agencyConversion={current.agencyConversionRate}
+                            directConversion={current.directConversionRate}
+                            onFocusCritical={() => {
+                                const target = pickWsByStat("vigilanceCriticalCount");
+                                if (target?.stats.vigilanceCriticalCount > 0) {
+                                    openWorkspaceWithFilter(target.ws.id, "vigilance rouge");
+                                }
+                            }}
+                            onFocusWarning={() => {
+                                const target = pickWsByStat("vigilanceWarningCount")
+                                    || pickWsByStat("vigilanceCriticalCount");
+                                const n = (target?.stats.vigilanceWarningCount || 0)
+                                    + (target?.stats.vigilanceCriticalCount || 0);
+                                if (target && n > 0) {
+                                    openWorkspaceWithFilter(target.ws.id, "vigilance");
+                                }
+                            }}
+                            onFocusAgency={() => {
+                                const target = pickWsByStat("agencySuspectCount");
+                                if (target?.stats.agencySuspectCount > 0) {
+                                    openWorkspaceWithFilter(target.ws.id, "cabinet");
+                                }
+                            }}
+                        />
+                    </Panel>
+
+                    <PhoneActivityBlock callStats={callStats} />
+
+                    {current.dealsWithValueCount > 0 && (
+                        <div id="stats-revenue" className="space-y-4 scroll-mt-20">
+                            <h3 className="text-[18px] font-semibold tracking-tight text-foreground">
+                                Chiffre d&apos;affaires
+                            </h3>
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                                 <Tile
-                                    label="Total leads"
-                                    value={current.total}
-                                    sub={`${current.active} actif${current.active > 1 ? "s" : ""}`}
+                                    label="CA total"
+                                    value={fmtEur(current.totalRevenue)}
+                                    sub={`${current.dealsWithValueCount} deal${current.dealsWithValueCount > 1 ? "s" : ""} valorisé${current.dealsWithValueCount > 1 ? "s" : ""}`}
+                                    tone="success"
                                 />
                                 <Tile
-                                    label="Taux de conversion"
-                                    value={pct(current.conversionRate)}
-                                    sub={`${current.won} gagné${current.won > 1 ? "s" : ""}`}
-                                    tone={conversionTone}
+                                    label="Prix moyen"
+                                    value={fmtEur(current.avgDealValue)}
+                                    sub="Moyenne des deals"
                                 />
                                 <Tile
-                                    label="Taux de perte"
-                                    value={pct(current.lostRate)}
-                                    sub={`${current.lost} perdu${current.lost > 1 ? "s" : ""}`}
+                                    label="Prix médian"
+                                    value={fmtEur(current.medianDealValue)}
+                                    sub="50% des deals en dessous"
                                 />
                                 <Tile
-                                    label="Notes totales"
-                                    value={current.totalNotes}
-                                    sub={`Dernière activité ${relativeDate(current.lastActivityAt)}`}
-                                />
-                                <Tile
-                                    label="Leads perdus"
-                                    value={current.lost}
-                                    sub={pct(current.lostRate)}
-                                />
-                                <Tile
-                                    label="Pipeline actif"
-                                    value={current.active}
-                                    sub={`${pct(current.total > 0 ? (current.active / current.total) * 100 : null)} du total`}
+                                    label="Fourchette"
+                                    value={current.minDealValue === current.maxDealValue
+                                        ? fmtEur(current.minDealValue)
+                                        : `${fmtEur(current.minDealValue).replace(" €", "")} – ${fmtEur(current.maxDealValue)}`}
+                                    sub="Min – Max"
                                 />
                             </div>
 
                             <Panel>
-                                <PanelLabel>Distribution par colonne</PanelLabel>
-                                <ColumnBar byColumn={current.byColumn} />
+                                <PanelLabel hint={`${current.dealsWithValueCount} point${current.dealsWithValueCount > 1 ? "s" : ""}`}>
+                                    Cumul CA dans le temps
+                                </PanelLabel>
+                                <PriceChart timeline={current.dealTimeline} />
                             </Panel>
 
-                            {current.dealsWithValueCount > 0 && (
-                                <div className="space-y-4">
-                                    <h3 className="text-[18px] font-semibold tracking-tight text-foreground">
-                                        Chiffre d'affaires
-                                    </h3>
-                                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                                        <Tile
-                                            label="CA total"
-                                            value={fmtEur(current.totalRevenue)}
-                                            sub={`${current.dealsWithValueCount} deal${current.dealsWithValueCount > 1 ? "s" : ""} valorisé${current.dealsWithValueCount > 1 ? "s" : ""}`}
-                                            tone="success"
-                                        />
-                                        <Tile
-                                            label="Prix moyen"
-                                            value={fmtEur(current.avgDealValue)}
-                                            sub="Moyenne des deals closés"
-                                        />
-                                        <Tile
-                                            label="Prix médian"
-                                            value={fmtEur(current.medianDealValue)}
-                                            sub="50% des deals sont en dessous"
-                                        />
-                                        <Tile
-                                            label="Fourchette"
-                                            value={current.minDealValue === current.maxDealValue
-                                                ? fmtEur(current.minDealValue)
-                                                : `${fmtEur(current.minDealValue).replace(" €", "")} – ${fmtEur(current.maxDealValue)}`}
-                                            sub="Min – Max"
-                                        />
-                                    </div>
-
-                                    <Panel>
-                                        <PanelLabel hint={`${current.dealsWithValueCount} point${current.dealsWithValueCount > 1 ? "s" : ""}`}>
-                                            Cumul CA dans le temps
-                                        </PanelLabel>
-                                        <PriceChart timeline={current.dealTimeline} />
-                                    </Panel>
-
-                                    {current.dealDistribution && current.dealDistribution.length > 0 && (
-                                        <Panel>
-                                            <PanelLabel>Distribution par tranche de prix</PanelLabel>
-                                            <DistributionBars distribution={current.dealDistribution} />
-                                        </Panel>
-                                    )}
-                                </div>
+                            {current.dealDistribution && current.dealDistribution.length > 0 && (
+                                <Panel>
+                                    <PanelLabel>Distribution par tranche de prix</PanelLabel>
+                                    <DistributionBars distribution={current.dealDistribution} />
+                                </Panel>
                             )}
+                        </div>
+                    )}
 
-                            {view === "total" && statsPerWs.length > 1 && (
-                                <div className="space-y-4">
-                                    <h3 className="text-[18px] font-semibold tracking-tight text-foreground">
-                                        Par espace
-                                    </h3>
-                                    <div className="rounded-xl overflow-hidden border border-border/40">
-                                        <table className="w-full text-sm">
-                                            <thead>
-                                                <tr className="border-b border-border/50 bg-background">
-                                                    <th className="text-left px-4 py-3 text-[11px] uppercase tracking-[0.06em] text-muted-foreground font-medium">Espace</th>
-                                                    <th className="text-right px-4 py-3 text-[11px] uppercase tracking-[0.06em] text-muted-foreground font-medium">Leads</th>
-                                                    <th className="text-right px-4 py-3 text-[11px] uppercase tracking-[0.06em] text-muted-foreground font-medium hidden sm:table-cell">Actifs</th>
-                                                    <th className="text-right px-4 py-3 text-[11px] uppercase tracking-[0.06em] text-muted-foreground font-medium">Gagnés</th>
-                                                    <th className="text-right px-4 py-3 text-[11px] uppercase tracking-[0.06em] text-muted-foreground font-medium hidden sm:table-cell">Conversion</th>
-                                                    <th className="text-right px-4 py-3 text-[11px] uppercase tracking-[0.06em] text-muted-foreground font-medium hidden md:table-cell">Délai contact</th>
-                                                    <th className="text-right px-4 py-3 text-[11px] uppercase tracking-[0.06em] text-muted-foreground font-medium hidden md:table-cell">Notes</th>
+                    {view === "total" && statsPerWs.length > 1 && (
+                        <div id="stats-perf-table" className="space-y-4 scroll-mt-20">
+                            <h3 className="text-[18px] font-semibold tracking-tight text-foreground">
+                                Performance par espace
+                            </h3>
+                            <div className="rounded-xl overflow-hidden border border-border/60 bg-card">
+                                <table className="w-full text-sm">
+                                    <thead>
+                                        <tr className="border-b border-border/50">
+                                            <th className="text-left px-4 py-3 text-[11px] uppercase tracking-[0.06em] text-muted-foreground font-medium">Espace</th>
+                                            <th className="text-right px-4 py-3 text-[11px] uppercase tracking-[0.06em] text-muted-foreground font-medium">Leads</th>
+                                            <th className="text-right px-4 py-3 text-[11px] uppercase tracking-[0.06em] text-muted-foreground font-medium hidden sm:table-cell">Actifs</th>
+                                            <th className="text-right px-4 py-3 text-[11px] uppercase tracking-[0.06em] text-muted-foreground font-medium">Gagnés</th>
+                                            <th className="text-right px-4 py-3 text-[11px] uppercase tracking-[0.06em] text-muted-foreground font-medium hidden sm:table-cell">Conversion</th>
+                                            <th className="text-right px-4 py-3 text-[11px] uppercase tracking-[0.06em] text-muted-foreground font-medium hidden md:table-cell">Délai contact</th>
+                                            <th className="text-right px-4 py-3 text-[11px] uppercase tracking-[0.06em] text-muted-foreground font-medium hidden md:table-cell">Notes</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {statsPerWs.map(({ ws, stats }, i) => {
+                                            const zeroConv = stats.total > 0 && (stats.conversionRate === 0 || stats.conversionRate == null);
+                                            return (
+                                                <tr
+                                                    key={ws.id}
+                                                    role="button"
+                                                    tabIndex={0}
+                                                    onClick={() => openWorkspace(ws.id)}
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === "Enter" || e.key === " ") {
+                                                            e.preventDefault();
+                                                            openWorkspace(ws.id);
+                                                        }
+                                                    }}
+                                                    className={`border-b border-border/30 last:border-0 hover:bg-muted/50 transition-colors cursor-pointer ${
+                                                        i % 2 === 1 ? "bg-muted/20" : ""
+                                                    }`}
+                                                >
+                                                    <td className="px-4 py-3">
+                                                        <span className="font-semibold text-foreground">{ws.name}</span>
+                                                        {ws.sector && (
+                                                            <span className="ml-2 text-xs text-muted-foreground font-normal">{ws.sector}</span>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-4 py-3 text-right tabular-nums font-medium">{stats.total}</td>
+                                                    <td className="px-4 py-3 text-right tabular-nums hidden sm:table-cell text-muted-foreground">{stats.active}</td>
+                                                    <td className="px-4 py-3 text-right tabular-nums font-medium">
+                                                        <span className={stats.won > 0 ? "text-emerald-700 dark:text-emerald-400" : ""}>
+                                                            {stats.won}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-4 py-3 text-right tabular-nums hidden sm:table-cell">
+                                                        <span className={
+                                                            stats.conversionRate != null && stats.conversionRate >= 30
+                                                                ? "text-emerald-700 dark:text-emerald-400 font-medium"
+                                                                : zeroConv
+                                                                  ? "text-rose-600 dark:text-rose-400 font-medium"
+                                                                  : "text-foreground/80"
+                                                        }>
+                                                            {pct(stats.conversionRate)}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-4 py-3 text-right tabular-nums hidden md:table-cell text-muted-foreground text-xs">{formatDuration(stats.avgTimeToContact)}</td>
+                                                    <td className="px-4 py-3 text-right tabular-nums hidden md:table-cell text-muted-foreground">{stats.totalNotes}</td>
                                                 </tr>
-                                            </thead>
-                                            <tbody>
-                                                {statsPerWs.map(({ ws, stats }, i) => (
-                                                    <tr
-                                                        key={ws.id}
-                                                        className={`border-b border-border/30 last:border-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.03] transition-colors ${
-                                                            i % 2 === 1 ? "bg-[#FAFAFA] dark:bg-white/[0.03]" : "bg-background"
-                                                        }`}
-                                                    >
-                                                        <td className="px-4 py-3">
-                                                            <span className="font-semibold text-foreground">{ws.name}</span>
-                                                            {ws.sector && (
-                                                                <span className="ml-2 text-xs text-muted-foreground font-normal">{ws.sector}</span>
-                                                            )}
-                                                        </td>
-                                                        <td className="px-4 py-3 text-right tabular-nums font-medium">{stats.total}</td>
-                                                        <td className="px-4 py-3 text-right tabular-nums hidden sm:table-cell text-muted-foreground">{stats.active}</td>
-                                                        <td className="px-4 py-3 text-right tabular-nums font-medium">
-                                                            <span className={stats.won > 0 ? "text-emerald-700 dark:text-emerald-400" : ""}>
-                                                                {stats.won}
-                                                            </span>
-                                                        </td>
-                                                        <td className="px-4 py-3 text-right tabular-nums hidden sm:table-cell">
-                                                            <span className={
-                                                                stats.conversionRate != null && stats.conversionRate >= 30
-                                                                    ? "text-emerald-700 dark:text-emerald-400 font-medium"
-                                                                    : "text-foreground/80"
-                                                            }>
-                                                                {pct(stats.conversionRate)}
-                                                            </span>
-                                                        </td>
-                                                        <td className="px-4 py-3 text-right tabular-nums hidden md:table-cell text-muted-foreground text-xs">{formatDuration(stats.avgTimeToContact)}</td>
-                                                        <td className="px-4 py-3 text-right tabular-nums hidden md:table-cell text-muted-foreground">{stats.totalNotes}</td>
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </div>
-                            )}
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            </div>
+                            <p className="text-[12px] text-muted-foreground flex items-center gap-1.5">
+                                <Users size={12} /> Cliquez une ligne pour ouvrir l&apos;espace
+                            </p>
                         </div>
-                    )}
-
-                    {/* ── Timing & vélocité ── */}
-                    {tab === "timing" && (
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                            <Tile
-                                label="Délai moyen avant contact"
-                                value={formatDuration(current.avgTimeToContact)}
-                                sub="De 'Nouveau' au premier appel"
-                            />
-                            <Tile
-                                label="Durée moy. dans le pipeline"
-                                value={formatDuration(current.avgPipelineDuration)}
-                                sub="Leads actifs uniquement"
-                            />
-                            <Tile
-                                label="Durée moy. pour closer"
-                                value={formatDuration(current.avgClosingDuration)}
-                                sub="De création à 'Gagné'"
-                            />
-                        </div>
-                    )}
-
-                    {/* ── Téléphonie ── */}
-                    {tab === "calls" && (
-                        <CallStatsSection callStats={callStats} />
                     )}
                 </div>
             ) : (
-                <div className="rounded-xl bg-[#FAFAFA] dark:bg-white/[0.04] p-10 text-center">
+                <div className="rounded-xl border border-border/60 bg-card p-10 text-center">
                     <BarChart3 size={24} className="mx-auto text-muted-foreground/40 mb-3" />
                     <p className="text-sm text-muted-foreground">
                         {current?.total === 0

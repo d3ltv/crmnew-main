@@ -43,3 +43,36 @@ export function makeRdvNextAction({ date, dueAt, label }) {
         meeting: true,
     };
 }
+
+/**
+ * Rappel calendrier CRM (pas un RDV meeting).
+ * @param {{ date: string, dueAt: string, label?: string }} opts
+ */
+export function makeCalendarReminder({ date, dueAt, label }) {
+    const raw = (label || "").trim();
+    const normalized = raw
+        ? (raw.startsWith("📅") ? raw : `📅 Rappel · ${raw}`)
+        : "📅 Rappel";
+    return {
+        date,
+        dueAt,
+        label: normalized,
+        auto: false,
+        meeting: false,
+        calendarReminder: true,
+    };
+}
+
+/** True si nextAction est une relance post-appel encore « suggérée ». */
+export function isSuggestedRelance(nextAction) {
+    if (!nextAction || nextAction.auto || isManualRdv(nextAction)) return false;
+    return /^🔁\s*Relance suggérée/i.test((nextAction.label || "").trim());
+}
+
+/** True si nextAction est un rappel calendrier (pas RDV, pas auto-followup). */
+export function isCalendarReminder(nextAction) {
+    if (!nextAction || nextAction.auto || isManualRdv(nextAction)) return false;
+    if (nextAction.calendarReminder) return true;
+    const label = (nextAction.label || "").trim();
+    return /^📅\s*Rappel\b/i.test(label) || isSuggestedRelance(nextAction);
+}

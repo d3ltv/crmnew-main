@@ -1,6 +1,12 @@
 import React, { useMemo } from "react";
 import { Trophy, Users, TrendingUp } from "lucide-react";
 import { getColumnColor } from "@/lib/columnColors";
+import {
+    getAgencySuspicion,
+    isAgencyDetectionEnabled,
+} from "@/lib/agencyDetection";
+import { AgencySuspectBadge, AGENCY_NAME_CLS } from "./AgencySuspectBadge";
+import { filterLeads } from "@/lib/leadFilter";
 
 function pickEmoji(id = "") {
     const EMOJIS = ["🏢","🏗","🔧","⚡","🌿","🏠","🚀","💡","🔑","🎯","🛠","🌊","🏔","🎪","🔮","🌸","🦋","🐝","🌻","🍀","🔵","🟢","🟡","🟠","🔴","🟣","⚫","🟤","🔶","🔷"];
@@ -9,14 +15,13 @@ function pickEmoji(id = "") {
     return EMOJIS[Math.abs(h) % EMOJIS.length];
 }
 
-export const PipelineView = ({ workspace, filter, onOpenLead }) => {
+export const PipelineView = ({ workspace, filter, activeFilters = [], onOpenLead }) => {
+    const agencyOn = isAgencyDetectionEnabled(workspace);
     const stats = useMemo(() => {
-        const q = (filter || "").toLowerCase().trim();
-        const allLeads = Object.values(workspace.leads);
-        const filtered = !q ? allLeads : allLeads.filter((l) =>
-            (l.company || "").toLowerCase().includes(q) ||
-            (l.contact || "").toLowerCase().includes(q) ||
-            (l.tags || []).some((t) => t.toLowerCase().includes(q))
+        const filtered = filterLeads(
+            Object.values(workspace.leads),
+            { filter, activeFilters },
+            workspace
         );
 
         const totalDeals = filtered.reduce((s, l) => s + (l.dealValue || 0), 0);
@@ -31,7 +36,7 @@ export const PipelineView = ({ workspace, filter, onOpenLead }) => {
         });
 
         return { byColumn, totalDeals, totalLeads };
-    }, [workspace.leads, workspace.columns, workspace.columnOrder, filter]);
+    }, [workspace, filter, activeFilters]);
 
     const fmt = (v) => new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(v);
 
@@ -97,21 +102,35 @@ export const PipelineView = ({ workspace, filter, onOpenLead }) => {
                                     </div>
                                     {/* Leads de cette colonne */}
                                     <div className="flex flex-wrap gap-1.5">
-                                        {leads.slice(0, 8).map((lead) => (
+                                        {leads.slice(0, 8).map((lead) => {
+                                            const agencySuspect = getAgencySuspicion(lead, agencyOn);
+                                            return (
                                             <button
                                                 key={lead.id}
                                                 onClick={() => onOpenLead(lead)}
                                                 className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-muted/60 hover:bg-muted text-[12px] text-foreground transition-colors max-w-[200px]"
+                                                title={agencySuspect ? agencySuspect.label : undefined}
                                             >
-                                                <span className="text-[14px] select-none">{pickEmoji(lead.id)}</span>
-                                                <span className="truncate font-medium">{lead.company}</span>
+                                                {agencySuspect ? (
+                                                    <AgencySuspectBadge
+                                                        score={agencySuspect.score}
+                                                        label={agencySuspect.label}
+                                                        variant="compact"
+                                                    />
+                                                ) : (
+                                                    <span className="text-[14px] select-none">{pickEmoji(lead.id)}</span>
+                                                )}
+                                                <span className={`truncate font-medium ${agencySuspect ? AGENCY_NAME_CLS : ""}`}>
+                                                    {lead.company}
+                                                </span>
                                                 {lead.dealValue != null && (
                                                     <span className="text-[10.5px] text-emerald-600 dark:text-emerald-400 font-semibold shrink-0">
                                                         {fmt(lead.dealValue)}
                                                     </span>
                                                 )}
                                             </button>
-                                        ))}
+                                            );
+                                        })}
                                         {leads.length > 8 && (
                                             <span className="flex items-center px-2.5 py-1.5 text-[12px] text-muted-foreground">
                                                 +{leads.length - 8} autres

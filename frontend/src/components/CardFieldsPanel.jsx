@@ -1,13 +1,14 @@
 import React, { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import { useCrm } from "@/context/CrmContext";
 import { DEFAULT_CARD_FIELDS } from "@/context/CrmContext";
-import { GripVertical, Eye, EyeOff, PanelsLeftRight, Trash2, GalleryHorizontal, AlertTriangle } from "lucide-react";
+import { GripVertical, Eye, EyeOff, PanelsLeftRight, Trash2, GalleryHorizontal, AlertTriangle, Building2 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import {
     RULE_DEFS,
     normalizeInconsistencyConfig,
     defaultInconsistencyConfig,
 } from "@/lib/inconsistencyRules";
+import { isAgencyDetectionEnabled } from "@/lib/agencyDetection";
 
 const MIN_WIDTH = 260;
 const MAX_WIDTH = 520;
@@ -46,6 +47,7 @@ export const CardFieldsPanel = ({ workspace }) => {
     const currentWidth = workspace.columnWidth ?? DEFAULT_WIDTH;
     const currentScale = workspace.cardScale ?? DEFAULT_SCALE;
     const inconsistencyConfig = normalizeInconsistencyConfig(workspace.inconsistencyConfig);
+    const agencyDetectionOn = isAgencyDetectionEnabled(workspace);
 
     const patchInconsistencyConfig = (partial) => {
         const next = {
@@ -291,6 +293,31 @@ export const CardFieldsPanel = ({ workspace }) => {
                 ))}
             </div>
 
+            {/* ── Détection cabinets de recrutement ── */}
+            <div className="px-4 pt-3 pb-3 border-t border-border/60 space-y-2" data-testid="agency-detection-config">
+                <div className="flex items-center gap-1.5 text-sm font-semibold">
+                    <Building2 size={14} className="text-orange-600 shrink-0" />
+                    Détection cabinets de recrutement
+                </div>
+                <p className="text-[11px] text-muted-foreground leading-snug">
+                    Flag les cabinets / agences d’intérim via mots-clés (nom, secteur importé) — aucune API.
+                </p>
+                <div className="flex items-center justify-between gap-2">
+                    <span className="text-[12.5px] text-foreground">Activer la détection</span>
+                    <Switch
+                        checked={agencyDetectionOn}
+                        onCheckedChange={(v) =>
+                            dispatch({
+                                type: "SET_AGENCY_DETECTION_ENABLED",
+                                workspaceId: workspace.id,
+                                enabled: v,
+                            })
+                        }
+                        aria-label="Détection cabinets de recrutement"
+                    />
+                </div>
+            </div>
+
             {/* ── Incohérences prospection ── */}
             <div className="px-4 pt-3 pb-3 border-t border-border/60 space-y-3" data-testid="inconsistency-config">
                 <div className="flex items-center gap-1.5 text-sm font-semibold">
@@ -418,6 +445,11 @@ export const CardFieldsPanel = ({ workspace }) => {
                             type: "SET_INCONSISTENCY_CONFIG",
                             workspaceId: workspace.id,
                             config: defaultInconsistencyConfig(),
+                        });
+                        dispatch({
+                            type: "SET_AGENCY_DETECTION_ENABLED",
+                            workspaceId: workspace.id,
+                            enabled: true,
                         });
                     }}
                     className="text-xs text-muted-foreground hover:text-foreground transition-colors"

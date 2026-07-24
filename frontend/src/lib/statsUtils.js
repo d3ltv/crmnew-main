@@ -6,6 +6,11 @@ import {
     isContactedColumn,
 } from "@/constants/columnPatterns";
 import { toLocalDateKey } from "@/lib/dateUtils";
+import {
+    getAgencySuspicion,
+    isAgencyDetectionEnabled,
+} from "@/lib/agencyDetection";
+import { getLeadVigilance } from "@/lib/inconsistencyRules";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -48,8 +53,12 @@ function detectSpecialCols(columns) {
 
 /**
  * Calcule toutes les statistiques pour un workspace donné.
+ * @param {object} ws
+ * @param {{ includeQuality?: boolean }} [opts]
+ *   includeQuality — vigilance + cabinets (coûteux). Désactivé par défaut
+ *   pour la page d'accueil / cartes espaces.
  */
-export function computeWorkspaceStats(ws) {
+export function computeWorkspaceStats(ws, { includeQuality = false } = {}) {
     const leads = Object.values(ws.leads);
     const total = leads.length;
     const { wonId, lostId, contactIds } = detectSpecialCols(ws.columns);
@@ -111,6 +120,38 @@ export function computeWorkspaceStats(ws) {
         (l) => l.autoFollowup && (l.autoFollowup.overdue || new Date(l.autoFollowup.dueAt) <= new Date())
     ).length;
 
+    // ---- Vigilance & cabinets (optionnel — coûteux sur gros pipelines) ----
+    let agencySuspectCount = 0;
+    let vigilanceCriticalCount = 0;
+    let vigilanceWarningCount = 0;
+    let agencyWon = 0;
+    let directWon = 0;
+    let agencyRate = null;
+    let agencyConversionRate = null;
+    let directConversionRate = null;
+
+    if (includeQuality) {
+        const agencyOn = isAgencyDetectionEnabled(ws);
+        for (const l of leads) {
+            const isAgency = !!getAgencySuspicion(l, agencyOn);
+            if (isAgency) agencySuspectCount++;
+
+            const vig = getLeadVigilance(l, ws.columns, ws.inconsistencyConfig);
+            if (vig.level === "critical") vigilanceCriticalCount++;
+            else if (vig.level === "warning") vigilanceWarningCount++;
+
+            if (l.columnId === wonId) {
+                if (isAgency) agencyWon++;
+                else directWon++;
+            }
+        }
+
+        const directCount = Math.max(0, total - agencySuspectCount);
+        agencyRate = total > 0 ? (agencySuspectCount / total) * 100 : null;
+        agencyConversionRate = agencySuspectCount > 0 ? (agencyWon / agencySuspectCount) * 100 : null;
+        directConversionRate = directCount > 0 ? (directWon / directCount) * 100 : null;
+    }
+
     // ---- Prix / deal values ----
     // Tous les leads avec un dealValue (peu importe la colonne — peut être saisi manuellement)
     const dealsWithValue = leads
@@ -171,6 +212,15 @@ export function computeWorkspaceStats(ws) {
         lastActivityAt,
         noContact,
         overdueFollowups,
+        // vigilance / cabinets
+        agencySuspectCount,
+        agencyRate,
+        vigilanceCriticalCount,
+        vigilanceWarningCount,
+        agencyWon,
+        directWon,
+        agencyConversionRate,
+        directConversionRate,
         // deal / prix
         totalRevenue,
         avgDealValue,
@@ -249,6 +299,21 @@ export function aggregateStats(statsList) {
         lastActivityAt: Math.max(...statsList.map((s) => s.lastActivityAt || 0)) || null,
         noContact: sum("noContact"),
         overdueFollowups: sum("overdueFollowups"),
+        // vigilance / cabinets
+        agencySuspectCount: sum("agencySuspectCount"),
+        agencyRate: total > 0 ? (sum("agencySuspectCount") / total) * 100 : null,
+        vigilanceCriticalCount: sum("vigilanceCriticalCount"),
+        vigilanceWarningCount: sum("vigilanceWarningCount"),
+        agencyWon: sum("agencyWon"),
+        directWon: sum("directWon"),
+        agencyConversionRate: (() => {
+            const a = sum("agencySuspectCount");
+            return a > 0 ? (sum("agencyWon") / a) * 100 : null;
+        })(),
+        directConversionRate: (() => {
+            const d = Math.max(0, total - sum("agencySuspectCount"));
+            return d > 0 ? (sum("directWon") / d) * 100 : null;
+        })(),
         // deal / prix
         totalRevenue,
         avgDealValue: avgNullable("avgDealValue"),
@@ -427,6 +492,148 @@ export function computeCallStats(workspaces) {
         bestDay,
         streak,
     };
+}
+
+/**
+ * Série calendaire vide sur N jours (valeur 0).
+ */
+function emptyDaySeries(days = 30) {
+    const series = [];
+    const today = new Date();
+    for (let i = days - 1; i >= 0; i--) {
+        const d = new Date(today);
+        d.setDate(d.getDate() - i);
+        series.push({ date: toLocalDateKey(d), value: 0 });
+    }
+    return series;
+}
+
+function monthBounds(ref = new Date()) {
+    const start = new Date(ref.getFullYear(), ref.getMonth(), 1);
+    const end = new Date(ref.getFullYear(), ref.getMonth() + 1, 1);
+    const prevStart = new Date(ref.getFullYear(), ref.getMonth() - 1, 1);
+    const prevEnd = start;
+    return { start, end, prevStart, prevEnd };
+}
+
+function inRange(ts, start, end) {
+    return ts >= start.getTime() && ts < end.getTime();
+}
+
+function pctChange(current, previous) {
+    if (previous === 0) return current > 0 ? 100 : null;
+    return ((current - previous) / previous) * 100;
+}
+
+/**
+ * Séries d'activité 30 jours pour sparklines (leads créés, notes, appels).
+ * @param {Array} workspaces
+ * @param {number} [days=30]
+ */
+export function computeActivitySeries(workspaces, days = 30) {
+    const leadsCreated = emptyDaySeries(days);
+    const notes = emptyDaySeries(days);
+    const calls = emptyDaySeries(days);
+    const leadMap = new Map(leadsCreated.map((d) => [d.date, d]));
+    const noteMap = new Map(notes.map((d) => [d.date, d]));
+    const callMap = new Map(calls.map((d) => [d.date, d]));
+
+    for (const ws of workspaces || []) {
+        for (const lead of Object.values(ws.leads || {})) {
+            const createdKey = toLocalDateKey(lead.createdAt);
+            if (leadMap.has(createdKey)) leadMap.get(createdKey).value += 1;
+
+            for (const note of lead.notes || []) {
+                const noteKey = toLocalDateKey(note.at);
+                if (noteMap.has(noteKey)) noteMap.get(noteKey).value += 1;
+                const text = note.text || "";
+                if ((text.includes("📞") || text.includes("📵")) && callMap.has(noteKey)) {
+                    callMap.get(noteKey).value += 1;
+                }
+            }
+        }
+    }
+
+    return {
+        leadsCreated,
+        notes,
+        calls,
+        leadsCreatedValues: leadsCreated.map((d) => d.value),
+        notesValues: notes.map((d) => d.value),
+        callsValues: calls.map((d) => d.value),
+    };
+}
+
+/**
+ * Trends mois courant vs mois précédent (leads créés, notes, espaces).
+ * @param {Array} workspaces
+ */
+export function computeMonthOverMonthTrends(workspaces) {
+    const { start, end, prevStart, prevEnd } = monthBounds();
+    let leadsThis = 0;
+    let leadsPrev = 0;
+    let notesThis = 0;
+    let notesPrev = 0;
+    let spacesThis = 0;
+    let spacesPrev = 0;
+
+    for (const ws of workspaces || []) {
+        const createdWs = ws.createdAt ? new Date(ws.createdAt).getTime() : 0;
+        if (createdWs && inRange(createdWs, start, end)) spacesThis += 1;
+        if (createdWs && inRange(createdWs, prevStart, prevEnd)) spacesPrev += 1;
+
+        for (const lead of Object.values(ws.leads || {})) {
+            const created = lead.createdAt ? new Date(lead.createdAt).getTime() : 0;
+            if (created && inRange(created, start, end)) leadsThis += 1;
+            if (created && inRange(created, prevStart, prevEnd)) leadsPrev += 1;
+
+            for (const note of lead.notes || []) {
+                const at = note.at ? new Date(note.at).getTime() : 0;
+                if (at && inRange(at, start, end)) notesThis += 1;
+                if (at && inRange(at, prevStart, prevEnd)) notesPrev += 1;
+            }
+        }
+    }
+
+    return {
+        leadsThis,
+        leadsPrev,
+        leadsPct: pctChange(leadsThis, leadsPrev),
+        leadsDelta: leadsThis - leadsPrev,
+        notesThis,
+        notesPrev,
+        notesPct: pctChange(notesThis, notesPrev),
+        spacesThis,
+        spacesPrev,
+        spacesDelta: spacesThis - spacesPrev,
+    };
+}
+
+/**
+ * Libellé tendance FR : "+12% ce mois" / "—".
+ */
+export function formatTrendLabel(pct, { delta, unit } = {}) {
+    if (pct == null && (delta == null || delta === 0)) return null;
+    if (delta != null && unit) {
+        const sign = delta > 0 ? "+" : "";
+        return `${sign}${delta} ${unit}`;
+    }
+    if (pct == null) return null;
+    const sign = pct > 0 ? "+" : "";
+    return `${sign}${Math.round(pct)}% ce mois`;
+}
+
+/**
+ * Valeur pipeline (€) = somme des dealValue des leads actifs (hors gagné/perdu).
+ */
+export function computePipelineValue(ws) {
+    const { wonId, lostId } = detectSpecialCols(ws.columns || {});
+    return Object.values(ws.leads || {}).reduce((sum, l) => {
+        if (l.columnId === wonId || l.columnId === lostId) return sum;
+        const v = l.dealValue;
+        if (v == null || isNaN(v) || v <= 0) return sum;
+        return sum + v;
+    }, 0);
 }
 
 export { formatDuration };

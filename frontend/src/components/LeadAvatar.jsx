@@ -1,8 +1,7 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
     findCompanyDomain,
-    clearbitLogoUrl,
-    googleFaviconUrl,
+    logoCandidateUrls,
     isAggregatorLogoUrl,
 } from "@/lib/logoUtils";
 
@@ -36,67 +35,86 @@ function initialsFromLead(lead) {
 }
 
 /**
- * Logo entreprise (domaine réel) → favicon → initiale.
- * Ignore les logos HelloWork / Indeed / LinkedIn stockés par erreur.
+ * Logo entreprise → domaine parent → favicon → initiale.
+ * Sur les cartes Kanban : charge l'image seulement à l'entrée viewport (moins de RAM/réseau).
  */
 export const LeadAvatar = ({ lead, size, card = false, bgClass }) => {
-    const [logoFailed, setLogoFailed] = useState(false);
-    const [fallbackFailed, setFallbackFailed] = useState(false);
+    const [step, setStep] = useState(0);
+    const [inView, setInView] = useState(!card);
+    const rootRef = useRef(null);
 
     const domain = useMemo(
         () => findCompanyDomain(lead),
         [lead.website, lead.email, lead.extra, lead.customFields]
     );
 
-    const logoUrl = useMemo(() => {
-        if (domain) return clearbitLogoUrl(domain);
-        if (lead.logoUrl && !isAggregatorLogoUrl(lead.logoUrl)) return lead.logoUrl;
-        return null;
+    const candidates = useMemo(() => {
+        if (domain) return logoCandidateUrls(domain);
+        if (lead.logoUrl && !isAggregatorLogoUrl(lead.logoUrl)) {
+            const clearbit = String(lead.logoUrl).match(/logo\.clearbit\.com\/([^/?#]+)/i);
+            if (clearbit?.[1]) {
+                let d = clearbit[1];
+                try { d = decodeURIComponent(d); } catch { /* keep raw */ }
+                return logoCandidateUrls(d);
+            }
+            return [lead.logoUrl];
+        }
+        return [];
     }, [domain, lead.logoUrl]);
 
-    const fallbackUrl = domain ? googleFaviconUrl(domain) : null;
+    const candidatesKey = candidates.join("|");
 
     useEffect(() => {
-        setLogoFailed(false);
-        setFallbackFailed(false);
-    }, [logoUrl, fallbackUrl]);
+        setStep(0);
+    }, [candidatesKey]);
 
+    useEffect(() => {
+        if (!card || inView) return;
+        const el = rootRef.current;
+        if (!el || typeof IntersectionObserver === "undefined") {
+            setInView(true);
+            return;
+        }
+        const io = new IntersectionObserver(
+            ([entry]) => {
+                if (entry.isIntersecting) {
+                    setInView(true);
+                    io.disconnect();
+                }
+            },
+            { rootMargin: "100px" }
+        );
+        io.observe(el);
+        return () => io.disconnect();
+    }, [card, inView]);
+
+    const currentUrl = inView ? (candidates[step] || null) : null;
     const hue = AVATAR_HUES[hashId(lead.id) % AVATAR_HUES.length];
     const well = bgClass || hue;
     const containerSize = card ? "w-7 h-7" : "w-8 h-8";
     const imgSize = card ? "w-4 h-4" : "w-5 h-5";
-    const imgFbSize = card ? "w-3.5 h-3.5" : "w-4.5 h-4.5";
+    const isFavicon = currentUrl && /favicons|duckduckgo/i.test(currentUrl);
+    const imgClass = isFavicon
+        ? (card ? "w-3.5 h-3.5" : "w-4.5 h-4.5")
+        : imgSize;
     const initialSize = size || (card ? "text-[10px]" : "text-[11px]");
 
-    if (logoUrl && !logoFailed) {
+    if (currentUrl) {
         return (
             <span
+                ref={rootRef}
                 className={`shrink-0 select-none flex items-center justify-center ${containerSize} rounded-md overflow-hidden bg-white dark:bg-white/10`}
                 aria-hidden
             >
                 <img
-                    src={logoUrl}
+                    key={currentUrl}
+                    src={currentUrl}
                     alt=""
-                    className={`${imgSize} object-contain`}
-                    onError={() => setLogoFailed(true)}
+                    className={`${imgClass} object-contain`}
+                    onError={() => setStep((s) => s + 1)}
                     loading="lazy"
-                />
-            </span>
-        );
-    }
-
-    if (fallbackUrl && !fallbackFailed) {
-        return (
-            <span
-                className={`shrink-0 select-none flex items-center justify-center ${containerSize} rounded-md overflow-hidden bg-white dark:bg-white/10`}
-                aria-hidden
-            >
-                <img
-                    src={fallbackUrl}
-                    alt=""
-                    className={`${imgFbSize} object-contain`}
-                    onError={() => setFallbackFailed(true)}
-                    loading="lazy"
+                    decoding="async"
+                    referrerPolicy="no-referrer"
                 />
             </span>
         );
@@ -104,7 +122,8 @@ export const LeadAvatar = ({ lead, size, card = false, bgClass }) => {
 
     return (
         <span
-            className={`shrink-0 select-none flex items-center justify-center ${containerSize} rounded-md font-semibold tracking-tight ${well} ${initialSize}`}
+            ref={rootRef}
+            className={`shrink-0 select-none flex items-center justify-center ${containerSize} rounded-md font-semibold ${well} ${initialSize}`}
             aria-hidden
         >
             {initialsFromLead(lead)}

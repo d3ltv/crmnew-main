@@ -1,5 +1,7 @@
 /**
- * Logos d'entreprise — Clearbit + fallback favicon Google.
+ * Logos d'entreprise — API logo gratuite + fallback favicon.
+ * Clearbit (logo.clearbit.com) est hors service depuis déc. 2025 :
+ * on utilise Hunter (drop-in, sans clé) puis Google favicon.
  * Ignore les domaines d'agrégateurs d'annonces (HelloWork, Indeed…)
  * pour afficher le vrai logo de l'entreprise, pas celui de la source.
  */
@@ -115,12 +117,60 @@ export function findCompanyDomain(leadOrParts = {}) {
     return null;
 }
 
+/** Logo haute qualité par domaine (remplace Clearbit, sans clé API). */
+export function companyLogoUrl(domain) {
+    if (!domain) return null;
+    return `https://logos.hunter.io/${domain}`;
+}
+
+/** @deprecated alias — Clearbit est mort ; pointe vers Hunter. */
 export function clearbitLogoUrl(domain) {
-    return `https://logo.clearbit.com/${domain}`;
+    return companyLogoUrl(domain);
 }
 
 export function googleFaviconUrl(domain) {
+    if (!domain) return null;
     return `https://www.google.com/s2/favicons?domain=${domain}&sz=128`;
+}
+
+/**
+ * Domaine parent pour un 2e essai (careers.acme.com → acme.com).
+ * Ne remonte pas aux TLD publics (co.uk, com.fr…).
+ */
+export function parentCompanyDomain(domain) {
+    if (!domain) return null;
+    const parts = String(domain).toLowerCase().split(".").filter(Boolean);
+    if (parts.length < 3) return null;
+    // co.uk / com.au / etc. : garder 3 segments mini
+    const multiTld = new Set(["co", "com", "org", "net", "gov", "ac"]);
+    if (parts.length >= 3 && multiTld.has(parts[parts.length - 2])) {
+        if (parts.length < 4) return null;
+        return parts.slice(-3).join(".");
+    }
+    return parts.slice(1).join(".");
+}
+
+/**
+ * Chaîne d'URLs à essayer pour un domaine (logo → logo parent → favicon).
+ * @returns {string[]}
+ */
+export function logoCandidateUrls(domain) {
+    if (!domain) return [];
+    const urls = [];
+    const primary = companyLogoUrl(domain);
+    if (primary) urls.push(primary);
+    const parent = parentCompanyDomain(domain);
+    if (parent && parent !== domain) {
+        const parentLogo = companyLogoUrl(parent);
+        if (parentLogo) urls.push(parentLogo);
+    }
+    const fav = googleFaviconUrl(domain);
+    if (fav) urls.push(fav);
+    if (parent && parent !== domain) {
+        const parentFav = googleFaviconUrl(parent);
+        if (parentFav) urls.push(parentFav);
+    }
+    return urls;
 }
 
 /**
@@ -135,14 +185,15 @@ export function resolveLogo(websiteOrLead, email) {
         domain = findCompanyDomain({ website: websiteOrLead, email });
     }
     if (!domain) return null;
-    return clearbitLogoUrl(domain);
+    return companyLogoUrl(domain);
 }
 
 /** True si une URL logo pointe vers un agrégateur (à ignorer à l'affichage). */
 export function isAggregatorLogoUrl(logoUrl) {
     if (!logoUrl) return false;
     try {
-        const m = String(logoUrl).match(/logo\.clearbit\.com\/([^/?#]+)/i)
+        const m = String(logoUrl).match(/logos\.hunter\.io\/([^/?#]+)/i)
+            || String(logoUrl).match(/logo\.clearbit\.com\/([^/?#]+)/i)
             || String(logoUrl).match(/[?&]domain=([^&]+)/i);
         if (!m) return false;
         return isAggregatorDomain(decodeURIComponent(m[1]));

@@ -8,13 +8,14 @@
 import React, { useState, useCallback } from "react";
 import {
     BookMarked, Pencil, Trash2, ChevronDown, ChevronUp,
-    Check, X, Plus, Clock, Hash, Layers,
+    Check, X, Plus, Clock, Hash, Layers, Copy,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
-    loadProfiles, renameProfile, deleteProfile,
+    loadProfiles, renameProfile, deleteProfile, duplicateProfile,
     formatProfileDate, mappingLabel, scoreProfile,
 } from "@/lib/importProfiles";
+import { toast } from "sonner";
 
 // ── Aperçu du mapping d'un profil ─────────────────────────────────────────────
 const ProfilePreview = ({ profile }) => {
@@ -46,7 +47,7 @@ const ProfilePreview = ({ profile }) => {
 };
 
 // ── Carte d'un profil ──────────────────────────────────────────────────────────
-const ProfileCard = ({ profile, onApply, onDelete, onRename, matchScore }) => {
+const ProfileCard = ({ profile, onApply, onDelete, onRename, onDuplicate, onUpdateFromCurrent, matchScore, canUpdate }) => {
     const [expanded,     setExpanded]     = useState(false);
     const [editing,      setEditing]      = useState(false);
     const [nameDraft,    setNameDraft]    = useState(profile.name);
@@ -70,14 +71,11 @@ const ProfileCard = ({ profile, onApply, onDelete, onRename, matchScore }) => {
             : "border-border"
         }`}>
             <div className="px-3 py-3 flex items-start gap-2.5">
-                {/* Icône */}
                 <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0 mt-0.5">
                     <BookMarked size={14} />
                 </div>
 
-                {/* Contenu */}
                 <div className="flex-1 min-w-0">
-                    {/* Nom — éditable inline */}
                     {editing ? (
                         <div className="flex items-center gap-1.5">
                             <input
@@ -110,7 +108,6 @@ const ProfileCard = ({ profile, onApply, onDelete, onRename, matchScore }) => {
                         </div>
                     )}
 
-                    {/* Métadonnées */}
                     <div className="flex items-center gap-3 mt-0.5 flex-wrap">
                         <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
                             <Layers size={10} />
@@ -127,12 +124,16 @@ const ProfileCard = ({ profile, onApply, onDelete, onRename, matchScore }) => {
                     </div>
                 </div>
 
-                {/* Actions */}
                 <div className="flex items-center gap-1 shrink-0">
                     <button onClick={() => setExpanded((v) => !v)}
                         title={expanded ? "Masquer l'aperçu" : "Voir le mapping"}
                         className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors">
                         {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                    </button>
+                    <button onClick={() => onDuplicate?.(profile.id)}
+                        title="Dupliquer"
+                        className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors">
+                        <Copy size={12} />
                     </button>
                     <button onClick={() => setEditing(true)}
                         title="Renommer"
@@ -160,16 +161,14 @@ const ProfileCard = ({ profile, onApply, onDelete, onRename, matchScore }) => {
                 </div>
             </div>
 
-            {/* Aperçu mapping */}
             {expanded && (
                 <div className="px-3 pb-3">
                     <ProfilePreview profile={profile} />
                 </div>
             )}
 
-            {/* Bouton Appliquer */}
-            {onApply && (
-                <div className="px-3 pb-3 pt-0">
+            <div className="px-3 pb-3 pt-0 flex flex-col gap-1.5">
+                {onApply && (
                     <Button onClick={() => onApply(profile)} size="sm"
                         className={`w-full h-8 rounded-lg text-[12px] ${
                             scorePct >= 90
@@ -178,8 +177,14 @@ const ProfileCard = ({ profile, onApply, onDelete, onRename, matchScore }) => {
                         }`}>
                         {scorePct >= 90 ? "✓ Appliquer ce profil" : "Appliquer ce profil"}
                     </Button>
-                </div>
-            )}
+                )}
+                {canUpdate && onUpdateFromCurrent && (
+                    <Button variant="outline" size="sm" onClick={() => onUpdateFromCurrent(profile.id)}
+                        className="w-full h-8 rounded-lg text-[12px] border-emerald-500/40 text-emerald-700 dark:text-emerald-400">
+                        Enregistrer le mapping actuel dessus
+                    </Button>
+                )}
+            </div>
         </div>
     );
 };
@@ -198,6 +203,8 @@ export const ImportProfilesManager = ({
     currentColMapping = {},
     onApply,
     onSaveCurrent,
+    onUpdateProfile,
+    appliedProfileId = null,
     canSave = false,
 }) => {
     const [profiles,    setProfiles]    = useState(() => loadProfiles());
@@ -214,6 +221,12 @@ export const ImportProfilesManager = ({
     const handleRename = useCallback((id, newName) => {
         renameProfile(id, newName);
         refresh();
+    }, []);
+
+    const handleDuplicate = useCallback((id) => {
+        const copy = duplicateProfile(id);
+        refresh();
+        return copy;
     }, []);
 
     const handleSave = () => {
@@ -239,7 +252,6 @@ export const ImportProfilesManager = ({
 
     return (
         <div className="space-y-3">
-            {/* Header */}
             <div className="flex items-center justify-between gap-2">
                 <h3 className="text-sm font-semibold flex items-center gap-1.5">
                     <BookMarked size={14} className="text-primary" />
@@ -251,7 +263,6 @@ export const ImportProfilesManager = ({
                     )}
                 </h3>
 
-                {/* Sauvegarder le mapping courant */}
                 {canSave && (
                     <div>
                         {saveMode ? (
@@ -280,21 +291,19 @@ export const ImportProfilesManager = ({
                             <Button variant="outline" size="sm" onClick={() => { setSaveMode(true); setSaveName(""); }}
                                 className="h-7 rounded-lg text-[12px] gap-1.5">
                                 <Plus size={11} />
-                                Sauvegarder ce mapping
+                                Nouveau profil
                             </Button>
                         )}
                     </div>
                 )}
             </div>
 
-            {/* Liste des profils */}
             {sorted.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-border p-5 text-center">
                     <BookMarked size={20} className="mx-auto text-muted-foreground/30 mb-2" />
                     <p className="text-sm text-muted-foreground">Aucun profil enregistré.</p>
                     <p className="text-xs text-muted-foreground/60 mt-1">
-                        Après avoir configuré un mapping, cliquez sur « Sauvegarder ce mapping »
-                        pour ne plus jamais refaire cette étape.
+                        Après avoir configuré un mapping, enregistrez-le pour le réutiliser.
                     </p>
                 </div>
             ) : (
@@ -307,6 +316,14 @@ export const ImportProfilesManager = ({
                             onApply={onApply}
                             onDelete={handleDelete}
                             onRename={handleRename}
+                            onDuplicate={(id) => {
+                                const copy = handleDuplicate(id);
+                                if (copy) toast.success(`Profil « ${copy.name} » créé`);
+                            }}
+                            canUpdate={canSave}
+                            onUpdateFromCurrent={onUpdateProfile
+                                ? (id) => { onUpdateProfile(id); refresh(); }
+                                : undefined}
                         />
                     ))}
                 </div>

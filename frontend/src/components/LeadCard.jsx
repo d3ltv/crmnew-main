@@ -32,9 +32,15 @@ import { LeadAvatar } from "./LeadAvatar";
 import { isContactedColumn } from "@/constants/columnPatterns";
 import { isManualRdv } from "@/lib/nextActionUtils";
 import {
-    detectInconsistencies,
+    topCardInconsistency,
     countCriticalInconsistencies,
+    detectInconsistencies,
 } from "@/lib/inconsistencyRules";
+import {
+    getAgencySuspicion,
+    isAgencyDetectionEnabled,
+} from "@/lib/agencyDetection";
+import { AgencySuspectBadge, AGENCY_NAME_CLS } from "./AgencySuspectBadge";
 
 /* ── Tag colors ───────────────────────────────────────────────── */
 const TAG_HUES = [
@@ -219,16 +225,24 @@ export const LeadCard = memo(({
     const followupIsOverdue = followup && (followup.overdue || followup.stage >= 3);
     const isStale           = !!lead.staleInContacted;
 
+    // Recalcul pur à chaque render : ajouter un téléphone / corriger une donnée
+    // fait immédiatement baisser ou disparaître la vigilance affichée.
     const allInconsistencies = detectInconsistencies(
         lead,
         workspace.columns,
         workspace.inconsistencyConfig
     );
-    // Discipline carte : uniquement les critiques (warnings = panneau seulement)
-    const cardInconsistency = (workspace.inconsistencyConfig?.showOnCard === false)
-        ? null
-        : allInconsistencies.find((i) => i.severity === "critical") || null;
+    const cardInconsistency = topCardInconsistency(
+        lead,
+        workspace.columns,
+        workspace.inconsistencyConfig
+    );
     const inconsistencyCount = countCriticalInconsistencies(allInconsistencies);
+
+    const agencySuspect = getAgencySuspicion(
+        lead,
+        isAgencyDetectionEnabled(workspace)
+    );
 
     const currentEntry = [...(lead.statusHistory || [])].reverse().find((e) => e.columnId === lead.columnId);
 
@@ -489,13 +503,25 @@ export const LeadCard = memo(({
                     </div>
                     <div className="flex-1 min-w-0">
                         <div className="flex items-start justify-between gap-1">
-                            <h4 className={`font-semibold text-[14px] leading-snug text-foreground ${
+                            <h4 className={`font-semibold text-[14px] leading-snug ${
+                                agencySuspect
+                                    ? AGENCY_NAME_CLS
+                                    : "text-foreground"
+                            } ${
                                 lead.company?.startsWith("Sans nom") ? "opacity-40 italic font-normal" : ""
-                            }`} title={lead.company}>
+                            }`} title={agencySuspect ? agencySuspect.label : lead.company}>
                                 {lead.company}
                             </h4>
                             {/* Badges urgence — top right */}
                             <div className="flex items-center gap-1 shrink-0 mt-0.5 flex-wrap justify-end">
+                                {agencySuspect && (
+                                    <div onClick={(e) => e.stopPropagation()}>
+                                        <AgencySuspectBadge
+                                            score={agencySuspect.score}
+                                            label={agencySuspect.label}
+                                        />
+                                    </div>
+                                )}
                                 {/* Badge relance : numéro + canal */}
                                 {(lead.relances || []).length > 0 && (() => {
                                     const relances = lead.relances;
@@ -551,11 +577,7 @@ export const LeadCard = memo(({
                                 {visible.has("inconsistencyBadge") && cardInconsistency && !isStale && !(rdv && rdvIsPast) && (
                                     <div
                                         onClick={(e) => e.stopPropagation()}
-                                        className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
-                                            cardInconsistency.severity === "critical"
-                                                ? "bg-rose-600 text-white"
-                                                : "bg-amber-500 text-white"
-                                        }`}
+                                        className="flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-600 text-white"
                                         title={cardInconsistency.message}
                                         data-testid={`lead-inconsistency-badge-${lead.id}`}
                                     >
@@ -568,6 +590,13 @@ export const LeadCard = memo(({
                         {/* Contact / Recruteur — juste sous le nom, gris */}
                         {visible.has("contact") && lead.contact && (
                             <p className="text-[12.5px] text-muted-foreground leading-snug mt-0.5">{lead.contact}</p>
+                        )}
+                        {agencySuspect && (
+                            <AgencySuspectBadge
+                                score={agencySuspect.score}
+                                label={agencySuspect.label}
+                                variant="line"
+                            />
                         )}
                         {/* ── RDV banner — juste sous le nom/contact ── */}
                         {rdv && rdvDate && (
@@ -584,17 +613,11 @@ export const LeadCard = memo(({
                                 </span>
                             </div>
                         )}
-                        {/* Signal d'incohérence sous le RDV / nom
-                            (évite le doublon si le bandeau RDV dépassé couvre déjà rdv_overdue) */}
                         {visible.has("inconsistencyBadge") && cardInconsistency && !(
                             cardInconsistency.id === "rdv_overdue" && rdv && rdvIsPast && inconsistencyCount <= 1
                         ) && (
                             <div
-                                className={`mt-1 text-[11px] font-medium leading-snug line-clamp-2 ${
-                                    cardInconsistency.severity === "critical"
-                                        ? "text-rose-600 dark:text-rose-400"
-                                        : "text-amber-700 dark:text-amber-400"
-                                }`}
+                                className="mt-1 text-[11px] font-medium leading-snug line-clamp-2 text-rose-600 dark:text-rose-400"
                                 title={cardInconsistency.message}
                                 data-testid={`lead-inconsistency-line-${lead.id}`}
                             >
@@ -775,5 +798,6 @@ export const LeadCard = memo(({
     prev.workspace.cardFields === next.workspace.cardFields &&
     prev.workspace.columnWidth === next.workspace.columnWidth &&
     prev.workspace.inconsistencyConfig === next.workspace.inconsistencyConfig &&
+    prev.workspace.agencyDetectionEnabled === next.workspace.agencyDetectionEnabled &&
     prev.workspace.columns === next.workspace.columns
 );

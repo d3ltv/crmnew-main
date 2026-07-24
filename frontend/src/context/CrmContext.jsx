@@ -15,7 +15,10 @@ import {
     isContactedColumn,
     isNouveauColumn,
     isWonColumn,
+    isLostColumn,
     isMeetingColumn,
+    isPropositionColumn,
+    isRappelColumn,
 } from "@/constants/columnPatterns";
 import {
     ensureSidebar,
@@ -26,6 +29,7 @@ import {
 } from "@/lib/sidebarNav";
 import { isManualRdv } from "@/lib/nextActionUtils";
 import { toLocalDateKey } from "@/lib/dateUtils";
+import { resolveColumnIdByName } from "@/lib/csvUtils";
 
 // ---------- Utilities ----------
 const uid = () =>
@@ -159,6 +163,7 @@ const makeWorkspace = (name, sector = "", template = "crm") => {
         cardFields: tpl.cardFields,
         columnWidth: 340,
         cardScale: 1,
+        agencyDetectionEnabled: true,
         createdAt: new Date().toISOString(),
     };
 };
@@ -203,6 +208,42 @@ function followupToNextAction(fu) {
         auto: true,
         stage: fu.stage,
     };
+}
+
+/** Ajuste nextAction / autoFollowup quand le lead change de colonne (cycle prospection). */
+function resolveScheduleOnColumnMove(lead, targetColName, autoFollowup) {
+    const name = targetColName || "";
+    let nextAction = lead.nextAction;
+    const hasManualRdv = isManualRdv(lead.nextAction);
+
+    // Fin de cycle → tout nettoyer
+    if (isWonColumn(name) || isLostColumn(name)) {
+        return { nextAction: null, autoFollowup: null };
+    }
+
+    // Proposition / négociation : on retire les échéances dépassées
+    if (isPropositionColumn(name) && nextAction) {
+        const due = nextAction.dueAt || (nextAction.date ? `${nextAction.date}T09:00:00` : null);
+        if (due && new Date(due).getTime() < Date.now()) {
+            nextAction = null;
+        }
+    }
+
+    // Déplacement hors RDV avec un RDV déjà dépassé → on nettoie (sinon la carte reste « RDV dépassé »)
+    if (nextAction && hasManualRdv && !isMeetingColumn(name) && !isRappelColumn(name)) {
+        const due = nextAction.dueAt || (nextAction.date ? `${nextAction.date}T09:00:00` : null);
+        if (due && new Date(due).getTime() < Date.now() - 60000) {
+            nextAction = null;
+        }
+    }
+
+    if (autoFollowup && !isManualRdv(nextAction)) {
+        nextAction = followupToNextAction(autoFollowup);
+    } else if (!isManualRdv(nextAction) && nextAction?.auto && !autoFollowup) {
+        nextAction = null;
+    }
+
+    return { nextAction, autoFollowup };
 }
 
 // ---------- Persistence ----------
@@ -323,8 +364,8 @@ const NON_UNDOABLE = new Set([
 // Cela évite toute ambiguïté de sens dans les diffs et rend undo/redo parfaitement symétriques.
 // Pour limiter la mémoire, on ne clone que les workspaces qui ont changé entre before et after
 // (les workspaces inchangés sont partagés par référence).
-const MAX_UNDO_STACK = 50;
-const MAX_REDO_STACK = 50;
+const MAX_UNDO_STACK = 15;
+const MAX_REDO_STACK = 15;
 
 function stripTransient(state) {
     // Retire lastDeleted (buffer temporaire) du snapshot pour ne pas polluer le stack
@@ -671,17 +712,14 @@ function reducer(state, action) {
             if (!lead) return state;
             const now = new Date().toISOString();
             const targetCol = ws.columns[action.toColumnId];
-            const autoFollowup = targetCol?.autoFollowup
+            const autoFollowupBase = targetCol?.autoFollowup
                 ? makeFollowup(action.toColumnId, 1, now)
                 : null;
-            let nextAction = lead.nextAction;
-            // Ne jamais écraser un RDV manuel (📅 RDV… / meeting: true / legacy)
-            const hasManualRdv = isManualRdv(lead.nextAction);
-            if (autoFollowup && !hasManualRdv) {
-                nextAction = followupToNextAction(autoFollowup);
-            } else if (!hasManualRdv && nextAction?.auto) {
-                nextAction = null;
-            }
+            const { nextAction, autoFollowup } = resolveScheduleOnColumnMove(
+                lead,
+                targetCol?.name,
+                autoFollowupBase
+            );
             // Update leadOrder for destination column
             const destLeads = Object.values(ws.leads)
                 .filter((l) => l.columnId === action.toColumnId && l.id !== action.leadId)
@@ -763,65 +801,116 @@ function reducer(state, action) {
             if (!ws) return state;
             const firstCol = ws.columnOrder[0];
             const newLeads = { ...ws.leads };
-            
-            // Collect all extra fields from imported leads
+            const leadOrder = { ...(ws.leadOrder || {}) };
+
+            // Collect all extra + custom fields from imported leads
             const allExtraKeys = new Set();
+            const allCfKeys = new Set();
             action.leads.forEach((l) => {
                 if (l.extra) {
                     Object.keys(l.extra).forEach((key) => {
                         allExtraKeys.add(`extra:${key}`);
                     });
                 }
+                (l.customFields || []).forEach((cf) => {
+                    if (cf?.label) allCfKeys.add(`cf:${cf.label}`);
+                });
             });
-            
-            // Update cardFields to include new extra fields (visible by default)
+
+            // Update cardFields to include new extra/custom fields (visible by default)
             let updatedCardFields = [...(ws.cardFields || DEFAULT_CARD_FIELDS)];
-            const existingFieldKeys = new Set(updatedCardFields.map(f => f.key));
-            
-            // Add new extra fields to cardFields if they don't exist
+            const existingFieldKeys = new Set(updatedCardFields.map((f) => f.key));
+
             [...allExtraKeys].forEach((extraKey) => {
                 if (!existingFieldKeys.has(extraKey)) {
                     const label = extraKey.replace("extra:", "");
                     updatedCardFields.push({
                         key: extraKey,
-                        label: label,
-                        visible: true // Make imported fields visible by default
+                        label,
+                        visible: true,
                     });
+                    existingFieldKeys.add(extraKey);
                 }
             });
-            
+            [...allCfKeys].forEach((cfKey) => {
+                if (!existingFieldKeys.has(cfKey)) {
+                    const label = cfKey.replace(/^cf:/, "");
+                    updatedCardFields.push({
+                        key: cfKey,
+                        label,
+                        visible: true,
+                    });
+                    existingFieldKeys.add(cfKey);
+                }
+            });
+
             action.leads.forEach((l) => {
                 const id = uid();
                 const now = new Date().toISOString();
+                // Restaurer la colonne Kanban depuis le nom exporté (status)
+                const resolvedCol =
+                    (l._statusName && resolveColumnIdByName(ws, l._statusName)) ||
+                    l.columnId ||
+                    firstCol;
+
+                const notes = (l.notes || []).map((n) => ({
+                    id: n.id || uid(),
+                    text: typeof n === "string" ? n : (n.text || ""),
+                    at: (typeof n === "object" && n.at) || now,
+                }));
+
+                const customFields = (l.customFields || []).map((cf) => ({
+                    id: cf.id || uid(),
+                    label: cf.label,
+                    value: cf.value ?? "",
+                    ...(cf.highlight ? { highlight: true } : {}),
+                    ...(cf.pinned ? { pinned: true } : {}),
+                }));
+
                 newLeads[id] = {
                     id,
-                    columnId: firstCol,
+                    columnId: resolvedCol,
                     company: l.company || "Sans nom — à compléter",
                     phone: l.phone || "",
                     website: l.website || "",
                     email: l.email || "",
                     contact: l.contact || "",
-                    tags: [],
-                    notes: [],
-                    nextAction: null,
-                    lastContact: null,
+                    tags: Array.isArray(l.tags) ? l.tags : [],
+                    notes,
+                    nextAction: l.nextAction || null,
+                    lastContact: l.lastContact || null,
                     extra: l.extra || {},
-                    customFields: [],
-                    dealValue: null,
+                    customFields,
+                    dealValue: l.dealValue ?? null,
                     logoUrl: l.logoUrl || resolveLogo({
                         website: l.website,
                         email: l.email,
                         extra: l.extra || {},
                     }) || null,
-                    statusHistory: [{ columnId: firstCol, at: now }],
-                    createdAt: now,
-                    archived: false,
+                    ...(l.logoUrlManual ? { logoUrlManual: true } : {}),
+                    ...(l.relances ? { relances: l.relances } : {}),
+                    ...(l.autoFollowup ? { autoFollowup: l.autoFollowup } : {}),
+                    statusHistory: [{ columnId: resolvedCol, at: now }],
+                    createdAt: l.createdAt || now,
+                    archived: !!l.archived,
                 };
+
+                // Maintenir l'ordre des cartes dans la colonne cible
+                const prevOrder = leadOrder[resolvedCol];
+                if (Array.isArray(prevOrder)) {
+                    leadOrder[resolvedCol] = [...prevOrder, id];
+                } else {
+                    const existingInCol = Object.values(newLeads)
+                        .filter((x) => x.columnId === resolvedCol && x.id !== id)
+                        .map((x) => x.id);
+                    leadOrder[resolvedCol] = [...existingInCol, id];
+                }
             });
-            
-            return updateWs(state, ws.id, { 
+
+            return updateWs(state, ws.id, {
                 leads: newLeads,
-                cardFields: updatedCardFields
+                cardFields: updatedCardFields,
+                leadOrder,
             });
         }
         case "UPDATE_LEAD": {
@@ -859,16 +948,14 @@ function reducer(state, action) {
             if (!lead || lead.columnId === action.toColumnId) return state;
             const now = new Date().toISOString();
             const targetCol = ws.columns[action.toColumnId];
-            const autoFollowup = targetCol?.autoFollowup
+            const autoFollowupBase = targetCol?.autoFollowup
                 ? makeFollowup(action.toColumnId, 1, now)
                 : null;
-            let nextAction = lead.nextAction;
-            const hasManualRdv = isManualRdv(lead.nextAction);
-            if (autoFollowup && !hasManualRdv) {
-                nextAction = followupToNextAction(autoFollowup);
-            } else if (!hasManualRdv && nextAction?.auto) {
-                nextAction = null;
-            }
+            const { nextAction, autoFollowup } = resolveScheduleOnColumnMove(
+                lead,
+                targetCol?.name,
+                autoFollowupBase
+            );
             const destLeads = Object.values(ws.leads)
                 .filter((l) => l.columnId === action.toColumnId && l.id !== action.leadId)
                 .map((l) => l.id);
@@ -980,6 +1067,13 @@ function reducer(state, action) {
             if (!ws) return state;
             return updateWs(state, ws.id, {
                 inconsistencyConfig: action.config,
+            });
+        }
+        case "SET_AGENCY_DETECTION_ENABLED": {
+            const ws = state.workspaces[action.workspaceId];
+            if (!ws) return state;
+            return updateWs(state, ws.id, {
+                agencyDetectionEnabled: !!action.enabled,
             });
         }
         case "CHECK_FOLLOWUPS": {
@@ -1283,6 +1377,7 @@ function reducer(state, action) {
                 label: action.label || "Champ",
                 value: action.value || "",
                 pinned: !!action.pinned,
+                highlight: !!action.highlight,
             };
             // Si c'est un doublon de champ principal (Téléphone 2, Email 2…),
             // l'enregistrer automatiquement dans cardFields du workspace (visible par défaut)
