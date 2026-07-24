@@ -1,5 +1,7 @@
 /**
  * Agrégation d'événements calendrier CRM — dérivé des leads (pas de store séparé).
+ * Orientation prospection : uniquement ce qu'il reste à faire (RDV, relances, rappels),
+ * pas l'historique des contacts déjà passés.
  */
 
 import { toLocalDateKey } from "@/lib/dateUtils";
@@ -10,7 +12,7 @@ import {
 } from "@/constants/columnPatterns";
 import { normalizeInconsistencyConfig } from "@/lib/inconsistencyRules";
 
-/** @typedef {'rdv'|'relance'|'rappel'|'contact'|'surveillance'} CalendarEventType */
+/** @typedef {'rdv'|'relance'|'rappel'|'surveillance'} CalendarEventType */
 
 export const CALENDAR_EVENT_META = {
     rdv: {
@@ -34,13 +36,6 @@ export const CALENDAR_EVENT_META = {
         chip: "bg-violet-500/15 text-violet-700 dark:text-violet-300 border-violet-500/25",
         dot: "bg-violet-500",
     },
-    contact: {
-        label: "Contact",
-        color: "bg-emerald-500",
-        text: "text-emerald-700 dark:text-emerald-300",
-        chip: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/25",
-        dot: "bg-emerald-500",
-    },
     surveillance: {
         label: "À surveiller",
         color: "bg-rose-500",
@@ -49,8 +44,6 @@ export const CALENDAR_EVENT_META = {
         dot: "bg-rose-500",
     },
 };
-
-const NOTE_CALL_RE = /^(📞|📵)/;
 
 function calendarDaysBetween(fromIso, toDate = new Date()) {
     const a = toLocalDateKey(fromIso);
@@ -93,7 +86,7 @@ function pushEvent(out, event) {
 /**
  * @param {object[]} workspaces
  * @param {{ now?: Date }} [opts]
- * @returns {import('./calendarEvents').CalendarEvent[]}
+ * @returns {object[]}
  */
 export function collectCalendarEvents(workspaces, { now = new Date() } = {}) {
     const out = [];
@@ -107,6 +100,8 @@ export function collectCalendarEvents(workspaces, { now = new Date() } = {}) {
 
         for (const lead of Object.values(ws.leads || {})) {
             if (!lead || lead.archived) continue;
+            if (isTerminalLead(lead, columns)) continue;
+
             const company = lead.company || "Sans nom";
             const base = {
                 workspaceId: ws.id,
@@ -115,7 +110,7 @@ export function collectCalendarEvents(workspaces, { now = new Date() } = {}) {
                 company,
             };
 
-            // ── nextAction ──────────────────────────────────────────────────
+            // ── nextAction (RDV / rappel / relance planifiée) ────────────────
             const na = lead.nextAction;
             if (na) {
                 const dueAt = na.dueAt || (na.date ? `${na.date}T09:00:00` : null);
@@ -125,7 +120,6 @@ export function collectCalendarEvents(workspaces, { now = new Date() } = {}) {
                     if (isManualRdv(na)) type = "rdv";
                     else if (na.auto) type = "relance";
                     else if (isCalendarReminder(na)) type = "rappel";
-                    else if (!na.meeting && !na.auto) type = "rappel";
 
                     pushEvent(out, {
                         ...base,
@@ -161,64 +155,22 @@ export function collectCalendarEvents(workspaces, { now = new Date() } = {}) {
                 }
             }
 
-            // ── Historique contacts (lastContact + notes d'appel) ───────────
-            const contactDays = new Set();
-            if (lead.lastContact) {
-                const dk = toLocalDateKey(lead.lastContact);
-                if (dk) {
-                    contactDays.add(dk);
-                    pushEvent(out, {
-                        ...base,
-                        id: `${ws.id}:${lead.id}:lc:${dk}`,
-                        type: "contact",
-                        dateKey: dk,
-                        dueAt: lead.lastContact,
-                        title: company,
-                        subtitle: `Contacté · ${new Date(lead.lastContact).toLocaleDateString("fr-FR", {
-                            day: "numeric",
-                            month: "short",
-                            year: "numeric",
-                        })}`,
-                        meta: { source: "lastContact" },
-                    });
-                }
-            }
-            for (const note of lead.notes || []) {
-                if (!NOTE_CALL_RE.test(String(note.text || "").trim())) continue;
-                const dk = toLocalDateKey(note.at);
-                if (!dk || contactDays.has(dk)) continue;
-                contactDays.add(dk);
-                const answered = String(note.text).includes("📞");
+            // ── Surveillance (panneau « À surveiller », pas la grille du jour) ─
+            const lastIso = latestActivityIso(lead);
+            const days = lastIso
+                ? calendarDaysBetween(lastIso, now)
+                : calendarDaysBetween(lead.createdAt, now);
+            if (days >= gapThreshold) {
                 pushEvent(out, {
                     ...base,
-                    id: `${ws.id}:${lead.id}:note:${note.id || dk}`,
-                    type: "contact",
-                    dateKey: dk,
-                    dueAt: note.at,
+                    id: `${ws.id}:${lead.id}:watch`,
+                    type: "surveillance",
+                    dateKey: todayKey,
+                    dueAt: null,
                     title: company,
-                    subtitle: answered
-                        ? `Appel joint · ${note.text.replace(/^📞\s*/, "").slice(0, 60)}`
-                        : `Pas de réponse · ${note.text.replace(/^📵\s*/, "").slice(0, 60)}`,
-                    meta: { source: "note", answered },
+                    subtitle: `Sans contact depuis ${days} j`,
+                    meta: { source: "surveillance", daysSince: days, threshold: gapThreshold },
                 });
-            }
-
-            // ── Surveillance proactive (gap sans activité) ──────────────────
-            if (!isTerminalLead(lead, columns)) {
-                const lastIso = latestActivityIso(lead);
-                const days = lastIso ? calendarDaysBetween(lastIso, now) : calendarDaysBetween(lead.createdAt, now);
-                if (days >= gapThreshold) {
-                    pushEvent(out, {
-                        ...base,
-                        id: `${ws.id}:${lead.id}:watch`,
-                        type: "surveillance",
-                        dateKey: todayKey,
-                        dueAt: null,
-                        title: company,
-                        subtitle: `Sans contact depuis ${days} j`,
-                        meta: { source: "surveillance", daysSince: days, threshold: gapThreshold },
-                    });
-                }
             }
         }
     }
@@ -244,8 +196,7 @@ export function eventsForDate(events, dateKey, { includeSurveillance = true } = 
 }
 
 /**
- * Agenda d’un jour : events du jour + (si jour = aujourd’hui) les actions en retard des jours passés.
- * Aligné avec le badge « à faire ».
+ * Agenda d’un jour : events du jour + (si jour = aujourd’hui) les actions en retard.
  */
 export function agendaEventsForDate(events, dateKey, { todayKey, includeSurveillance = false } = {}) {
     const today = todayKey || toLocalDateKey(new Date());
@@ -254,10 +205,6 @@ export function agendaEventsForDate(events, dateKey, { todayKey, includeSurveill
 
     const pushUnique = (e) => {
         if (e.type === "surveillance" && !includeSurveillance) return;
-        if (e.type === "contact") {
-            list.push(e);
-            return;
-        }
         const key = `${e.workspaceId}:${e.leadId}:${e.type}`;
         if (seenLeads.has(key)) return;
         seenLeads.add(key);
@@ -270,7 +217,7 @@ export function agendaEventsForDate(events, dateKey, { todayKey, includeSurveill
 
     if (dateKey === today) {
         for (const e of events || []) {
-            if (e.type === "contact" || e.type === "surveillance") continue;
+            if (e.type === "surveillance") continue;
             if (e.dateKey < today) {
                 pushUnique({ ...e, meta: { ...(e.meta || {}), overdueCarry: true } });
             }
@@ -295,13 +242,13 @@ export function surveillanceEvents(events) {
 
 /**
  * Compte dues aujourd'hui + en retard (rdv / relance / rappel).
- * Déduplique par lead (évite badge 3 alors que l’agenda n’en montre que 2).
+ * Déduplique par lead.
  */
 export function countActionableToday(events, now = new Date()) {
     const todayKey = toLocalDateKey(now);
     const seen = new Set();
     for (const e of events || []) {
-        if (e.type === "contact" || e.type === "surveillance") continue;
+        if (e.type === "surveillance") continue;
         if (e.dateKey > todayKey) continue;
         const key = `${e.workspaceId}:${e.leadId}`;
         if (seen.has(key)) continue;
@@ -342,8 +289,6 @@ export function buildDayTypeMap(events) {
 
 /**
  * Ouvre un lead depuis le calendrier (home ou workspace).
- * Émet aussi un event window pour le cas « déjà sur le même espace »
- * (sinon useEffect workspace.id ne se rejoue pas).
  */
 export function openLeadFromCalendar(dispatch, workspaceId, leadId) {
     const payload = { workspaceId, leadId, t: Date.now() };

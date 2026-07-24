@@ -1,14 +1,22 @@
 import React, { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import { useCrm } from "@/context/CrmContext";
 import { DEFAULT_CARD_FIELDS } from "@/context/CrmContext";
-import { GripVertical, Eye, EyeOff, PanelsLeftRight, Trash2, GalleryHorizontal, AlertTriangle, Building2 } from "lucide-react";
+import { GripVertical, Eye, EyeOff, PanelsLeftRight, Trash2, GalleryHorizontal, AlertTriangle, Building2, GitBranch, RotateCcw } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
+import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
 import {
     RULE_DEFS,
     normalizeInconsistencyConfig,
     defaultInconsistencyConfig,
 } from "@/lib/inconsistencyRules";
 import { isAgencyDetectionEnabled } from "@/lib/agencyDetection";
+import {
+    PIPELINE_ROLE_IDS,
+    PIPELINE_ROLE_META,
+    normalizePipelineRoles,
+    resolvePipelineColumnId,
+} from "@/lib/pipelineRoles";
 
 const MIN_WIDTH = 260;
 const MAX_WIDTH = 520;
@@ -29,6 +37,7 @@ const SCROLL_SPEED = 8; // px par frame
 export const CardFieldsPanel = ({ workspace }) => {
     const { dispatch } = useCrm();
     const listRef = useRef(null);
+    const [confirmResetView, setConfirmResetView] = useState(false);
 
     // Drag state — pointer-based pour un glisser fluide avec auto-scroll
     const dragState = useRef({
@@ -291,6 +300,117 @@ export const CardFieldsPanel = ({ workspace }) => {
                         onGripDown={onGripPointerDown}
                     />
                 ))}
+            </div>
+
+            {/* ── Pipeline colonnes ── */}
+            <div className="px-4 pt-3 pb-3 border-t border-border/60 space-y-2.5" data-testid="pipeline-roles-config">
+                <div className="flex items-center gap-1.5 text-sm font-semibold">
+                    <GitBranch size={14} className="text-primary shrink-0" />
+                    Rôles des colonnes
+                </div>
+                <p className="text-[11px] text-muted-foreground leading-snug">
+                    Pipeline par défaut : Nouveaux → Contactés → Relance → RDV → Gagné → Perdu.
+                    Laissez « Auto » pour détecter par le nom, ou forcez une colonne.
+                </p>
+                <div className="space-y-2">
+                    {PIPELINE_ROLE_IDS.map((role) => {
+                        const meta = PIPELINE_ROLE_META[role];
+                        const roles = normalizePipelineRoles(workspace.pipelineRoles);
+                        const override = roles[role];
+                        const resolved = resolvePipelineColumnId(workspace, role);
+                        return (
+                            <label key={role} className="block space-y-0.5">
+                                <span className="text-[11px] font-medium text-foreground">{meta.label}</span>
+                                <span className="block text-[10px] text-muted-foreground">{meta.hint}</span>
+                                <select
+                                    value={override || ""}
+                                    onChange={(e) => {
+                                        const v = e.target.value || null;
+                                        dispatch({
+                                            type: "SET_PIPELINE_ROLES",
+                                            workspaceId: workspace.id,
+                                            pipelineRoles: { [role]: v },
+                                        });
+                                    }}
+                                    className="w-full h-8 rounded-md border border-border bg-background px-2 text-[12px]"
+                                    data-testid={`pipeline-role-${role}`}
+                                >
+                                    <option value="">
+                                        Auto{resolved ? ` · ${workspace.columns[resolved]?.name || ""}` : " · non détecté"}
+                                    </option>
+                                    {workspace.columnOrder.map((cid) => (
+                                        <option key={cid} value={cid}>
+                                            {workspace.columns[cid]?.name || cid}
+                                        </option>
+                                    ))}
+                                </select>
+                            </label>
+                        );
+                    })}
+                </div>
+            </div>
+
+            {/* ── Remise à zéro de la vue pipeline ── */}
+            <div className="px-4 pt-3 pb-3 border-t border-border/60 space-y-2" data-testid="reset-pipeline-view">
+                <div className="flex items-center gap-1.5 text-sm font-semibold">
+                    <RotateCcw size={14} className="text-muted-foreground shrink-0" />
+                    Remettre la vue à zéro
+                </div>
+                <p className="text-[11px] text-muted-foreground leading-snug">
+                    Tous les leads reviennent en « Nouveau ». Rappels, RDV, relances auto et
+                    statuts gagné/perdu sont effacés. Les fiches (notes, contacts, champs)
+                    et vos réglages (champs carte, colonnes, rôles) restent intacts.
+                </p>
+                {!confirmResetView ? (
+                    <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full h-9 rounded-lg text-[12.5px]"
+                        data-testid="reset-pipeline-view-btn"
+                        onClick={() => setConfirmResetView(true)}
+                    >
+                        <RotateCcw size={13} className="mr-1.5" />
+                        Remettre la vue à zéro…
+                    </Button>
+                ) : (
+                    <div className="rounded-lg border border-rose-500/30 bg-rose-500/8 p-2.5 space-y-2">
+                        <p className="text-[12px] text-rose-700 dark:text-rose-300 leading-snug">
+                            Confirmer ? {Object.keys(workspace.leads || {}).length} lead
+                            {Object.keys(workspace.leads || {}).length > 1 ? "s" : ""} seront
+                            renvoyés en Nouveau.
+                        </p>
+                        <div className="flex gap-2">
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                className="flex-1 h-8 rounded-lg text-[12px]"
+                                onClick={() => setConfirmResetView(false)}
+                            >
+                                Annuler
+                            </Button>
+                            <Button
+                                type="button"
+                                className="flex-1 h-8 rounded-lg text-[12px] bg-rose-600 hover:bg-rose-700 text-white"
+                                data-testid="reset-pipeline-view-confirm"
+                                onClick={() => {
+                                    const count = Object.keys(workspace.leads || {}).length;
+                                    dispatch({
+                                        type: "RESET_PIPELINE_VIEW",
+                                        workspaceId: workspace.id,
+                                    });
+                                    setConfirmResetView(false);
+                                    toast.success("Vue remise à zéro", {
+                                        description: count
+                                            ? `${count} lead${count > 1 ? "s" : ""} en Nouveau — rappels effacés`
+                                            : "Aucun lead à déplacer",
+                                    });
+                                }}
+                            >
+                                Confirmer
+                            </Button>
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* ── Détection cabinets de recrutement ── */}

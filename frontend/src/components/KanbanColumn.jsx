@@ -213,7 +213,13 @@ export const KanbanColumn = ({
         const getValue = (lead) => {
             if (key === "company")     return (lead.company || "").toLowerCase();
             if (key === "createdAt")   return lead.createdAt || "";
-            if (key === "lastContact") return lead.lastContact || "";
+            if (key === "lastContact") {
+                // Ancienneté du contact : plus récent → plus vieux (dir desc)
+                const t = Date.parse(
+                    lead.lastContact || lead.contactedColumnEnteredAt || lead.updatedAt || lead.createdAt || 0
+                );
+                return Number.isFinite(t) ? t : 0;
+            }
             if (key === "phone")       return (lead.phone || "").replace(/\D/g, "");
             if (key === "email")       return (lead.email || "").toLowerCase();
             if (key === "dealValue")   return lead.dealValue ?? -Infinity;

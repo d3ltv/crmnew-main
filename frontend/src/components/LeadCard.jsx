@@ -591,13 +591,6 @@ export const LeadCard = memo(({
                         {visible.has("contact") && lead.contact && (
                             <p className="text-[12.5px] text-muted-foreground leading-snug mt-0.5">{lead.contact}</p>
                         )}
-                        {agencySuspect && (
-                            <AgencySuspectBadge
-                                score={agencySuspect.score}
-                                label={agencySuspect.label}
-                                variant="line"
-                            />
-                        )}
                         {/* ── RDV banner — juste sous le nom/contact ── */}
                         {rdv && rdvDate && (
                             <div className={`inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-md text-[11.5px] font-semibold ${

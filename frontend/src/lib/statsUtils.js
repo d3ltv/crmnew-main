@@ -4,6 +4,7 @@ import {
     isWonColumn,
     isLostColumn,
     isContactedColumn,
+    isMeetingColumn,
 } from "@/constants/columnPatterns";
 import { toLocalDateKey } from "@/lib/dateUtils";
 import {
@@ -197,6 +198,43 @@ export function computeWorkspaceStats(ws, { includeQuality = false } = {}) {
         count: dealValues.filter((v) => v >= b.min && v < b.max).length,
     })).filter((b) => b.count > 0);
 
+    // Motifs de perte (QCM)
+    const lostReasonMap = {};
+    for (const l of leads) {
+        if (l.columnId !== lostId) continue;
+        const key = l.lostReasonLabel || l.lostReason || "Non renseigné";
+        lostReasonMap[key] = (lostReasonMap[key] || 0) + 1;
+    }
+    const lostReasons = Object.entries(lostReasonMap)
+        .map(([label, count]) => ({ label, count }))
+        .sort((a, b) => b.count - a.count);
+
+    // Nombre moyen de passages en colonne RDV avant close (gagnés)
+    const meetingIds = new Set(
+        (ws.columnOrder || [])
+            .filter((cid) => isMeetingColumn(ws.columns?.[cid]?.name))
+    );
+    const rdvBeforeClose = [];
+    for (const l of leads) {
+        if (l.columnId !== wonId) continue;
+        const hist = l.statusHistory || [];
+        let visits = 0;
+        let prev = null;
+        for (const e of hist) {
+            if (meetingIds.has(e.columnId) && e.columnId !== prev) visits += 1;
+            prev = e.columnId;
+        }
+        rdvBeforeClose.push(visits);
+    }
+    const avgRdvsBeforeClose = rdvBeforeClose.length
+        ? rdvBeforeClose.reduce((s, n) => s + n, 0) / rdvBeforeClose.length
+        : null;
+
+    // CA uniquement sur deals gagnés (colonne won)
+    const wonRevenue = leads
+        .filter((l) => l.columnId === wonId && l.dealValue != null && !isNaN(l.dealValue) && l.dealValue > 0)
+        .reduce((s, l) => s + Number(l.dealValue), 0);
+
     return {
         total,
         won,
@@ -230,6 +268,9 @@ export function computeWorkspaceStats(ws, { includeQuality = false } = {}) {
         dealTimeline,
         dealDistribution,
         dealsWithValueCount: dealValues.length,
+        lostReasons,
+        avgRdvsBeforeClose,
+        wonRevenue,
     };
 }
 
@@ -281,6 +322,14 @@ export function aggregateStats(statsList) {
         }
     }
 
+    const lostReasonMap = new Map();
+    for (const st of statsList) {
+        for (const r of (st.lostReasons || [])) {
+            if (!lostReasonMap.has(r.label)) lostReasonMap.set(r.label, { label: r.label, count: r.count });
+            else lostReasonMap.get(r.label).count += r.count;
+        }
+    }
+
     const allValues = statsList.flatMap((st) => (st.dealTimeline || []).map((p) => p.value));
     const totalRevenue = sum("totalRevenue");
 
@@ -323,6 +372,9 @@ export function aggregateStats(statsList) {
         dealTimeline,
         dealDistribution: [...distMap.values()],
         dealsWithValueCount: sum("dealsWithValueCount"),
+        lostReasons: [...lostReasonMap.values()].sort((a, b) => b.count - a.count),
+        avgRdvsBeforeClose: avgNullable("avgRdvsBeforeClose"),
+        wonRevenue: sum("wonRevenue"),
     };
 }
 

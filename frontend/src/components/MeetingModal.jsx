@@ -4,7 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useCrm } from "@/context/CrmContext";
 import { makeRdvNextAction } from "@/lib/nextActionUtils";
-import { toLocalDateKey } from "@/lib/dateUtils";
+import { toLocalDateKey, ensureWeekday, isSunday } from "@/lib/dateUtils";
+import { toast } from "sonner";
 
 /**
  * Modal qui s'ouvre quand un lead entre dans une colonne "Rendez-vous".
@@ -44,10 +45,19 @@ export const MeetingModal = ({ open, lead, workspace, onClose }) => {
     const save = () => {
         if (!date) { onClose(); return; }
 
+        let safeDate = date;
+        if (isSunday(`${date}T12:00:00`)) {
+            safeDate = toLocalDateKey(ensureWeekday(new Date(`${date}T12:00:00`)));
+            toast.message("Dimanche évité", { description: "RDV décalé au lundi." });
+        }
+
         // Construire la date ISO avec l'heure si fournie
-        const dueAt = time
-            ? new Date(`${date}T${time}:00`).toISOString()
-            : new Date(`${date}T09:00:00`).toISOString();
+        const raw = time
+            ? new Date(`${safeDate}T${time}:00`)
+            : new Date(`${safeDate}T09:00:00`);
+        const due = ensureWeekday(raw);
+        const dueAt = due.toISOString();
+        const dateKey = toLocalDateKey(due);
 
         const dateLabel = new Date(dueAt).toLocaleDateString("fr-FR", {
             weekday: "long", day: "numeric", month: "long",
@@ -61,7 +71,7 @@ export const MeetingModal = ({ open, lead, workspace, onClose }) => {
             type: "SET_NEXT_ACTION",
             workspaceId: workspace.id,
             leadId: lead.id,
-            nextAction: makeRdvNextAction({ date, dueAt, label: fullLabel }),
+            nextAction: makeRdvNextAction({ date: dateKey, dueAt, label: fullLabel }),
         });
         onClose();
     };

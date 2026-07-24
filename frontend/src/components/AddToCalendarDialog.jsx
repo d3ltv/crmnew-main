@@ -17,13 +17,14 @@ import {
     addDaysSkippingWeekend,
     daysUntilWeekday,
     ensureWeekday,
+    isSunday,
     formatFutureRelativeFr,
     toLocalDateKey,
 } from "@/lib/dateUtils";
-import { makeCalendarReminder } from "@/lib/nextActionUtils";
+import { makeCalendarReminder, makeRdvNextAction, isManualRdv } from "@/lib/nextActionUtils";
 import { CalendarPlus, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { WheelTimePicker } from "./WheelTimePicker";
+import { toast } from "sonner";
 
 const RELANCE_DAY_CHIPS = [1, 2, 3, 4, 5, 6, 7];
 
@@ -33,8 +34,26 @@ function tomorrowKey() {
     return toLocalDateKey(d);
 }
 
+function timeFromDue(isoOrDate) {
+    if (!isoOrDate) return "09:00";
+    const d = isoOrDate instanceof Date ? isoOrDate : new Date(isoOrDate);
+    if (Number.isNaN(d.getTime())) return "09:00";
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function cleanScheduleLabel(na) {
+    if (!na?.label) return "";
+    return String(na.label)
+        .replace(/^📅\s*RDV détecté\s*[·—-]?\s*/i, "")
+        .replace(/^📅\s*RDV\s*[·—-]?\s*/i, "")
+        .replace(/^📅\s*Rappel\s*[·—-]?\s*/i, "")
+        .replace(/^🔁\s*Relance suggérée\s*[·—-]?\s*/i, "")
+        .trim();
+}
+
 /**
- * Formulaire compact : date + heure (roues) → nextAction rappel.
+ * Formulaire compact : date + heure natives.
+ * Avec `existingNextAction`, préremplit le créneau et conserve le type RDV/rappel.
  */
 export function QuickScheduleForm({
     company = "",
@@ -44,16 +63,43 @@ export function QuickScheduleForm({
     onCancel,
     confirmLabel = "Ajouter",
     className,
+    existingNextAction = null,
+    asMeeting = false,
 }) {
-    const [date, setDate] = useState(tomorrowKey);
-    const [time, setTime] = useState("09:00");
-    const [label, setLabel] = useState("");
+    const seed = !!existingNextAction?.dueAt || !!existingNextAction?.date;
+    const [date, setDate] = useState(() =>
+        seed
+            ? (toLocalDateKey(existingNextAction.dueAt || existingNextAction.date) || tomorrowKey())
+            : tomorrowKey()
+    );
+    const [time, setTime] = useState(() =>
+        seed ? timeFromDue(existingNextAction.dueAt || `${existingNextAction.date}T09:00:00`) : "09:00"
+    );
+    const [label, setLabel] = useState(() =>
+        seed
+            ? (cleanScheduleLabel(existingNextAction) || defaultLabel || "")
+            : (defaultLabel || (company ? `Rappeler ${company}` : ""))
+    );
 
     useEffect(() => {
+        if (existingNextAction?.dueAt || existingNextAction?.date) {
+            const due = existingNextAction.dueAt || `${existingNextAction.date}T09:00:00`;
+            setDate(toLocalDateKey(due) || tomorrowKey());
+            setTime(timeFromDue(due));
+            setLabel(cleanScheduleLabel(existingNextAction) || defaultLabel || "");
+            return;
+        }
         setDate(tomorrowKey());
         setTime("09:00");
         setLabel(defaultLabel || (company ? `Rappeler ${company}` : ""));
-    }, [company, defaultLabel]);
+    }, [
+        company,
+        defaultLabel,
+        existingNextAction?.dueAt,
+        existingNextAction?.date,
+        existingNextAction?.label,
+        existingNextAction?.meeting,
+    ]);
 
     const submit = (e) => {
         e?.preventDefault?.();
@@ -61,13 +107,15 @@ export function QuickScheduleForm({
         if (!date || !time) return;
         const raw = new Date(`${date}T${time}:00`);
         if (Number.isNaN(raw.getTime())) return;
-        const dueAt = ensureWeekday(raw);
+        const dueAtDate = ensureWeekday(raw);
+        const dateKey = toLocalDateKey(dueAtDate);
+        const dueAt = dueAtDate.toISOString();
+        const trimmed = label.trim() || undefined;
+        const keepMeeting = asMeeting || isManualRdv(existingNextAction);
         onConfirm?.(
-            makeCalendarReminder({
-                date: toLocalDateKey(dueAt),
-                dueAt: dueAt.toISOString(),
-                label: label.trim() || undefined,
-            })
+            keepMeeting
+                ? makeRdvNextAction({ date: dateKey, dueAt, label: trimmed })
+                : makeCalendarReminder({ date: dateKey, dueAt, label: trimmed })
         );
     };
 
@@ -81,23 +129,39 @@ export function QuickScheduleForm({
             {hint && (
                 <p className="text-[12px] text-muted-foreground leading-snug">{hint}</p>
             )}
-            <div className="space-y-1">
-                <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
-                    Date
-                </label>
-                <Input
-                    type="date"
-                    value={date}
-                    onChange={(e) => setDate(e.target.value)}
-                    className="h-9 rounded-lg"
-                    data-testid="add-cal-date"
-                />
-            </div>
-            <div className="space-y-1">
-                <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
-                    Heure
-                </label>
-                <WheelTimePicker value={time} onChange={setTime} />
+            <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1 min-w-0">
+                    <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
+                        Date
+                    </label>
+                    <Input
+                        type="date"
+                        value={date}
+                        onChange={(e) => {
+                            let v = e.target.value;
+                            if (v && isSunday(`${v}T12:00:00`)) {
+                                const d = ensureWeekday(new Date(`${v}T12:00:00`));
+                                v = toLocalDateKey(d);
+                                toast.message("Dimanche évité", { description: "Créneau décalé au lundi." });
+                            }
+                            setDate(v);
+                        }}
+                        className="h-9 rounded-lg"
+                        data-testid="add-cal-date"
+                    />
+                </div>
+                <div className="space-y-1 min-w-0">
+                    <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
+                        Heure
+                    </label>
+                    <Input
+                        type="time"
+                        value={time}
+                        onChange={(e) => setTime(e.target.value)}
+                        className="h-9 rounded-lg"
+                        data-testid="add-cal-time"
+                    />
+                </div>
             </div>
             <div className="space-y-1">
                 <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
@@ -145,6 +209,9 @@ export function AddToCalendarDialog({
     defaultLabel = "",
     hint = "",
     onConfirm,
+    asMeeting = false,
+    existingNextAction = null,
+    confirmLabel = "Ajouter",
 }) {
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
@@ -155,19 +222,24 @@ export function AddToCalendarDialog({
                 <DialogHeader>
                     <DialogTitle className="flex items-center gap-2 text-base">
                         <CalendarPlus size={17} className="text-primary" />
-                        Placer un rappel
+                        {asMeeting ? "Planifier un RDV" : "Placer un rappel"}
                     </DialogTitle>
                     <DialogDescription>
                         {company
-                            ? `Rappel calendrier pour « ${company} ».`
+                            ? (asMeeting
+                                ? `Rendez-vous pour « ${company} ».`
+                                : `Rappel calendrier pour « ${company} ».`)
                             : "Choisissez une date et une heure."}
                     </DialogDescription>
                 </DialogHeader>
                 <QuickScheduleForm
-                    key={open ? "open" : "closed"}
+                    key={open ? `open-${asMeeting ? "rdv" : "rappel"}` : "closed"}
                     company={company}
                     defaultLabel={defaultLabel}
                     hint={hint}
+                    asMeeting={asMeeting}
+                    existingNextAction={existingNextAction}
+                    confirmLabel={confirmLabel}
                     onConfirm={(na) => {
                         onConfirm?.(na);
                         onOpenChange?.(false);

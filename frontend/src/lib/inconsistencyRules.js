@@ -548,25 +548,32 @@ export function detectInconsistencies(lead, columns = {}, configRaw = null, now 
     }
 
     // ── 6. RDV détecté dans note, non planifié (warning) ─────────────────────
-    if (!rdv && !isTerminal(colName)) {
+    // Ne pas alerter s'il existe déjà un créneau (RDV ou rappel) le même jour.
+    if (!isTerminal(colName)) {
         const latest = (lead.notes || [])[0];
         if (latest?.text) {
             const appt = detectAppointment(latest.text, now);
             if (appt?.iso) {
-                push(issue({
-                    id: "rdv_detected_unplanned",
-                    severity: "warning",
-                    title: "RDV détecté non planifié",
-                    message: `RDV détecté dans une note (${appt.label}) — non ajouté à l’agenda`,
-                    relatedAt: latest.at || null,
-                    facts: {
-                        apptLabel: appt.label,
-                        apptIso: appt.iso,
-                        hasTime: !!appt.hasTime,
-                    },
-                    fingerprint: `rdv_detected_unplanned:${appt.iso}:${toLocalDateKey(latest.at) || "x"}`,
-                    action: { type: "plan_rdv", dueAt: appt.iso, label: appt.label },
-                }));
+                const scheduledDue = nextActionDue(lead.nextAction);
+                const sameDayPlanned = scheduledDue
+                    && toLocalDateKey(scheduledDue) === toLocalDateKey(appt.iso);
+                const alreadyRdv = !!rdv;
+                if (!sameDayPlanned && !alreadyRdv) {
+                    push(issue({
+                        id: "rdv_detected_unplanned",
+                        severity: "warning",
+                        title: "RDV détecté non planifié",
+                        message: `RDV détecté dans une note (${appt.label}) — non ajouté à l’agenda`,
+                        relatedAt: latest.at || null,
+                        facts: {
+                            apptLabel: appt.label,
+                            apptIso: appt.iso,
+                            hasTime: !!appt.hasTime,
+                        },
+                        fingerprint: `rdv_detected_unplanned:${appt.iso}:${toLocalDateKey(latest.at) || "x"}`,
+                        action: { type: "plan_rdv", dueAt: appt.iso, label: appt.label },
+                    }));
+                }
             }
         }
     }

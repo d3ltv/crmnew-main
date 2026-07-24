@@ -43,7 +43,7 @@ export function formatRelative(iso) {
 }
 
 /**
- * Décale samedi → lundi et dimanche → lundi (relances en semaine uniquement).
+ * Décale samedi → lundi et dimanche → lundi (jamais de rappel / RDV le week-end).
  * @param {Date} date
  * @returns {Date}
  */
@@ -51,9 +51,15 @@ export function ensureWeekday(date) {
     const d = date instanceof Date ? new Date(date.getTime()) : new Date(date);
     if (Number.isNaN(d.getTime())) return d;
     const wd = d.getDay();
-    if (wd === 6) d.setDate(d.getDate() + 2);
-    else if (wd === 0) d.setDate(d.getDate() + 1);
+    if (wd === 6) d.setDate(d.getDate() + 2); // samedi → lundi
+    else if (wd === 0) d.setDate(d.getDate() + 1); // dimanche → lundi
     return d;
+}
+
+/** True si la date locale tombe un dimanche. */
+export function isSunday(value) {
+    const d = value instanceof Date ? value : new Date(value);
+    return !Number.isNaN(d.getTime()) && d.getDay() === 0;
 }
 
 /**
@@ -121,4 +127,60 @@ export function formatDateTimeLong(iso) {
         hour: "2-digit",
         minute: "2-digit",
     });
+}
+
+/**
+ * Prochain rappel après un « pas de réponse » :
+ * - matin (avant 12h) en semaine → cet après-midi (14h30)
+ * - vendredi après-midi / soir → lundi matin (9h)
+ * - sinon → +1 jour ouvré max, le matin (9h)
+ * @param {Date} [from]
+ * @returns {Date}
+ */
+export function suggestNoAnswerFollowUp(from = new Date()) {
+    const now = from instanceof Date ? new Date(from.getTime()) : new Date(from);
+    if (Number.isNaN(now.getTime())) return addDaysSkippingWeekend(1);
+    const hour = now.getHours();
+    const dow = now.getDay(); // 0=dim … 5=ven
+    const isMorning = hour < 12;
+
+    // Matin en semaine → rappel l'après-midi du même jour
+    if (isMorning && dow >= 1 && dow <= 5) {
+        const afternoon = new Date(now);
+        afternoon.setHours(14, 30, 0, 0);
+        if (afternoon.getTime() > now.getTime()) return afternoon;
+    }
+
+    // Vendredi après-midi / soir → lundi matin
+    if (dow === 5) {
+        const monday = new Date(now);
+        monday.setDate(monday.getDate() + 3);
+        monday.setHours(9, 0, 0, 0);
+        return monday;
+    }
+
+    // Max +1 jour ouvré, matin
+    const next = addDaysSkippingWeekend(1, now);
+    next.setHours(9, 0, 0, 0);
+    return next;
+}
+
+/**
+ * Libellé court pour le rappel « pas de réponse ».
+ * @param {Date | string | number} [isoOrDate]
+ * @param {Date} [from]
+ * @returns {string}
+ */
+export function formatNoAnswerFollowUpLabel(isoOrDate, from = new Date()) {
+    const d = isoOrDate instanceof Date ? isoOrDate : new Date(isoOrDate ?? suggestNoAnswerFollowUp(from));
+    if (Number.isNaN(d.getTime())) return "";
+    const now = from instanceof Date ? from : new Date(from);
+    const time = d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+    const todayKey = toLocalDateKey(now);
+    const dueKey = toLocalDateKey(d);
+    if (dueKey === todayKey) return `cet après-midi · ${time}`;
+    if (now.getDay() === 5 && d.getDay() === 1) return `lundi matin · ${time}`;
+    const rel = formatFutureRelativeFr(d);
+    if (rel === "demain") return `demain matin · ${time}`;
+    return `${rel} · ${time}`;
 }

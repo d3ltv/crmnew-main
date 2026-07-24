@@ -22,7 +22,7 @@ import {
     Sparkles,
     Repeat2,
     MapPin,
-    AlertTriangle,
+    Pencil,
 } from "lucide-react";
 import { CopyBtn } from "./CopyBtn";
 import { Button } from "@/components/ui/button";
@@ -36,6 +36,16 @@ import {
     SelectTrigger,
     SelectValue,
 } from "@/components/ui/select";
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { getColumnColor } from "@/lib/columnColors";
@@ -45,10 +55,12 @@ import {
     formatFutureRelativeFr,
     toLocalDateKey,
 } from "@/lib/dateUtils";
+import { allocateMainDupeLabels, isMainFieldDuplicateLabel } from "@/lib/customFields";
 import { telHref, mailtoHref, websiteHref } from "@/lib/actionLinks";
 import { parseNote, detectAppointment, diffWithLead, formatDetected } from "@/lib/noteParser";
 import { isManualRdv, isSuggestedRelance, makeRdvNextAction } from "@/lib/nextActionUtils";
-import { AddToCalendarDialog, ConfirmSuggestedRelanceButton, QuickScheduleButton } from "./AddToCalendarDialog";
+import { AddToCalendarDialog, ConfirmSuggestedRelanceButton, QuickScheduleButton, QuickScheduleForm } from "./AddToCalendarDialog";
+import { VigilanceStrip } from "./VigilanceStrip";
 import { scheduleLeadNextAction, clearLeadSchedule } from "@/lib/scheduleLead";
 import { getBestProspectingSlot } from "@/lib/prospectingSlots";
 import { normalizeInconsistencyConfig } from "@/lib/inconsistencyRules";
@@ -64,6 +76,10 @@ import {
     valueAsHref,
     displayUrl,
     reorderPanelSection,
+    pickBriefSituation,
+    briefLinkLabel,
+    jobOfferLinkClass,
+    jobOfferUnderlineClass,
 } from "@/lib/panelSections";
 import { detectInconsistencies } from "@/lib/inconsistencyRules";
 import {
@@ -71,6 +87,7 @@ import {
     isAgencyDetectionEnabled,
 } from "@/lib/agencyDetection";
 import { AgencySuspectBadge, AGENCY_NAME_CLS } from "./AgencySuspectBadge";
+import { LeadAvatar } from "./LeadAvatar";
 
 const SECTION_ICONS = { Database, User, MessageSquare, Repeat2, Tag, Trophy, History, CalendarClock };
 
@@ -267,6 +284,27 @@ const RelancesWidget = ({ lead, workspace, dispatch }) => {
     );
 };
 
+const NOTE_CALL_RE = /^(📞|📵)/;
+
+function leadHasBeenContacted(lead) {
+    if (!lead) return false;
+    if (lead.lastContact) return true;
+    if ((lead.relances || []).length > 0) return true;
+    return (lead.notes || []).some((n) => NOTE_CALL_RE.test(String(n.text || "").trim()));
+}
+
+/** Jours calendaires depuis l'entrée dans le CRM (createdAt). */
+function calendarDaysInCrm(createdAt) {
+    const a = toLocalDateKey(createdAt);
+    const b = toLocalDateKey(new Date());
+    if (!a || !b) return 0;
+    const [ay, am, ad] = a.split("-").map(Number);
+    const [by, bm, bd] = b.split("-").map(Number);
+    const start = Date.UTC(ay, am - 1, ad);
+    const end = Date.UTC(by, bm - 1, bd);
+    return Math.max(0, Math.round((end - start) / 86400000));
+}
+
 export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
     const { dispatch, state } = useCrm();
     const panelMode = state.leadPanelMode || "side";
@@ -279,10 +317,14 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
     const [calendarDialogOpen, setCalendarDialogOpen] = useState(false);
     const [calendarHint, setCalendarHint] = useState("");
     const [calendarDefaultLabel, setCalendarDefaultLabel] = useState("");
+    const [calendarAsMeeting, setCalendarAsMeeting] = useState(false);
     // Sections réordonnables (zone B)
     const [dragSectionId, setDragSectionId] = useState(null);
     const [dragOverId, setDragOverId] = useState(null);
     const [dropPlace, setDropPlace] = useState(null); // "before" | "after"
+    const [briefLinksOpen, setBriefLinksOpen] = useState(false);
+    const [editingCalendar, setEditingCalendar] = useState(false);
+    const [confirmDelete, setConfirmDelete] = useState(false);
     const panelRef = useRef(null);
     // Use the live lead from props directly — parent computes it from state.
     const local = lead;
@@ -332,9 +374,8 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
         setTagDraft("");
         setCfLabel("");
         setCfValue("");
-        setRdvDate("");
-        setRdvTime("");
-        setRdvLabel("");
+        setBriefLinksOpen(false);
+        setEditingCalendar(false);
     }, [lead?.id]);
 
     useEffect(() => {
@@ -367,8 +408,8 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
         if (!local) return false;
         const watchasks = inconsistencies.some(
             (i) => i.action?.type === "plan_rdv"
-                || ["rdv_overdue", "no_answer_gap", "no_answer", "contact_gap", "stale_contact"].includes(i.id)
-                || /rappel|relance|rdv|contact/i.test(`${i.title || ""} ${i.message || ""}`)
+                || ["rdv_overdue", "no_answer_gap", "no_answer", "contact_gap", "stale_contact", "nouveau_stale"].includes(i.id)
+                || /rappel|relance|rdv|contact|jamais/i.test(`${i.title || ""} ${i.message || ""}`)
         );
         const fuOverdue = !!(local.autoFollowup && (
             local.autoFollowup.overdue
@@ -377,6 +418,47 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
         const noFutureSlot = !local.nextAction || scheduleOverdue;
         return noFutureSlot && (watchasks || fuOverdue || scheduleOverdue);
     }, [local, inconsistencies, scheduleOverdue]);
+
+    /** Copy du bandeau calendrier : « appeler » si jamais contacté, sinon « rappeler ». */
+    const calendarNudgeCopy = useMemo(() => {
+        if (!local) return null;
+        const neverCalled = !leadHasBeenContacted(local);
+        const daysInCrm = calendarDaysInCrm(local.createdAt);
+        const company = (local.company || "").trim();
+
+        if (neverCalled) {
+            const daysLabel = daysInCrm <= 0
+                ? "Ce prospect vient d'arriver dans le CRM"
+                : daysInCrm === 1
+                    ? "Ça fait 1 jour que ce prospect est dans le CRM"
+                    : `Ça fait ${daysInCrm} jours que ce prospect est dans le CRM`;
+            return {
+                title: "Bloquez un moment pour appeler",
+                body: `${daysLabel} — planifiez le premier appel.`,
+                label: company ? `Appeler ${company}` : "Premier appel",
+                hint: "Choisissez quand appeler ce prospect pour la première fois.",
+                shortLabel: "Appeler",
+            };
+        }
+
+        if (scheduleOverdue) {
+            return {
+                title: "Bloquez un moment pour rappeler",
+                body: "Le rappel en cours est dépassé — choisissez un nouveau créneau.",
+                label: company ? `Rappeler ${company}` : "Rappeler",
+                hint: "Choisissez quand rappeler ce prospect.",
+                shortLabel: "Rappel",
+            };
+        }
+
+        return {
+            title: "Bloquez un moment pour rappeler",
+            body: "Prenez un créneau dans votre journée pour rappeler ce prospect.",
+            label: company ? `Rappeler ${company}` : "Rappeler",
+            hint: "Choisissez quand rappeler ce prospect.",
+            shortLabel: "Rappel",
+        };
+    }, [local, scheduleOverdue]);
 
     if (!open || !local) return null;
 
@@ -423,42 +505,15 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
     };
 
     // ── Zone A : brief fixe ──
-    const brief = extractLeadBrief(local);
-    const showBrief = brief.hasBrief || inconsistencies.length > 0;
-
-    const scheduleOverdue = useMemo(() => {
-        if (!local?.nextAction?.dueAt && !local?.nextAction?.date) return false;
-        const due = new Date(local.nextAction.dueAt || `${local.nextAction.date}T09:00:00`);
-        return !Number.isNaN(due.getTime()) && due.getTime() < Date.now() - 60000;
-    }, [local?.nextAction]);
-
-    const prospectSlot = useMemo(() => {
-        const allWs = (state.order || [])
-            .map((id) => state.workspaces?.[id])
-            .filter(Boolean);
-        return getBestProspectingSlot(allWs);
-    }, [state.workspaces, state.order]);
-
-    const defaultRelanceDays = useMemo(() => {
-        const cfg = normalizeInconsistencyConfig(workspace?.inconsistencyConfig);
-        return cfg.thresholds?.noAnswerDays || 2;
-    }, [workspace?.inconsistencyConfig]);
-
-    const needsCalendarNudge = useMemo(() => {
-        if (!local) return false;
-        const watchAsks = inconsistencies.some(
-            (i) => i.action?.type === "plan_rdv"
-                || ["rdv_overdue", "no_answer_gap", "no_answer", "contact_gap", "stale_contact"].includes(i.id)
-                || /rappel|relance|rdv|contact/i.test(`${i.title || ""} ${i.message || ""}`)
-        );
-        const fuOverdue = !!(local.autoFollowup && (
-            local.autoFollowup.overdue
-            || (local.autoFollowup.dueAt && new Date(local.autoFollowup.dueAt).getTime() <= Date.now())
-        ));
-        // Pas de prochain créneau futur → on propose d'en poser un
-        const noFutureSlot = !local.nextAction || scheduleOverdue;
-        return noFutureSlot && (watchAsks || fuOverdue || scheduleOverdue);
-    }, [local, inconsistencies, scheduleOverdue]);
+    const brief = extractLeadBrief(local, {
+        columnName: workspace.columns[local.columnId]?.name || "",
+    });
+    const showBrief = brief.hasBrief;
+    const { primary: situationPrimary, secondaryLine: situationSecondary } = pickBriefSituation(
+        brief.situation || []
+    );
+    const actionableInsights = (brief.insights || []).filter((i) => i.actionable);
+    const latestNote = (brief.contextualNotes || [])[0] || null;
 
     const dismissInconsistency = (fingerprint) => {
         dispatch({
@@ -478,20 +533,24 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
         });
     };
 
-    const openCalendarScheduler = ({ hint = "", label = "" } = {}) => {
+    const openCalendarScheduler = ({ hint = "", label = "", asMeeting = false } = {}) => {
         setCalendarHint(hint);
         setCalendarDefaultLabel(label);
+        setCalendarAsMeeting(!!asMeeting);
         setCalendarDialogOpen(true);
     };
 
     const applyCalendarReminder = (nextAction) => {
+        const hadSchedule = !!(local.nextAction?.dueAt || local.nextAction?.date);
+        // Mise à jour d'un créneau existant : ne pas bouger les colonnes
+        // (évite Relance/RDV qui se battent avec « À surveiller »).
         const result = scheduleLeadNextAction(dispatch, {
             workspace,
             leadId: local.id,
             nextAction,
-            move: true,
+            move: !hadSchedule,
         });
-        toast.success("Ajouté au calendrier", {
+        toast.success(hadSchedule ? "Créneau mis à jour" : "Ajouté au calendrier", {
             description: result.moved && result.toColumnName
                 ? `${nextAction.label} · déplacé vers « ${result.toColumnName} »`
                 : nextAction.label,
@@ -514,6 +573,7 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
             openCalendarScheduler({
                 hint: item.message || "RDV / relance suggéré par la vigilance.",
                 label: action.label || `Rappeler ${local.company || ""}`.trim(),
+                asMeeting: true,
             });
             return;
         }
@@ -565,19 +625,35 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
             dispatch({ type: "UPDATE_LEAD", workspaceId: workspace.id, leadId: local.id, patch: nextPatch });
         }
 
-        // Téléphones supplémentaires → customFields
-        draftDiff.extraPhones.forEach((phone) => {
-            dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label: "Téléphone", value: phone, pinned: false });
-        });
-        (draftDiff.extraContacts || []).forEach((person) => {
+        // Téléphones / contacts supplémentaires → juste sous le champ principal (Contact 2…)
+        const phoneLabels = allocateMainDupeLabels(local.customFields, "Téléphone", (draftDiff.extraPhones || []).length);
+        (draftDiff.extraPhones || []).forEach((phone, i) => {
             dispatch({
                 type: "ADD_CUSTOM_FIELD",
                 workspaceId: workspace.id,
                 leadId: local.id,
-                label: "Contact",
+                label: phoneLabels[i] || `Téléphone ${i + 2}`,
+                value: phone,
+                pinned: false,
+                isMainDuplicate: true,
+            });
+        });
+        const contactBase = isJobs ? "Contact RH" : "Contact";
+        const contactLabels = allocateMainDupeLabels(
+            local.customFields,
+            contactBase,
+            (draftDiff.extraContacts || []).length
+        );
+        (draftDiff.extraContacts || []).forEach((person, i) => {
+            dispatch({
+                type: "ADD_CUSTOM_FIELD",
+                workspaceId: workspace.id,
+                leadId: local.id,
+                label: contactLabels[i] || `${contactBase} ${i + 2}`,
                 value: person,
                 pinned: false,
                 highlight: true,
+                isMainDuplicate: true,
             });
         });
         if (draftDiff.newAddress) {
@@ -694,6 +770,7 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
             workspaceId: workspace.id,
             leadId: local.id,
         });
+        setConfirmDelete(false);
         toast("Lead supprimé", {
             description: local.company,
             action: {
@@ -759,82 +836,40 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                     ? "fixed z-50 flex flex-col inset-0 sm:inset-auto sm:top-[3%] sm:bottom-[3%] sm:left-1/2 sm:-translate-x-1/2 w-full sm:w-[780px] bg-card sm:rounded-xl sm:border border-border shadow-panel animate-in fade-in zoom-in-95 duration-200"
                     : "fixed z-50 flex flex-col inset-0 sm:inset-auto sm:top-4 sm:bottom-4 sm:right-4 w-full sm:w-[560px] bg-card sm:rounded-xl sm:border border-border shadow-panel animate-in slide-in-from-right duration-300"}
             >
-                <div className="border-b border-border bg-card px-5 py-4 flex items-start justify-between gap-3 rounded-t-xl shrink-0">
-                    <div className="min-w-0 flex-1">
-                        <input
-                            data-testid="lead-company-input"
-                            value={local.company || ""}
-                            onChange={(e) => patch({ company: e.target.value })}
-                            className={`w-full bg-transparent text-xl sm:text-2xl font-semibold tracking-tight outline-none focus:ring-2 focus:ring-primary rounded px-1 -mx-1 ${
-                                agencySuspect ? AGENCY_NAME_CLS : ""
-                            }`}
-                            placeholder={isJobs ? "Nom de l'entreprise / Poste" : "Nom de l'entreprise"}
+                <div className="border-b border-border bg-card px-5 py-3.5 rounded-t-xl shrink-0">
+                    <div className="flex items-center gap-3">
+                        <LeadAvatar
+                            lead={local}
+                            panel
+                            bgClass={getColumnColor(workspace.columns[local.columnId]).chipBg}
                         />
-                        {agencySuspect && (
-                            <div
-                                className="mt-2 flex flex-wrap items-center gap-2"
-                                data-testid="lead-agency-suspect-banner"
-                            >
+                        <div className="min-w-0 flex-1 flex items-center gap-2">
+                            <input
+                                data-testid="lead-company-input"
+                                value={local.company || ""}
+                                onChange={(e) => patch({ company: e.target.value })}
+                                className={`min-w-0 flex-1 bg-transparent text-xl sm:text-2xl font-semibold tracking-tight outline-none focus:ring-2 focus:ring-primary rounded ${
+                                    agencySuspect ? AGENCY_NAME_CLS : ""
+                                }`}
+                                placeholder={isJobs ? "Nom de l'entreprise / Poste" : "Nom de l'entreprise"}
+                            />
+                            {agencySuspect && (
                                 <AgencySuspectBadge
                                     score={agencySuspect.score}
                                     label={agencySuspect.label}
+                                    variant="percent"
                                 />
-                                <span className="text-[12px] text-orange-700/90 dark:text-orange-300/90">
-                                    {agencySuspect.label}
-                                </span>
-                            </div>
-                        )}
-                        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                            <span
-                                className={`w-2 h-2 rounded-full ${getColumnColor(workspace.columns[local.columnId]).dot} shrink-0`}
-                                aria-hidden
-                            />
-                            <Select
-                                value={local.columnId}
-                                onValueChange={(v) => changeStatus(v)}
-                            >
-                                <SelectTrigger
-                                    data-testid="lead-status-select"
-                                    className="h-8 w-auto text-xs rounded-full bg-secondary border-0 px-3 gap-1.5"
-                                >
-                                    <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    {workspace.columnOrder.map((cid) => {
-                                        const c = workspace.columns[cid];
-                                        const cc = getColumnColor(c);
-                                        return (
-                                            <SelectItem key={cid} value={cid}>
-                                                <span className="flex items-center gap-2">
-                                                    <span
-                                                        className={`w-2 h-2 rounded-full ${cc.dot}`}
-                                                    />
-                                                    {c.name}
-                                                </span>
-                                            </SelectItem>
-                                        );
-                                    })}
-                                </SelectContent>
-                            </Select>
-                            <Button
-                                onClick={logContactToday}
-                                data-testid="lead-log-today-btn"
-                                variant="ghost"
-                                className="h-8 rounded-full px-2 sm:px-3 text-xs text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10"
-                            >
-                                <CheckCircle2 size={13} className="mr-1" />
-                                <span className="hidden xs:inline">{isJobs ? "Relancé aujourd'hui" : "Contacté aujourd'hui"}</span>
-                                <span className="xs:hidden">{isJobs ? "Relancé" : "Contacté"}</span>
-                            </Button>                        </div>
+                            )}
+                        </div>
+                        <button
+                            data-testid="lead-panel-close-btn"
+                            onClick={onClose}
+                            aria-label="Fermer"
+                            className="w-8 h-8 shrink-0 rounded-full hover:bg-secondary flex items-center justify-center text-muted-foreground"
+                        >
+                            <X size={16} />
+                        </button>
                     </div>
-                    <button
-                        data-testid="lead-panel-close-btn"
-                        onClick={onClose}
-                        aria-label="Fermer"
-                        className="w-11 h-11 shrink-0 rounded-full hover:bg-secondary flex items-center justify-center text-muted-foreground"
-                    >
-                        <X size={18} />
-                    </button>
                 </div>
 
                 <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 bg-muted/30">
@@ -843,45 +878,119 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                     {/* 🧾 Brief interactif — personnalisé par lead (import + notes) */}
                     {showBrief && (
                         <div
-                            className="rounded-xl border border-border bg-card p-3.5 space-y-2.5 shadow-sm"
+                            className="rounded-xl border border-border bg-card p-3.5 space-y-3 shadow-sm"
                             data-testid="lead-brief-strip"
                         >
-                            {/* Badge info pertinente */}
-                            {(brief.hasPertinent || inconsistencies.length > 0) && (
-                                <div className="flex items-center gap-1.5 text-[11px] font-medium text-primary">
-                                    <Sparkles size={12} strokeWidth={2} className="sparkle-icon shrink-0" />
-                                    <span>Information pertinente</span>
-                                    {brief.insights.some((i) => i.source === "note") && (
-                                        <span className="text-muted-foreground font-normal">· notes</span>
+                            <div className="flex items-center gap-1.5 text-[11px] font-medium text-primary">
+                                <Sparkles size={12} strokeWidth={2} className="sparkle-icon shrink-0" />
+                                <span>Information pertinente</span>
+                            </div>
+
+                            {/* SUIVI — 1 fait principal + ligne secondaire */}
+                            {situationPrimary && (
+                                <section className="space-y-0.5" data-testid="lead-brief-situation">
+                                    <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                        Suivi
+                                    </p>
+                                    <p
+                                        className={cn(
+                                            "text-[13px] font-semibold leading-snug",
+                                            situationPrimary.tone === "ok" && "text-emerald-800 dark:text-emerald-300",
+                                            situationPrimary.tone === "warn" && "text-amber-900 dark:text-amber-300",
+                                            situationPrimary.tone === "info" && "text-sky-900 dark:text-sky-300",
+                                            (!situationPrimary.tone || situationPrimary.tone === "neutral") && "text-foreground"
+                                        )}
+                                    >
+                                        {situationPrimary.label}
+                                    </p>
+                                    {situationSecondary && (
+                                        <p className="text-[11px] text-muted-foreground leading-snug line-clamp-2">
+                                            {situationSecondary}
+                                        </p>
                                     )}
-                                    {brief.insights.some((i) => i.source === "import") && (
-                                        <span className="text-muted-foreground font-normal">· import</span>
-                                    )}
-                                </div>
+                                </section>
                             )}
 
-                            {brief.jobTitle && (
-                                <div className="text-sm font-semibold text-foreground leading-snug line-clamp-2">
-                                    {brief.jobTitle}
-                                </div>
-                            )}
-
-                            {(brief.location || brief.contract) && (
-                                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
-                                    {brief.location && (
-                                        <span className="inline-flex items-center gap-1">
-                                            <MapPin size={11} className="shrink-0" />
-                                            {brief.location}
-                                        </span>
+                            {/* CONTEXTE — annonce / poste CSV (sans lien) */}
+                            {(brief.annonce || brief.jobTitle || brief.location || brief.contract) && (
+                                <section className="space-y-0.5" data-testid="lead-brief-contexte">
+                                    <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                        Contexte
+                                    </p>
+                                    {brief.annonce && (
+                                        <div className="space-y-0.5" data-testid="lead-brief-annonce">
+                                            {String(brief.annonce)
+                                                .split(/\s*;\s*/)
+                                                .map((part) => part.trim())
+                                                .filter(Boolean)
+                                                .map((part, i) => (
+                                                    <p
+                                                        key={`${part}-${i}`}
+                                                        className="text-[12px] font-medium leading-snug text-foreground"
+                                                    >
+                                                        {part}
+                                                    </p>
+                                                ))}
+                                        </div>
                                     )}
-                                    {brief.location && brief.contract && <span>·</span>}
-                                    {brief.contract && <span>{brief.contract}</span>}
-                                </div>
+                                    {brief.jobTitle && brief.jobTitle !== brief.annonce && (
+                                        <div className="space-y-0.5" data-testid="lead-brief-job-title">
+                                            {String(brief.jobTitle)
+                                                .split(/\s*;\s*/)
+                                                .map((part) => part.trim())
+                                                .filter(Boolean)
+                                                .map((part, i) => (
+                                                    <p
+                                                        key={`${part}-${i}`}
+                                                        className={cn(
+                                                            "leading-snug",
+                                                            brief.annonce
+                                                                ? "text-[11px] text-muted-foreground"
+                                                                : "text-[12px] font-medium text-foreground"
+                                                        )}
+                                                    >
+                                                        {part}
+                                                    </p>
+                                                ))}
+                                        </div>
+                                    )}
+                                    {(brief.location || brief.contract) && (
+                                        <p className="text-[12px] text-foreground leading-snug">
+                                            {brief.location && (
+                                                <span className="inline-flex items-center gap-1">
+                                                    <MapPin size={11} className="text-muted-foreground shrink-0" />
+                                                    {brief.location}
+                                                </span>
+                                            )}
+                                            {brief.location && brief.contract && (
+                                                <span className="text-muted-foreground"> · </span>
+                                            )}
+                                            {brief.contract && (
+                                                <span className="text-muted-foreground">{brief.contract}</span>
+                                            )}
+                                        </p>
+                                    )}
+                                </section>
                             )}
 
-                            {/* Contact / tél / email — interactifs + copiables */}
+                            {/* DERNIÈRE INFO */}
+                            {latestNote && (
+                                <section className="space-y-0.5" data-testid="lead-brief-contextual-notes">
+                                    <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                        Dernière info
+                                    </p>
+                                    <p className="text-[12px] leading-snug text-muted-foreground italic line-clamp-2 border-l-2 border-border/80 pl-2.5">
+                                        {latestNote.text}
+                                    </p>
+                                </section>
+                            )}
+
+                            {/* CONTACT */}
                             {(brief.contact || brief.phone || brief.email) && (
-                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-foreground">
+                                <section className="space-y-1">
+                                    <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                        Contact
+                                    </p>
                                     {brief.contact && (
                                         <button
                                             type="button"
@@ -891,72 +1000,97 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                                     toast.success("Contact enregistré", { description: brief.contact });
                                                 }
                                             }}
-                                            className="inline-flex items-center gap-1 group/row rounded-md hover:bg-muted/60 px-1 -mx-1 py-0.5 transition-colors text-left"
+                                            className="inline-flex items-center gap-1.5 group/row rounded-md hover:bg-muted/60 px-1 -mx-1 py-0.5 transition-colors text-left max-w-full"
                                             title={local.contact ? "Contact du lead" : "Cliquer pour enregistrer comme contact"}
                                         >
-                                            <User size={11} className="text-muted-foreground shrink-0" />
-                                            <span className="font-semibold">{brief.contact}</span>
+                                            <User size={12} className="text-muted-foreground shrink-0" />
+                                            <span className="text-[13px] font-semibold truncate">{brief.contact}</span>
                                             {brief.contactSource === "note" && !local.contact && (
-                                                <span className="text-[9px] text-primary font-medium">noter</span>
+                                                <span className="text-[9px] text-primary font-medium shrink-0">noter</span>
                                             )}
                                             <CopyBtn value={brief.contact} className="opacity-0 group-hover/row:opacity-100" />
                                         </button>
                                     )}
-                                    {brief.phone && (
-                                        <span className="inline-flex items-center gap-1 group/row">
-                                            <Phone size={11} className="text-muted-foreground shrink-0" />
-                                            <a
-                                                href={telHref(brief.phone) || undefined}
-                                                className="font-medium hover:text-primary tabular-nums"
-                                            >
-                                                {brief.phone}
-                                            </a>
-                                            {!local.phone && (
+                                    {(brief.phone || brief.email) && (
+                                        <div className="flex flex-col gap-0.5 pl-0.5 text-[12px]">
+                                            {brief.phone && (
+                                                <span className="inline-flex items-center gap-1.5 group/row min-w-0">
+                                                    <Phone size={11} className="text-muted-foreground shrink-0" />
+                                                    <a
+                                                        href={telHref(brief.phone) || undefined}
+                                                        className="font-medium hover:text-primary tabular-nums"
+                                                    >
+                                                        {brief.phone}
+                                                    </a>
+                                                    {!local.phone && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                patch({ phone: brief.phone });
+                                                                toast.success("Téléphone enregistré");
+                                                            }}
+                                                            className="text-[9px] text-primary font-medium hover:underline"
+                                                        >
+                                                            noter
+                                                        </button>
+                                                    )}
+                                                    <CopyBtn value={brief.phone} className="opacity-0 group-hover/row:opacity-100" />
+                                                </span>
+                                            )}
+                                            {brief.email && (
+                                                <span className="inline-flex items-center gap-1.5 group/row min-w-0">
+                                                    <Mail size={11} className="text-muted-foreground shrink-0" />
+                                                    <a
+                                                        href={mailtoHref(brief.email) || undefined}
+                                                        className="font-medium hover:text-primary truncate"
+                                                    >
+                                                        {brief.email}
+                                                    </a>
+                                                    {!local.email && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                patch({ email: brief.email });
+                                                                toast.success("Email enregistré");
+                                                            }}
+                                                            className="text-[9px] text-primary font-medium hover:underline"
+                                                        >
+                                                            noter
+                                                        </button>
+                                                    )}
+                                                    <CopyBtn value={brief.email} className="opacity-0 group-hover/row:opacity-100" />
+                                                </span>
+                                            )}
+                                        </div>
+                                    )}
+                                    {actionableInsights.length > 0 && (
+                                        <div className="flex flex-wrap gap-1.5 pt-0.5">
+                                            {actionableInsights.map((ins) => (
                                                 <button
+                                                    key={`${ins.type}-${ins.value}`}
                                                     type="button"
                                                     onClick={() => {
-                                                        patch({ phone: brief.phone });
-                                                        toast.success("Téléphone enregistré");
+                                                        if (!ins.applyKey) return;
+                                                        patch({ [ins.applyKey]: ins.value });
+                                                        toast.success(`${ins.label} enregistré`, { description: ins.value });
                                                     }}
-                                                    className="text-[9px] text-primary font-medium hover:underline"
+                                                    className="inline-flex items-center gap-1 max-w-full h-6 px-2 rounded-md text-[11px] bg-primary/8 text-primary border border-primary/15 hover:bg-primary/15 transition-colors"
+                                                    title={`Enregistrer comme ${ins.applyKey}`}
                                                 >
-                                                    noter
+                                                    <Sparkles size={10} className="sparkle-icon shrink-0" />
+                                                    <span className="truncate">{ins.value}</span>
+                                                    <span className="opacity-70 shrink-0">+</span>
                                                 </button>
-                                            )}
-                                            <CopyBtn value={brief.phone} className="opacity-0 group-hover/row:opacity-100" />
-                                        </span>
+                                            ))}
+                                        </div>
                                     )}
-                                    {brief.email && (
-                                        <span className="inline-flex items-center gap-1 group/row min-w-0">
-                                            <Mail size={11} className="text-muted-foreground shrink-0" />
-                                            <a
-                                                href={mailtoHref(brief.email) || undefined}
-                                                className="font-medium hover:text-primary truncate max-w-[180px]"
-                                            >
-                                                {brief.email}
-                                            </a>
-                                            {!local.email && (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        patch({ email: brief.email });
-                                                        toast.success("Email enregistré");
-                                                    }}
-                                                    className="text-[9px] text-primary font-medium hover:underline"
-                                                >
-                                                    noter
-                                                </button>
-                                            )}
-                                            <CopyBtn value={brief.email} className="opacity-0 group-hover/row:opacity-100" />
-                                        </span>
-                                    )}
-                                </div>
+                                </section>
                             )}
 
-                            {/* Insights actionnables */}
-                            {brief.insights.filter((i) => i.actionable).length > 0 && (
+                            {/* Insights actionnables sans bloc contact */}
+                            {!(brief.contact || brief.phone || brief.email) && actionableInsights.length > 0 && (
                                 <div className="flex flex-wrap gap-1.5">
-                                    {brief.insights.filter((i) => i.actionable).map((ins) => (
+                                    {actionableInsights.map((ins) => (
                                         <button
                                             key={`${ins.type}-${ins.value}`}
                                             type="button"
@@ -966,7 +1100,6 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                                 toast.success(`${ins.label} enregistré`, { description: ins.value });
                                             }}
                                             className="inline-flex items-center gap-1 max-w-full h-6 px-2 rounded-md text-[11px] bg-primary/8 text-primary border border-primary/15 hover:bg-primary/15 transition-colors"
-                                            title={`Enregistrer comme ${ins.applyKey}`}
                                         >
                                             <Sparkles size={10} className="sparkle-icon shrink-0" />
                                             <span className="truncate">{ins.value}</span>
@@ -976,119 +1109,115 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                 </div>
                             )}
 
-                            {/* Liens — empilés verticalement, lisibles */}
-                            {brief.links.length > 0 && (
-                                <div className="flex flex-col gap-0.5 min-w-0">
-                                    {brief.links.map((l) => (
-                                        <a
-                                            key={l.href}
-                                            href={l.href}
-                                            target="_blank"
-                                            rel="noreferrer noopener"
-                                            className="text-[12px] text-primary hover:underline truncate block"
-                                            title={l.href}
-                                        >
-                                            {l.display || displayUrl(l.href)}
-                                        </a>
-                                    ))}
-                                </div>
+                            {/* Offre d'emploi — lien souligné, couleur selon la source */}
+                            {brief.offerLink && (
+                                <a
+                                    href={brief.offerLink.href}
+                                    target="_blank"
+                                    rel="noreferrer noopener"
+                                    className={jobOfferLinkClass(brief.offerLink.source)}
+                                    title={brief.offerLink.href}
+                                    data-testid="lead-brief-offer-link"
+                                >
+                                    <span className={jobOfferUnderlineClass(brief.offerLink.source)}>
+                                        Voir l&apos;offre
+                                    </span>
+                                    <span className="opacity-50">·</span>
+                                    <span className="font-normal opacity-80">
+                                        {brief.offerLink.sourceLabel}
+                                    </span>
+                                </a>
                             )}
 
-                            {/* À surveiller — uniquement si pertinent, sous les infos / sites */}
-                            {inconsistencies.length > 0 && (
-                                <div
-                                    className="pt-2 mt-0.5 border-t border-border/70 space-y-1.5"
-                                    data-testid="lead-inconsistency-strip"
-                                >
-                                    <div className="flex items-center gap-2 text-[11px] font-semibold text-rose-700 dark:text-rose-300">
-                                        <AlertTriangle size={12} strokeWidth={2.25} className="shrink-0" />
-                                        <span>À surveiller</span>
-                                        <span className="tabular-nums text-rose-600/80 dark:text-rose-400/80 font-bold">
-                                            · {inconsistencies.length}
-                                        </span>
-                                    </div>
-                                    <ul className="space-y-1.5">
-                                        {inconsistencies.map((item) => {
-                                            const isCrit = item.severity === "critical";
-                                            const isWarn = item.severity === "warning";
-                                            return (
-                                                <li
-                                                    key={item.fingerprint}
-                                                    className={`flex items-start gap-2 rounded-lg px-2.5 py-2 text-[12.5px] leading-snug ${
-                                                        isCrit
-                                                            ? "bg-rose-500/12 text-rose-800 dark:text-rose-200"
-                                                            : isWarn
-                                                                ? "bg-amber-500/10 text-amber-900 dark:text-amber-100"
-                                                                : "bg-muted/60 text-foreground/80"
-                                                    }`}
-                                                    data-testid={`lead-inconsistency-${item.id}`}
+                            {/* Liens — repliés par défaut */}
+                            {brief.links.length > 0 && (
+                                <div className="min-w-0">
+                                    <button
+                                        type="button"
+                                        onClick={() => setBriefLinksOpen((v) => !v)}
+                                        className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                                        aria-expanded={briefLinksOpen}
+                                        data-testid="lead-brief-links-toggle"
+                                    >
+                                        <span>Liens · {brief.links.length}</span>
+                                        <ChevronDown
+                                            size={12}
+                                            className={cn("transition-transform", briefLinksOpen && "rotate-180")}
+                                        />
+                                    </button>
+                                    {briefLinksOpen && (
+                                        <div className="mt-1 flex flex-col gap-0.5 min-w-0">
+                                            {brief.links.map((l) => (
+                                                <a
+                                                    key={l.href}
+                                                    href={l.href}
+                                                    target="_blank"
+                                                    rel="noreferrer noopener"
+                                                    className="text-[12px] text-primary hover:underline truncate block"
+                                                    title={l.href}
                                                 >
-                                                    <span
-                                                        className={`mt-1.5 w-1.5 h-1.5 rounded-full shrink-0 ${
-                                                            isCrit ? "bg-rose-500" : isWarn ? "bg-amber-500" : "bg-muted-foreground/50"
-                                                        }`}
-                                                        aria-hidden
-                                                    />
-                                                    <div className="flex-1 min-w-0">
-                                                        <div className="font-semibold text-[12px]">{item.title}</div>
-                                                        <div className="text-[12px] opacity-90 mt-0.5">{item.message}</div>
-                                                    </div>
-                                                    {item.action && item.action.type !== "plan_rdv" && (
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => runInconsistencyAction(item)}
-                                                            className="shrink-0 h-7 px-2 rounded-md text-[11px] font-semibold bg-background/80 border border-border/80 hover:bg-background text-foreground"
-                                                            data-testid={`inconsistency-action-${item.id}`}
-                                                        >
-                                                            Enregistrer
-                                                        </button>
-                                                    )}
-                                                    {item.dismissible !== false && (
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => dismissInconsistency(item.fingerprint)}
-                                                            title="Ignorer cette alerte"
-                                                            aria-label="Ignorer"
-                                                            className="shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-background/60"
-                                                            data-testid={`dismiss-inconsistency-${item.id}`}
-                                                        >
-                                                            <X size={13} strokeWidth={2} />
-                                                        </button>
-                                                    )}
-                                                </li>
-                                            );
-                                        })}
-                                    </ul>
+                                                    {briefLinkLabel(l)}
+                                                </a>
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
                             )}
                         </div>
                     )}
 
-                    {needsCalendarNudge && (
-                        <div
-                            className="flex items-center gap-2.5 rounded-xl border border-violet-500/30 bg-violet-500/[0.08] px-3 py-2.5"
-                            data-testid="lead-calendar-nudge"
-                        >
-                            <div className="min-w-0 flex-1">
-                                <p className="text-[12px] font-semibold text-violet-800 dark:text-violet-200 leading-snug">
-                                    Bloquez un moment pour rappeler
-                                </p>
-                                <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
-                                    {scheduleOverdue
-                                        ? "Le rappel en cours est dépassé — choisissez un nouveau créneau."
-                                        : "Prenez un créneau dans votre journée pour rappeler ce prospect."}
-                                </p>
-                            </div>
-                            <QuickScheduleButton
-                                company={local.company || ""}
-                                defaultLabel={`Rappeler ${local.company || ""}`.trim()}
-                                hint="Choisissez quand rappeler ce prospect."
-                                size="sm"
-                                testId="lead-watch-schedule-btn"
-                                onConfirm={applyCalendarReminder}
-                                className="border-violet-500/40 bg-violet-500/15 text-violet-700 dark:text-violet-300 hover:bg-violet-500/25"
-                            />
-                        </div>
+                    {/* À surveiller + rappel — une ligne, icônes-actions */}
+                    {(inconsistencies.length > 0 || (needsCalendarNudge && calendarNudgeCopy)) && (
+                        <VigilanceStrip
+                            items={inconsistencies}
+                            nudge={needsCalendarNudge ? calendarNudgeCopy : null}
+                            company={local.company || ""}
+                            onPlanMeeting={(item) => {
+                                const asMeeting =
+                                    item?.id === "meeting_sans_rdv"
+                                    || item?.id === "rdv_detected_unplanned"
+                                    || item?.id === "rdv_overdue"
+                                    || item?.action?.type === "plan_rdv";
+                                openCalendarScheduler({
+                                    hint: item?.message || (asMeeting ? "Planifiez le rendez-vous." : "Planifiez un rappel."),
+                                    label: item?.action?.label
+                                        || (asMeeting
+                                            ? `RDV · ${local.company || ""}`.trim()
+                                            : `Rappeler ${local.company || ""}`.trim()),
+                                    asMeeting,
+                                });
+                            }}
+                            onPlanReminder={applyCalendarReminder}
+                            onApplyField={(item) => {
+                                if (item?.action?.type === "apply_field") {
+                                    runInconsistencyAction(item);
+                                    return;
+                                }
+                                if (item?.id === "won_sans_valeur" || item?.id === "won_no_close_date") {
+                                    restoreSection("deal");
+                                    toast.message(item.title, {
+                                        description: "Renseignez le montant / la date dans la section deal.",
+                                    });
+                                    requestAnimationFrame(() => {
+                                        document
+                                            .querySelector('[data-testid="lead-deal-value-input"]')
+                                            ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                                        document.querySelector('[data-testid="lead-deal-value-input"]')?.focus();
+                                    });
+                                }
+                            }}
+                            onSaveContact={({ phone, email }) => {
+                                const p = {};
+                                if (phone) p.phone = phone;
+                                if (email) p.email = email;
+                                if (!Object.keys(p).length) return;
+                                patch(p);
+                                toast.success("Coordonnées enregistrées", {
+                                    description: [phone, email].filter(Boolean).join(" · "),
+                                });
+                            }}
+                            onDismiss={dismissInconsistency}
+                        />
                     )}
 
                     {/* ═══════════ ZONE B — sections réordonnables ═══════════ */}
@@ -1330,30 +1459,6 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                 return (
                                     <PanelSectionCard {...sectionProps}>
                                         <div className="space-y-3" data-testid="lead-next-action-card">
-                                            <div className="flex items-center justify-end gap-1 -mt-1">
-                                                <QuickScheduleButton
-                                                    company={local.company || ""}
-                                                    defaultLabel={`Rappeler ${local.company || ""}`.trim()}
-                                                    hint="Date et heure du rappel ou RDV."
-                                                    size="sm"
-                                                    testId="lead-add-to-calendar-btn"
-                                                    onConfirm={applyCalendarReminder}
-                                                    className="border-border bg-background text-muted-foreground hover:text-foreground hover:bg-muted/60"
-                                                />
-                                                {na && (
-                                                    <button
-                                                        type="button"
-                                                        onClick={clearSchedule}
-                                                        title="Supprimer du calendrier"
-                                                        aria-label="Supprimer"
-                                                        data-testid="lead-clear-next-action"
-                                                        className="h-8 w-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                                                    >
-                                                        <X size={14} />
-                                                    </button>
-                                                )}
-                                            </div>
-
                                             {na ? (
                                                 <div
                                                     className={cn(
@@ -1365,21 +1470,21 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                                                 : "bg-violet-500/10 border-violet-500/20 text-violet-800 dark:text-violet-300"
                                                     )}
                                                 >
-                                                    <div className="flex items-center gap-1.5 flex-wrap">
-                                                        {na.auto && (
-                                                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-background/60 font-medium">
-                                                                auto {na.stage || 1}/3
-                                                            </span>
-                                                        )}
-                                                        {overdue && (
-                                                            <span className="text-[10px] font-semibold text-rose-600 dark:text-rose-400">
-                                                                en retard
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                    <div className="flex items-start gap-2 mt-1">
+                                                    <div className="flex items-start gap-2">
                                                         <div className="min-w-0 flex-1">
-                                                            <p className="text-[12px] font-semibold truncate">
+                                                            <div className="flex items-center gap-1.5 flex-wrap">
+                                                                {na.auto && (
+                                                                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-background/60 font-medium">
+                                                                        auto {na.stage || 1}/3
+                                                                    </span>
+                                                                )}
+                                                                {overdue && (
+                                                                    <span className="text-[10px] font-semibold text-rose-600 dark:text-rose-400">
+                                                                        en retard
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                            <p className="text-[12px] font-semibold truncate mt-1">
                                                                 {displayLabel}
                                                             </p>
                                                             {displayDue && !Number.isNaN(displayDue.getTime()) && (
@@ -1404,12 +1509,57 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                                                 onConfirm={applyCalendarReminder}
                                                             />
                                                         )}
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setEditingCalendar((v) => !v)}
+                                                            title={editingCalendar ? "Fermer l'édition" : "Modifier le créneau"}
+                                                            aria-label="Modifier"
+                                                            aria-pressed={editingCalendar}
+                                                            data-testid="lead-edit-next-action"
+                                                            className={cn(
+                                                                "h-7 w-7 rounded-lg flex items-center justify-center shrink-0 transition-colors",
+                                                                editingCalendar
+                                                                    ? "bg-background/70 text-foreground"
+                                                                    : "text-muted-foreground hover:text-foreground hover:bg-background/60"
+                                                            )}
+                                                        >
+                                                            <Pencil size={13} strokeWidth={2} />
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={clearSchedule}
+                                                            title="Supprimer du calendrier"
+                                                            aria-label="Supprimer"
+                                                            data-testid="lead-clear-next-action"
+                                                            className="h-7 w-7 rounded-lg flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 shrink-0"
+                                                        >
+                                                            <X size={14} />
+                                                        </button>
                                                     </div>
                                                 </div>
-                                            ) : (
-                                                <p className="text-[12px] text-muted-foreground">
-                                                    Aucun créneau — utilisez l&apos;icône pour en ajouter un.
-                                                </p>
+                                            ) : null}
+
+                                            {(!na || editingCalendar) && (
+                                                <QuickScheduleForm
+                                                    key={`${local.id}-${na?.dueAt || na?.date || "new"}-${editingCalendar ? "edit" : "new"}`}
+                                                    company={local.company || ""}
+                                                    existingNextAction={na || null}
+                                                    asMeeting={isManualRdv(na)}
+                                                    defaultLabel={
+                                                        na
+                                                            ? ""
+                                                            : (!leadHasBeenContacted(local)
+                                                                ? (`Appeler ${local.company || ""}`.trim() || "Premier appel")
+                                                                : (`Rappeler ${local.company || ""}`.trim() || "Rappeler"))
+                                                    }
+                                                    confirmLabel={na ? "Enregistrer" : "Ajouter"}
+                                                    onConfirm={(next) => {
+                                                        applyCalendarReminder(next);
+                                                        setEditingCalendar(false);
+                                                    }}
+                                                    onCancel={() => setEditingCalendar(false)}
+                                                    className="rounded-xl border border-border/70 bg-muted/20 p-3"
+                                                />
                                             )}
                                         </div>
                                     </PanelSectionCard>
@@ -1680,28 +1830,97 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                     />
                 </div>
 
-                <div className="border-t border-border px-5 py-3 flex items-center justify-between bg-card rounded-b-xl shrink-0">
-                    <div className="text-xs text-muted-foreground">
+                <div className="border-t border-border px-5 py-3 flex items-center justify-between gap-2 bg-card rounded-b-xl shrink-0">
+                    <div className="text-xs text-muted-foreground truncate min-w-0">
                         Créé le {formatDateTime(local.createdAt)}
                     </div>
-                    <Button
-                        variant="ghost"
-                        onClick={deleteLead}
-                        className="text-destructive hover:text-destructive hover:bg-destructive/10 h-10 rounded-full px-4"
-                        data-testid="lead-delete-btn"
-                    >
-                        <Trash2 size={15} className="mr-1.5" />
-                        Supprimer
-                    </Button>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                        <Select
+                            value={local.columnId}
+                            onValueChange={(v) => changeStatus(v)}
+                        >
+                            <SelectTrigger
+                                data-testid="lead-status-select"
+                                className="h-8 w-auto min-h-0 text-[11px] rounded-full bg-secondary/80 border-0 px-2.5 gap-1.5 shadow-none"
+                            >
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {workspace.columnOrder.map((cid) => {
+                                    const c = workspace.columns[cid];
+                                    const cc = getColumnColor(c);
+                                    return (
+                                        <SelectItem key={cid} value={cid}>
+                                            <span className="flex items-center gap-2">
+                                                <span
+                                                    className={`w-1.5 h-1.5 rounded-full ${cc.dot}`}
+                                                />
+                                                {c.name}
+                                            </span>
+                                        </SelectItem>
+                                    );
+                                })}
+                            </SelectContent>
+                        </Select>
+                        <button
+                            type="button"
+                            onClick={logContactToday}
+                            data-testid="lead-log-today-btn"
+                            aria-label={isJobs ? "Marquer relancé" : "Marquer contacté"}
+                            title={isJobs ? "Enregistrer une relance aujourd'hui" : "Enregistrer un contact aujourd'hui"}
+                            className="w-8 h-8 rounded-full flex items-center justify-center text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 transition-colors"
+                        >
+                            <Phone size={15} strokeWidth={2.25} />
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setConfirmDelete(true)}
+                            aria-label="Supprimer"
+                            title="Supprimer"
+                            data-testid="lead-delete-btn"
+                            className="w-8 h-8 rounded-full flex items-center justify-center text-destructive hover:bg-destructive/10 transition-colors"
+                        >
+                            <Trash2 size={15} />
+                        </button>
+                    </div>
                 </div>
             </aside>
 
+            <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+                <AlertDialogContent className="rounded-2xl" data-testid="lead-delete-dialog">
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>
+                            Supprimer « {local.company || "ce lead"} » ?
+                        </AlertDialogTitle>
+                        <AlertDialogDescription>
+                            Le lead et son historique seront supprimés. Vous pourrez annuler juste après via la notification.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Annuler</AlertDialogCancel>
+                        <AlertDialogAction
+                            data-testid="confirm-delete-lead-btn"
+                            onClick={deleteLead}
+                            className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+                        >
+                            Supprimer
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
             <AddToCalendarDialog
                 open={calendarDialogOpen}
-                onOpenChange={setCalendarDialogOpen}
+                onOpenChange={(open) => {
+                    setCalendarDialogOpen(open);
+                    if (!open) setCalendarAsMeeting(false);
+                }}
                 company={local.company || ""}
                 defaultLabel={calendarDefaultLabel}
                 hint={calendarHint}
+                asMeeting={calendarAsMeeting}
+                existingNextAction={local.nextAction || null}
+                confirmLabel={local.nextAction ? "Enregistrer" : (calendarAsMeeting ? "Planifier" : "Ajouter")}
                 onConfirm={applyCalendarReminder}
             />
         </>
@@ -1763,11 +1982,7 @@ const ExtraDeleteButton = ({ extraKey, extraValue, onDelete }) => {
  * Ces champs sont affichés dans FieldGroup, pas dans la section "Infos complémentaires".
  */
 function isMainFieldDuplicate(label) {
-    const MAIN_BASES = ["téléphone", "telephone", "email", "contact", "contact rh", "site web", "site", "lien offre"];
-    const normalized = label.toLowerCase().trim();
-    return MAIN_BASES.some((base) =>
-        new RegExp("^" + base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\d+$").test(normalized)
-    );
+    return isMainFieldDuplicateLabel(label);
 }
 
 const ExpandableCustomField = ({ field: f, isLong, actionHref, onUpdate, onToggleHighlight, autoFocus = false, onFocused }) => {
@@ -1871,12 +2086,20 @@ const FieldGroup = ({
     onDeleteCf,
 }) => {
     const base = baseLabel.toLowerCase();
-    const dupes = (customFields || []).filter((f) =>
-        f.label.toLowerCase().match(
-            new RegExp("^" + base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\d+$")
-        )
-    );
-    const nextNum = dupes.length + 2;
+    const dupes = (customFields || []).filter((f) => {
+        const n = (f.label || "").toLowerCase().trim();
+        if (n === base) return true; // ancien format « Contact » sans numéro
+        return new RegExp("^" + base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\d+$").test(n);
+    });
+    const nextNum = (() => {
+        let max = 1;
+        for (const f of dupes) {
+            const m = (f.label || "").toLowerCase().trim().match(/(\d+)\s*$/);
+            if (m) max = Math.max(max, Number(m[1]));
+            else max = Math.max(max, 2); // plain « Contact »
+        }
+        return max + 1;
+    })();
 
     const resolveHref = (val) => {
         if (!val) return null;

@@ -1115,28 +1115,84 @@ export const StatsDashboard = ({ alertRequest = null, onAlertRequestHandled }) =
                         />
                     </div>
 
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <Tile
+                            label="RDV avant close"
+                            value={
+                                current.avgRdvsBeforeClose == null
+                                    ? "—"
+                                    : Number(current.avgRdvsBeforeClose).toLocaleString("fr-FR", {
+                                        maximumFractionDigits: 1,
+                                    })
+                            }
+                            sub={`${current.won} deal${current.won > 1 ? "s" : ""} gagné${current.won > 1 ? "s" : ""}`}
+                        />
+                        <Tile
+                            label="CA deals gagnés"
+                            value={fmtEur(current.wonRevenue || 0)}
+                            sub="Uniquement colonne Gagné / Closé"
+                            tone={(current.wonRevenue || 0) > 0 ? "success" : "neutral"}
+                        />
+                    </div>
+
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                         <Panel>
                             <PanelLabel>Distribution par colonne</PanelLabel>
                             <ColumnBar byColumn={current.byColumn} />
                         </Panel>
                         <Panel>
-                            <AlertQualityGrid
-                                overdue={current.overdueFollowups || 0}
-                                noContact={current.noContact || 0}
-                                lost={current.lost || 0}
-                                active={current.active || 0}
-                                onOpenAlert={setAlertType}
-                                onFocusLost={() => {
-                                    const worst = [...statsPerWs].sort((a, b) => (b.stats.lost || 0) - (a.stats.lost || 0))[0];
-                                    if (worst?.stats.lost > 0) openWorkspace(worst.ws.id);
-                                }}
-                                onFocusPipeline={() => {
-                                    document.getElementById("stats-perf-table")?.scrollIntoView({ behavior: "smooth" });
-                                }}
-                            />
+                            <PanelLabel hint={current.lost ? `${current.lost} perdu${current.lost > 1 ? "s" : ""}` : undefined}>
+                                Motifs de perte
+                            </PanelLabel>
+                            {current.lostReasons && current.lostReasons.length > 0 ? (
+                                <div className="space-y-2.5 mt-3" data-testid="lost-reasons-chart">
+                                    {(() => {
+                                        const max = Math.max(...current.lostReasons.map((r) => r.count), 1);
+                                        return current.lostReasons.map((r) => {
+                                            const intensity = r.count / max;
+                                            return (
+                                                <div key={r.label} className="flex items-center gap-3">
+                                                    <span className="text-xs text-muted-foreground w-[140px] shrink-0 truncate" title={r.label}>
+                                                        {r.label}
+                                                    </span>
+                                                    <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
+                                                        <div
+                                                            className="h-full rounded-full bg-rose-500/80 transition-all duration-500"
+                                                            style={{ width: `${intensity * 100}%`, opacity: 0.35 + intensity * 0.65 }}
+                                                        />
+                                                    </div>
+                                                    <span className="text-xs tabular-nums text-muted-foreground w-6 text-right shrink-0">
+                                                        {r.count}
+                                                    </span>
+                                                </div>
+                                            );
+                                        });
+                                    })()}
+                                </div>
+                            ) : (
+                                <p className="text-sm text-muted-foreground py-6 text-center">
+                                    Aucun motif encore — glissez un lead en Perdu pour le QCM rapide.
+                                </p>
+                            )}
                         </Panel>
                     </div>
+
+                    <Panel>
+                        <AlertQualityGrid
+                            overdue={current.overdueFollowups || 0}
+                            noContact={current.noContact || 0}
+                            lost={current.lost || 0}
+                            active={current.active || 0}
+                            onOpenAlert={setAlertType}
+                            onFocusLost={() => {
+                                const worst = [...statsPerWs].sort((a, b) => (b.stats.lost || 0) - (a.stats.lost || 0))[0];
+                                if (worst?.stats.lost > 0) openWorkspace(worst.ws.id);
+                            }}
+                            onFocusPipeline={() => {
+                                document.getElementById("stats-perf-table")?.scrollIntoView({ behavior: "smooth" });
+                            }}
+                        />
+                    </Panel>
 
                     <Panel>
                         <VigilanceAgencyPanel

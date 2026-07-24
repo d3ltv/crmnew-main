@@ -30,6 +30,7 @@ import {
 import { isManualRdv } from "@/lib/nextActionUtils";
 import { toLocalDateKey } from "@/lib/dateUtils";
 import { resolveColumnIdByName } from "@/lib/csvUtils";
+import { resolvePipelineColumnId, migrateWorkspacePipeline } from "@/lib/pipelineRoles";
 
 // ---------- Utilities ----------
 const uid = () =>
@@ -38,8 +39,8 @@ const uid = () =>
 const DEFAULT_COLUMNS = [
     "Nouveau",
     "Contacté",
+    "Relance",
     "Rendez-vous",
-    "Proposition",
     "Gagné",
     "Perdu",
 ];
@@ -149,9 +150,25 @@ const makeWorkspace = (name, sector = "", template = "crm") => {
             name: n,
             color: template === "jobs" ? (colColors[n] || "gray") : inferColumnColor(n),
             promptNoteOnEnter: shouldPromptNote(n),
+            // Colonne Relance = rappel auto par défaut (pipeline CRM)
+            autoFollowup: template === "crm" && /^relance$/i.test(n.trim()),
         };
         columnOrder.push(id);
     }
+
+    const pipelineRoles = {};
+    if (template === "crm") {
+        const byName = Object.fromEntries(
+            Object.values(columns).map((c) => [c.name.toLowerCase(), c.id])
+        );
+        pipelineRoles.nouveau = byName.nouveau || null;
+        pipelineRoles.contacted = byName.contacté || byName.contacte || null;
+        pipelineRoles.relance = byName.relance || null;
+        pipelineRoles.rdv = byName["rendez-vous"] || byName.rdv || null;
+        pipelineRoles.won = byName.gagné || byName.gagne || byName.closé || null;
+        pipelineRoles.lost = byName.perdu || null;
+    }
+
     return {
         id: uid(),
         name: name || "Sans nom",
@@ -164,6 +181,7 @@ const makeWorkspace = (name, sector = "", template = "crm") => {
         columnWidth: 340,
         cardScale: 1,
         agencyDetectionEnabled: true,
+        pipelineRoles,
         createdAt: new Date().toISOString(),
     };
 };
@@ -258,10 +276,14 @@ function loadState() {
         // Validation basique — si la structure est invalide, on ignore
         if (!parsed || typeof parsed !== "object" || !parsed.workspaces) return null;
         // Migrer les anciens workspaces sans columnWidth / cardScale
+        // + pipeline Relance / rôles de colonnes
         if (parsed.workspaces) {
-            Object.values(parsed.workspaces).forEach((ws) => {
+            Object.keys(parsed.workspaces).forEach((id) => {
+                let ws = parsed.workspaces[id];
                 if (ws.columnWidth === undefined) ws.columnWidth = 340;
                 if (ws.cardScale === undefined) ws.cardScale = 1;
+                ws = migrateWorkspacePipeline(ws);
+                parsed.workspaces[id] = ws;
             });
         }
         // Migrer / synchroniser la nav latérale (dossiers, icônes, ordre)
@@ -720,7 +742,6 @@ function reducer(state, action) {
                 targetCol?.name,
                 autoFollowupBase
             );
-            // Update leadOrder for destination column
             const destLeads = Object.values(ws.leads)
                 .filter((l) => l.columnId === action.toColumnId && l.id !== action.leadId)
                 .map((l) => l.id);
@@ -729,10 +750,12 @@ function reducer(state, action) {
             destLeads.forEach((id) => {
                 if (!destOrder.includes(id)) destOrder.push(id);
             });
-            const newDestOrder = [...destOrder];
+            // Contacté : plus récent en tête (prepend si pas d'index)
+            const prependRecent = isContactedColumn(targetCol?.name || "");
             const insertAt = action.toIndex != null
-                ? Math.min(action.toIndex, newDestOrder.length)
-                : newDestOrder.length;
+                ? Math.min(action.toIndex, destOrder.length)
+                : (prependRecent ? 0 : destOrder.length);
+            const newDestOrder = [...destOrder];
             newDestOrder.splice(insertAt, 0, action.leadId);
             // Remove from source column order
             const srcOrder = (ws.leadOrder?.[lead.columnId] || [])
@@ -964,7 +987,10 @@ function reducer(state, action) {
             destLeads.forEach((id) => {
                 if (!destOrder.includes(id)) destOrder.push(id);
             });
-            const newDestOrder = [...destOrder, action.leadId];
+            // Contacté : plus récent en tête
+            const newDestOrder = isContactedColumn(targetCol?.name || "")
+                ? [action.leadId, ...destOrder]
+                : [...destOrder, action.leadId];
             const srcOrder = (ws.leadOrder?.[lead.columnId] || [])
                 .filter((id) => id !== action.leadId);
             return updateWs(state, ws.id, {
@@ -1241,12 +1267,9 @@ function reducer(state, action) {
                   ]
                 : lead.notes || [];
 
-            // Auto-move vers la colonne "Contacté" si elle existe et que le lead n'y est pas déjà.
-            // Utilise isContactedColumn (patterns centralisés) au lieu d'une comparaison exacte
-            // sur "contacté" — couvre aussi "Appel", "Relance", "Call", etc.
-            const contactedColumn = Object.values(ws.columns).find(
-                (c) => isContactedColumn(c.name)
-            );
+            // Auto-move vers la colonne "Contacté" (rôle pipeline ou détection nom)
+            const contactedColumnId = resolvePipelineColumnId(ws, "contacted");
+            const contactedColumn = contactedColumnId ? ws.columns[contactedColumnId] : null;
             const shouldMove =
                 contactedColumn && lead.columnId !== contactedColumn.id;
 
@@ -1552,6 +1575,78 @@ function reducer(state, action) {
                         dealClosedAt: action.value != null ? (lead.dealClosedAt || new Date().toISOString()) : null,
                     },
                 },
+            });
+        }
+        case "SET_LOST_REASON": {
+            // action.workspaceId, action.leadId, action.reasonId, action.reasonLabel
+            const ws = state.workspaces[action.workspaceId];
+            if (!ws) return state;
+            const lead = ws.leads[action.leadId];
+            if (!lead) return state;
+            const now = new Date().toISOString();
+            return updateWs(state, ws.id, {
+                leads: {
+                    ...ws.leads,
+                    [action.leadId]: {
+                        ...lead,
+                        lostReason: action.reasonId || null,
+                        lostReasonLabel: action.reasonLabel || null,
+                        lostAt: now,
+                        dealClosedAt: lead.dealClosedAt || now,
+                    },
+                },
+            });
+        }
+        case "SET_PIPELINE_ROLES": {
+            // action.workspaceId, action.pipelineRoles: partial map role → columnId|null
+            const ws = state.workspaces[action.workspaceId];
+            if (!ws) return state;
+            const next = { ...(ws.pipelineRoles || {}) };
+            for (const [role, colId] of Object.entries(action.pipelineRoles || {})) {
+                if (colId == null || colId === "") next[role] = null;
+                else if (ws.columns[colId]) next[role] = colId;
+            }
+            return updateWs(state, ws.id, { pipelineRoles: next });
+        }
+        case "RESET_PIPELINE_VIEW": {
+            // Remet tous les leads en « Nouveau », efface rappels / RDV / followups / statut deal,
+            // sans toucher aux réglages (cardFields, colonnes, pipelineRoles, largeur…).
+            const ws = state.workspaces[action.workspaceId];
+            if (!ws) return state;
+            const nouveauId = resolvePipelineColumnId(ws, "nouveau") || ws.columnOrder?.[0];
+            if (!nouveauId || !ws.columns[nouveauId]) return state;
+
+            const now = new Date().toISOString();
+            const updatedLeads = {};
+            const nouveauOrder = [];
+
+            for (const lead of Object.values(ws.leads || {})) {
+                nouveauOrder.push(lead.id);
+                updatedLeads[lead.id] = {
+                    ...lead,
+                    columnId: nouveauId,
+                    nextAction: null,
+                    autoFollowup: null,
+                    contactedColumnEnteredAt: null,
+                    staleInContacted: false,
+                    dealValue: null,
+                    dealClosedAt: null,
+                    lostReason: null,
+                    lostReasonLabel: null,
+                    lostAt: null,
+                    // Historique de colonnes remis à zéro (nouveau départ pipeline)
+                    statusHistory: [{ columnId: nouveauId, at: now }],
+                };
+            }
+
+            const leadOrder = {};
+            for (const cid of ws.columnOrder || []) {
+                leadOrder[cid] = cid === nouveauId ? nouveauOrder : [];
+            }
+
+            return updateWs(state, ws.id, {
+                leads: updatedLeads,
+                leadOrder,
             });
         }
         case "PROMOTE_EXTRA_FIELD": {

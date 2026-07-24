@@ -56,7 +56,7 @@ function getColorScheme(ratio) {
 }
 
 // ─── Composant principal ──────────────────────────────────────────────────────
-export const DailyGoalWidget = ({ workspace, onEditGoal, slotHint = null }) => {
+export const DailyGoalWidget = ({ workspace, onEditGoal }) => {
     const [goal, setGoal] = useState(loadGoal);
 
     // Recharger l'objectif depuis localStorage si modifié ailleurs
@@ -71,18 +71,12 @@ export const DailyGoalWidget = ({ workspace, onEditGoal, slotHint = null }) => {
     const pct = Math.round(ratio * 100);
     const { bar, text, label } = getColorScheme(ratio);
 
-    const titleLines = [
-        `Objectif quotidien — ${label}`,
-        slotHint ? `Meilleur créneau : ${slotHint.detailLabel}` : null,
-        "Cliquez pour modifier",
-    ].filter(Boolean);
-
     return (
         <button
             onClick={onEditGoal}
-            title={titleLines.join("\n")}
+            title={`Objectif quotidien — ${label}\nCliquez pour modifier`}
             className="flex flex-col items-center gap-0.5 px-3 py-1 rounded-xl hover:bg-secondary transition-colors group min-w-[72px]"
-            aria-label={`Objectif quotidien : ${current} sur ${goal} contacts${slotHint ? ` · pic ${slotHint.shortLabel}` : ""}`}
+            aria-label={`Objectif quotidien : ${current} sur ${goal} contacts`}
             data-testid="daily-goal-widget"
         >
             {/* Chiffres */}
@@ -102,15 +96,6 @@ export const DailyGoalWidget = ({ workspace, onEditGoal, slotHint = null }) => {
                     style={{ width: `${pct}%` }}
                 />
             </div>
-
-            {slotHint && (
-                <span
-                    className="text-[9px] text-muted-foreground leading-none mt-0.5 max-w-[88px] truncate"
-                    data-testid="prospecting-slot-hint"
-                >
-                    Pic · {slotHint.shortLabel}
-                </span>
-            )}
         </button>
     );
 };

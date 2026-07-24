@@ -3,11 +3,12 @@ import { Phone, PhoneOff, Save, X, Sparkles, CalendarClock, BellRing } from "luc
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useCrm } from "@/context/CrmContext";
-import { formatDateTimeLong, toLocalDateKey, addDaysSkippingWeekend, addDaysSkippingWeekendIso, formatFutureRelativeFr } from "@/lib/dateUtils";
+import { formatDateTimeLong, toLocalDateKey, addDaysSkippingWeekend, addDaysSkippingWeekendIso, formatFutureRelativeFr, suggestNoAnswerFollowUp, formatNoAnswerFollowUpLabel } from "@/lib/dateUtils";
+import { allocateMainDupeLabels } from "@/lib/customFields";
 import { parseNote, diffWithLead, formatDetected, detectAppointment } from "@/lib/noteParser";
-import { isMeetingColumn } from "@/constants/columnPatterns";
 import { makeRdvNextAction } from "@/lib/nextActionUtils";
 import { normalizeInconsistencyConfig } from "@/lib/inconsistencyRules";
+import { resolvePipelineColumnId } from "@/lib/pipelineRoles";
 
 const RELANCE_DAY_CHIPS = [1, 2, 3, 4, 5, 6, 7];
 
@@ -27,9 +28,10 @@ export const CallNoteModal = ({
     const [suggestRelance, setSuggestRelance] = useState(true);
     const [relanceDays, setRelanceDays] = useState(2);
 
+    /** Relance « joint » : défaut config. « Pas de réponse » : timing smart (+1 j max). */
     const defaultRelanceDays = useMemo(() => {
         const cfg = normalizeInconsistencyConfig(workspace?.inconsistencyConfig);
-        return cfg.thresholds?.noAnswerDays || 2;
+        return Math.min(Math.max(1, cfg.thresholds?.noAnswerDays || 2), 7);
     }, [workspace?.inconsistencyConfig]);
 
     useEffect(() => {
@@ -53,11 +55,8 @@ export const CallNoteModal = ({
     const handleOutcomeClick = (value) => {
         setOutcome(value);
         setOutcomeManual(true);
-        if (value === "noanswer") {
-            setSuggestRelance(true);
-            setRelanceDays(defaultRelanceDays);
-        } else if (value === "reached") {
-            setSuggestRelance(true);
+        setSuggestRelance(true);
+        if (value === "reached") {
             setRelanceDays(defaultRelanceDays);
         }
     };
@@ -132,13 +131,14 @@ export const CallNoteModal = ({
             });
         }
 
-        const meetingColumn = workspace.columnOrder
-            .map((cid) => workspace.columns[cid])
-            .find((c) => c && isMeetingColumn(c.name));
+        const meetingColumnId = resolvePipelineColumnId(workspace, "rdv");
+        const meetingColumn = meetingColumnId ? workspace.columns[meetingColumnId] : null;
 
+        const relanceColumnId = resolvePipelineColumnId(workspace, "relance");
         const autoFollowupColumn = workspace.columnOrder
             .map((cid) => workspace.columns[cid])
-            .find((c) => c.autoFollowup);
+            .find((c) => c?.autoFollowup)
+            || (relanceColumnId ? workspace.columns[relanceColumnId] : null);
 
         const shouldMoveToMeeting =
             !!appointment && meetingColumn && effectiveColumnId !== meetingColumn.id;
@@ -183,16 +183,13 @@ export const CallNoteModal = ({
                 label: `RDV détecté · ${appointment.label}`,
             });
         } else if (suggestRelance && !appointment) {
-            const days = Math.min(Math.max(1, Number(relanceDays) || 1), 7);
-            const dueDate = addDaysSkippingWeekend(days);
-            dueDate.setHours(9, 0, 0, 0);
-            const dueAt = dueDate.toISOString();
-            const dateKey = toLocalDateKey(dueDate);
-            const relative = formatFutureRelativeFr(dueDate);
-
             if (finalOutcome === "noanswer") {
+                const dueDate = suggestNoAnswerFollowUp();
+                const dueAt = dueDate.toISOString();
+                const dateKey = toLocalDateKey(dueDate);
+                const relative = formatNoAnswerFollowUpLabel(dueDate);
                 const currentStage = lead.autoFollowup?.stage ?? 0;
-                const nextStage = Math.min(Math.max(currentStage + 1, Math.min(days, 3)), 3);
+                const nextStage = Math.min((currentStage || 0) + 1, 3);
                 const now = new Date().toISOString();
                 patch.autoFollowup = {
                     stage: nextStage,
@@ -209,6 +206,12 @@ export const CallNoteModal = ({
                     stage: nextStage,
                 };
             } else if (finalOutcome === "reached") {
+                const days = Math.min(Math.max(1, Number(relanceDays) || 1), 7);
+                const dueDate = addDaysSkippingWeekend(days);
+                dueDate.setHours(9, 0, 0, 0);
+                const dueAt = dueDate.toISOString();
+                const dateKey = toLocalDateKey(dueDate);
+                const relative = formatFutureRelativeFr(dueDate);
                 patch.nextAction = {
                     date: dateKey,
                     dueAt,
@@ -229,26 +232,36 @@ export const CallNoteModal = ({
             });
         }
 
-        diff.extraPhones.forEach((phone) => {
+        const isJobs = workspace.template === "jobs";
+        const phoneLabels = allocateMainDupeLabels(lead.customFields, "Téléphone", (diff.extraPhones || []).length);
+        diff.extraPhones.forEach((phone, i) => {
             dispatch({
                 type: "ADD_CUSTOM_FIELD",
                 workspaceId: workspace.id,
                 leadId: lead.id,
-                label: "Téléphone",
+                label: phoneLabels[i] || `Téléphone ${i + 2}`,
                 value: phone,
                 pinned: false,
+                isMainDuplicate: true,
             });
         });
 
-        (diff.extraContacts || []).forEach((person) => {
+        const contactBase = isJobs ? "Contact RH" : "Contact";
+        const contactLabels = allocateMainDupeLabels(
+            lead.customFields,
+            contactBase,
+            (diff.extraContacts || []).length
+        );
+        (diff.extraContacts || []).forEach((person, i) => {
             dispatch({
                 type: "ADD_CUSTOM_FIELD",
                 workspaceId: workspace.id,
                 leadId: lead.id,
-                label: "Contact",
+                label: contactLabels[i] || `${contactBase} ${i + 2}`,
                 value: person,
                 pinned: false,
                 highlight: true,
+                isMainDuplicate: true,
             });
         });
 
@@ -286,12 +299,17 @@ export const CallNoteModal = ({
 
     const columnName = workspace.columns[lead.columnId]?.name;
     const isMac = /iPhone|iPad|Macintosh/.test(navigator.userAgent);
+    const noAnswerDue = suggestNoAnswerFollowUp();
+    const noAnswerDueLabel = formatNoAnswerFollowUpLabel(noAnswerDue);
     const relanceDueDate = addDaysSkippingWeekendIso(relanceDays);
     const relanceDueLabel = new Date(relanceDueDate).toLocaleDateString("fr-FR", {
         weekday: "short",
         day: "numeric",
         month: "short",
     });
+    const schedulePreviewLabel = effectiveOutcome === "noanswer"
+        ? noAnswerDueLabel
+        : `${relanceDueLabel} (hors week-end)`;
 
     const skip = () => onClose();
 
@@ -420,12 +438,12 @@ export const CallNoteModal = ({
                                     </span>
                                     <span className="block text-[11px] text-muted-foreground mt-0.5">
                                         {suggestRelance
-                                            ? `Prévu le ${relanceDueLabel} (hors week-end)`
+                                            ? `Prévu : ${schedulePreviewLabel}`
                                             : "Aucune relance ne sera créée"}
                                     </span>
                                 </span>
                             </label>
-                            {suggestRelance && (
+                            {suggestRelance && effectiveOutcome === "reached" && (
                                 <div className="flex flex-wrap gap-1.5 pl-6">
                                     {RELANCE_DAY_CHIPS.map((d) => (
                                         <button
@@ -443,6 +461,11 @@ export const CallNoteModal = ({
                                         </button>
                                     ))}
                                 </div>
+                            )}
+                            {suggestRelance && effectiveOutcome === "noanswer" && (
+                                <p className="pl-6 text-[11px] text-muted-foreground/90">
+                                    Matin → après-midi · sinon +1 j · vendredi soir → lundi matin
+                                </p>
                             )}
                         </div>
                     )}
@@ -514,7 +537,7 @@ export const CallNoteModal = ({
                         )}
                         {!hasNewInfo && !appointment && suggestRelance && showRelanceSuggest && (
                             <span className="text-amber-600 dark:text-amber-400 font-medium truncate block">
-                                Relance · {relanceDueLabel}
+                                Rappel · {effectiveOutcome === "noanswer" ? noAnswerDueLabel : relanceDueLabel}
                             </span>
                         )}
                     </div>

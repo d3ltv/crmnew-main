@@ -316,7 +316,7 @@ export function detectAppointment(text, now = new Date()) {
 
     // Déclencheurs forts (intention claire de planifier / rappeler)
     const STRONG_TRIGGER_RE =
-        /\b(?:rdv|rendez[\s-]?vous|rappel(?:er|ler|le)?|recontact(?:er)?|relance(?:r)?|reappeler|joindre|call(?:er)?|entretien|demo|visite|planifi(?:er|e)|programmer|fixer)\b/;
+        /\b(?:rdv|rendez[\s-]?vous|rappel(?:er|ler|le)?|recontact(?:er)?|relance(?:r)?|reappeler|joindre|call(?:er)?|entretien|demo|visite|planifi(?:er|e)|programmer|fixer|reporter|reporte|report(?:er)?|decaler|reprogrammer)\b/;
     // Soft : contexte commercial — dates relatives claires seulement
     const SOFT_TRIGGER_RE =
         /\b(?:voir|voit|vu|callback|follow[\s-]?up|revenir|revient|rappelle|rappellerai|dispo(?:nible)?)\b/;
@@ -417,17 +417,24 @@ export function detectAppointment(text, now = new Date()) {
     }
 
     // ── 5. Jour de semaine ────────────────────────────────────────────────────
+    // Si une date explicite est collée (« lundi 3/08 », « mardi 12 aout »),
+    // on laisse les sections 6/7 gérer — sinon « prochain lundi » écrase le 3/08.
+    const EXPLICIT_DATE_NEAR_RE =
+        /(?:le\s+)?\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?|(?:le\s+)?\d{1,2}\s+(?:janvier|fevrier|mars|avril|mai|juin|juillet|aout|septembre|octobre|novembre|decembre|jan|fev|avr|juil|sep|sept|oct|nov|dec)/;
     const joursRe = /\b(lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\b/g;
     let mJour;
     while ((mJour = joursRe.exec(t)) !== null) {
         const targetDay = DAYS_FR[mJour[1]];
-        const before = t.slice(Math.max(0, mJour.index - 20), mJour.index);
+        const before = t.slice(Math.max(0, mJour.index - 24), mJour.index);
         const afterJour = t.slice(mJour.index + mJour[0].length);
+        if (EXPLICIT_DATE_NEAR_RE.test(afterJour.slice(0, 28))) continue;
+        if (EXPLICIT_DATE_NEAR_RE.test(before)) continue;
         const isNext = /prochain/.test(afterJour.slice(0, 15)) || /\bprochain\b/.test(before);
         addCandidate(nextWeekday(now, targetDay, isNext), extractTime(afterJour), 2);
     }
 
     // ── 6. Date absolue : "20 juillet" ───────────────────────────────────────
+    // Priorité haute : une date écrite bat un simple jour de semaine.
     const moisRe = /\b(\d{1,2})\s+(janvier|fevrier|mars|avril|mai|juin|juillet|aout|septembre|octobre|novembre|decembre|jan|fev|avr|juil|sep|sept|oct|nov|dec)(?:\s+(\d{4}))?\b/g;
     let mMois;
     while ((mMois = moisRe.exec(t)) !== null) {
@@ -437,11 +444,14 @@ export function detectAppointment(text, now = new Date()) {
         if (month !== undefined && day >= 1 && day <= 31) {
             const d = new Date(year, month, day);
             if (d < now && !mMois[3]) d.setFullYear(year + 1);
-            addCandidate(d, extractTime(t.slice(mMois.index + mMois[0].length)), 2);
+            // Heure : regarder aussi un peu avant (« a 12h le 3 aout » rare) et après
+            const timeStr = extractTime(t.slice(mMois.index + mMois[0].length))
+                || extractTime(t.slice(Math.max(0, mMois.index - 12), mMois.index));
+            addCandidate(d, timeStr, 5);
         }
     }
 
-    // ── 7. Format numérique : "20/07", "20-07-2026" ──────────────────────────
+    // ── 7. Format numérique : "20/07", "20-07-2026", "3/08" ───────────────────
     const numRe = /\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?\b/g;
     let mNum;
     while ((mNum = numRe.exec(t)) !== null) {
@@ -454,8 +464,14 @@ export function detectAppointment(text, now = new Date()) {
         }
         if (day >= 1 && day <= 31 && month >= 0 && month <= 11) {
             const d = new Date(year, month, day);
+            // Date invalide (31/02…) → getDate() diverge
+            if (d.getMonth() !== month || d.getDate() !== day) continue;
             if (d < now && !mNum[3]) d.setFullYear(year + 1);
-            addCandidate(d, extractTime(t.slice(mNum.index + mNum[0].length)), 2);
+            // Si un jour de semaine précède (« lundi 3/08 ») et ne correspond pas,
+            // on garde quand même la date écrite (plus fiable que le prochain lundi).
+            const timeStr = extractTime(t.slice(mNum.index + mNum[0].length))
+                || extractTime(t.slice(Math.max(0, mNum.index - 12), mNum.index));
+            addCandidate(d, timeStr, 5);
         }
     }
 

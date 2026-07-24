@@ -19,7 +19,7 @@ const TEMPLATES = [
         emoji: "🎯",
         label: "Pipeline Prospects",
         description: "Suivi commercial classique : leads, contacts, devis, relances.",
-        columns: ["Nouveau", "Contacté", "Rendez-vous", "Proposition", "Gagné", "Perdu"],
+        columns: ["Nouveau", "Contacté", "Relance", "Rendez-vous", "Gagné", "Perdu"],
         colors: ["bg-blue-500", "bg-amber-500", "bg-violet-500", "bg-sky-500", "bg-emerald-500", "bg-rose-500"],
         accent: "border-blue-500/40 bg-blue-500/5",
         badge: "bg-blue-500/10 text-blue-700 dark:text-blue-300",

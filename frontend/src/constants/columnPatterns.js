@@ -83,6 +83,10 @@ export const WON_PATTERNS = [
     "closed won",
     "accepté",
     "accepte",
+    "closé",
+    "close",
+    "closed",
+    "vendu",
 ];
 
 // ── Colonnes "Perdu" — deal perdu / candidature refusée ──────────────────────
@@ -93,6 +97,9 @@ export const LOST_PATTERNS = [
     "abandon",
     "refusé",
     "refuse",
+    "hors contexte",
+    "hors cible",
+    "disqualifi",
 ];
 
 // ── Helpers — retournent true/false pour un nom de colonne donné ─────────────
@@ -249,11 +256,12 @@ export function scoreRappelColumn(name = "") {
     const n = name.toLowerCase().trim();
     if (!n) return -1;
     if (/à\s*rappeler|a\s*rappeler/.test(n)) return 100;
+    if (n === "relance" || n === "relances") return 98;
     if (n === "rappel" || n === "rappels") return 95;
     if (n.includes("callback")) return 90;
     if (/à\s*relancer|a\s*relancer/.test(n)) return 88;
     if (n.includes("rappel")) return 80;
-    if (n.includes("relance") && !n.includes("auto")) return 55;
+    if (n.includes("relance") && !n.includes("auto")) return 85;
     if (!isRappelColumn(n)) return -1;
     return 40;
 }

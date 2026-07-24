@@ -8,6 +8,7 @@ import {
     Bell,
     Settings2,
     Trash2,
+    RotateCcw,
     Folders,
     Menu,
     X,
@@ -72,21 +73,16 @@ import {
 import { getColumnColor } from "@/lib/columnColors";
 import { formatShortDateTime } from "@/lib/dateUtils";
 import {
-    getWorkspaceFollowupNotifs,
+    getUnreadWorkspaceNotifs,
     markAllNotifsRead,
     markNotifItemRead,
     countUnreadWorkspaceNotifs,
-    isNotifItemUnread,
+    countAllUnreadNotifs,
 } from "@/lib/followupNotifs";
 import { useNotifSeenMap } from "@/hooks/useNotifSeenMap";
-import {
-    collectCalendarEvents,
-    countActionableToday,
-} from "@/lib/calendarEvents";
 import { SidebarContent } from "./Sidebar";
 import { CardFieldsPanel } from "./CardFieldsPanel";
 import { DailyGoalWidget, DailyGoalEditor } from "./DailyGoalWidget";
-import { getBestProspectingSlot } from "@/lib/prospectingSlots";
 import { CrmCalendar } from "./CrmCalendar";
 
 const QUICK_FILTERS = [
@@ -114,6 +110,7 @@ export const TopBar = ({
     const { state, dispatch, undo, redo, canUndo, canRedo } = useCrm();
     const isDark = state.theme === "dark";
     const [confirmDelete, setConfirmDelete] = useState(false);
+    const [confirmResetView, setConfirmResetView] = useState(false);
     const [mobileNavOpen, setMobileNavOpen] = useState(false);
     const [searchOpen, setSearchOpen] = useState(false);
     const [goalEditorOpen, setGoalEditorOpen] = useState(false);
@@ -129,31 +126,24 @@ export const TopBar = ({
 
     const seenMap = useNotifSeenMap();
 
-    const prospectingSlot = useMemo(() => {
-        const allWs = state.order.map((id) => state.workspaces[id]).filter(Boolean);
-        return getBestProspectingSlot(allWs);
-    }, [state.workspaces, state.order]);
-
     const allWorkspaces = useMemo(
         () => state.order.map((id) => state.workspaces[id]).filter(Boolean),
         [state.order, state.workspaces]
     );
 
-    const calendarActionable = useMemo(
-        () => countActionableToday(collectCalendarEvents(allWorkspaces)),
-        [allWorkspaces]
+    const calendarUnread = useMemo(
+        () => countAllUnreadNotifs(allWorkspaces, seenMap),
+        [allWorkspaces, seenMap]
     );
 
     const followups = useMemo(
-        () => getWorkspaceFollowupNotifs(workspace),
-        [workspace.leads] // eslint-disable-line react-hooks/exhaustive-deps
+        () => getUnreadWorkspaceNotifs(workspace, seenMap),
+        [workspace.leads, seenMap] // eslint-disable-line react-hooks/exhaustive-deps
     );
 
     const overdueCount = followups.filter((f) => f.overdue).length;
     const todayCount = followups.filter((f) => f.today && !f.overdue).length;
-    const totalNotifs = followups.length;
     const badgeCount = countUnreadWorkspaceNotifs(workspace, seenMap);
-    const notifsSeen = badgeCount === 0 && totalNotifs > 0;
 
     const markNotifsAsRead = (e) => {
         e?.stopPropagation();
@@ -161,9 +151,14 @@ export const TopBar = ({
         markAllNotifsRead(allWs);
     };
 
-    const openNotifLead = (lead) => {
-        markNotifItemRead(workspace.id, lead);
-        onOpenLead?.(lead);
+    const openNotifLead = (item) => {
+        markNotifItemRead(item);
+        onOpenLead?.(item.lead);
+    };
+
+    const dismissNotif = (e, item) => {
+        e?.stopPropagation();
+        markNotifItemRead(item);
     };
 
     const exportCsv = () => {
@@ -292,7 +287,6 @@ export const TopBar = ({
                     <DailyGoalWidget
                         workspace={workspace}
                         onEditGoal={() => setGoalEditorOpen(true)}
-                        slotHint={prospectingSlot}
                     />
                 </div>
 
@@ -308,12 +302,12 @@ export const TopBar = ({
                         className="relative w-9 h-9 rounded-full hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors touch-target"
                     >
                         <CalendarDays size={16} />
-                        {calendarActionable > 0 && (
+                        {calendarUnread > 0 && (
                             <span
                                 data-testid="topbar-calendar-badge"
                                 className="absolute top-1 right-1 min-w-[15px] h-3.5 px-1 rounded-full text-[9px] font-semibold flex items-center justify-center text-white bg-rose-500"
                             >
-                                {calendarActionable > 9 ? "9+" : calendarActionable}
+                                {calendarUnread > 9 ? "9+" : calendarUnread}
                             </span>
                         )}
                     </button>
@@ -356,14 +350,21 @@ export const TopBar = ({
                                 aria-pressed={active}
                                 title="Afficher uniquement les leads en vigilance rouge"
                                 onClick={() => {
-                                    setActiveFilters((prev) => {
-                                        const list = prev || [];
-                                        if (list.some((t) => t.toLowerCase() === "vigilance rouge")) {
-                                            return list.filter((t) => t.toLowerCase() !== "vigilance rouge");
-                                        }
-                                        return [...list, "vigilance rouge"];
-                                    });
-                                    setSearchOpen(true);
+                                    const list = activeFilters || [];
+                                    const isActive = list.some(
+                                        (t) => t.toLowerCase() === "vigilance rouge"
+                                    );
+                                    if (isActive) {
+                                        const next = list.filter(
+                                            (t) => t.toLowerCase() !== "vigilance rouge"
+                                        );
+                                        setActiveFilters(next);
+                                        // Un clic = tout fermer : filtre + barre de recherche
+                                        if (next.length === 0) setSearchOpen(false);
+                                    } else {
+                                        setActiveFilters([...list, "vigilance rouge"]);
+                                        setSearchOpen(true);
+                                    }
                                     setFilterInput("");
                                     setFilter("");
                                 }}
@@ -406,26 +407,21 @@ export const TopBar = ({
                                 <div className="min-w-0">
                                     <div className="font-semibold tracking-tight text-sm">Rappels</div>
                                     <div className="text-xs text-muted-foreground mt-0.5">
-                                        {overdueCount > 0
-                                            ? `${overdueCount} en retard · ${todayCount} aujourd'hui`
-                                            : todayCount > 0
-                                              ? `${todayCount} à rappeler aujourd'hui`
-                                              : "Aucun rappel actif"}
+                                        {badgeCount === 0
+                                            ? "Tout est lu"
+                                            : overdueCount > 0
+                                              ? `${overdueCount} en retard · ${todayCount} aujourd'hui`
+                                              : `${todayCount} à rappeler aujourd'hui`}
                                     </div>
                                 </div>
-                                {totalNotifs > 0 && (
+                                {badgeCount > 0 && (
                                     <button
                                         type="button"
                                         onClick={markNotifsAsRead}
-                                        disabled={notifsSeen}
-                                        title={notifsSeen ? "Notifications lues" : "Tout lire (tous les espaces)"}
-                                        aria-label={notifsSeen ? "Notifications lues" : "Tout lire les notifications"}
+                                        title="Tout lire (tous les espaces)"
+                                        aria-label="Tout lire les notifications"
                                         data-testid="notif-mark-read-btn"
-                                        className={`shrink-0 h-8 px-2.5 rounded-full flex items-center gap-1 text-[11px] font-medium transition-colors ${
-                                            notifsSeen
-                                                ? "text-emerald-600 dark:text-emerald-400 bg-emerald-500/10"
-                                                : "text-muted-foreground hover:text-emerald-600 hover:bg-emerald-500/10"
-                                        }`}
+                                        className="shrink-0 h-8 px-2.5 rounded-full flex items-center gap-1 text-[11px] font-medium transition-colors text-muted-foreground hover:text-emerald-600 hover:bg-emerald-500/10"
                                     >
                                         <CheckCheck size={14} strokeWidth={2} />
                                         Tout lire
@@ -435,35 +431,50 @@ export const TopBar = ({
                             <div className="max-h-80 overflow-y-auto">
                                 {followups.length === 0 && (
                                     <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-                                        Rien pour l'instant. Les colonnes avec « rappel auto » activé déclencheront des relances.
+                                        Aucune notification. Les rappels et relances dus apparaissent ici.
                                     </div>
                                 )}
-                                {followups.map(({ lead, overdue, today }) => {
+                                {followups.map((item) => {
+                                    const { lead, overdue, today, label, dueAt, key } = item;
                                     const col = workspace.columns[lead.columnId];
                                     const cc = getColumnColor(col);
-                                    const unread = isNotifItemUnread(workspace.id, lead, seenMap);
                                     return (
-                                        <button
-                                            key={lead.id}
-                                            data-testid={`notif-item-${lead.id}`}
-                                            onClick={() => openNotifLead(lead)}
-                                            className="w-full text-left px-4 py-3 border-b border-border/40 last:border-0 hover:bg-secondary/70 transition-colors flex gap-3"
+                                        <div
+                                            key={key}
+                                            className="border-b border-border/40 last:border-0 flex items-stretch hover:bg-secondary/70 transition-colors"
                                         >
-                                            <span className={`shrink-0 w-2 h-2 mt-1.5 rounded-full ${overdue ? "bg-rose-500" : today ? "bg-amber-500" : cc.dot}`} />
-                                            <div className="min-w-0 flex-1">
-                                                <div className="flex items-center gap-1.5">
-                                                    <div className="text-sm font-medium truncate">{lead.company}</div>
-                                                    {unread && (
+                                            <button
+                                                type="button"
+                                                data-testid={`notif-item-${lead.id}`}
+                                                onClick={() => openNotifLead(item)}
+                                                className="flex-1 min-w-0 text-left px-4 py-3 flex gap-3"
+                                            >
+                                                <span className={`shrink-0 w-2 h-2 mt-1.5 rounded-full ${overdue ? "bg-rose-500" : today ? "bg-amber-500" : cc.dot}`} />
+                                                <div className="min-w-0 flex-1">
+                                                    <div className="flex items-center gap-1.5">
+                                                        <div className="text-sm font-medium truncate">{lead.company}</div>
                                                         <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-rose-500" aria-hidden />
-                                                    )}
+                                                    </div>
+                                                    <div className="text-[11px] text-muted-foreground truncate">
+                                                        {col?.name}
+                                                        {" · "}
+                                                        {label}
+                                                        {" · "}
+                                                        {overdue ? "en retard" : today ? "aujourd'hui" : formatShortDateTime(dueAt)}
+                                                    </div>
                                                 </div>
-                                                <div className="text-[11px] text-muted-foreground truncate">
-                                                    {col?.name} · relance{" "}
-                                                    {overdue ? "en retard" : today ? "aujourd'hui" : formatShortDateTime(lead.autoFollowup.dueAt)}{" "}
-                                                    · étape {lead.autoFollowup.stage}/3
-                                                </div>
-                                            </div>
-                                        </button>
+                                            </button>
+                                            <button
+                                                type="button"
+                                                title="Marquer comme lu"
+                                                aria-label="Marquer comme lu"
+                                                data-testid={`notif-dismiss-${lead.id}`}
+                                                onClick={(e) => dismissNotif(e, item)}
+                                                className="shrink-0 px-3 text-muted-foreground hover:text-foreground self-center"
+                                            >
+                                                <X size={14} />
+                                            </button>
+                                        </div>
                                     );
                                 })}
                             </div>
@@ -691,6 +702,12 @@ export const TopBar = ({
                                 Espace
                             </DropdownMenuLabel>
                             <DropdownMenuItem
+                                onClick={() => setConfirmResetView(true)}
+                                data-testid="settings-reset-pipeline-btn"
+                            >
+                                <RotateCcw size={14} className="mr-2" /> Remettre la vue à zéro
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
                                 className="text-destructive focus:text-destructive"
                                 onClick={() => setConfirmDelete(true)}
                                 data-testid="settings-delete-workspace-btn"
@@ -816,6 +833,42 @@ export const TopBar = ({
                     </div>
                 </div>
             )}
+
+            <AlertDialog open={confirmResetView} onOpenChange={(v) => !v && setConfirmResetView(false)}>
+                <AlertDialogContent className="rounded-2xl" data-testid="reset-pipeline-dialog">
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Remettre la vue à zéro ?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            Tous les leads ({Object.keys(workspace.leads || {}).length}) reviennent en
+                            « Nouveau ». Rappels, RDV et statuts gagné/perdu sont effacés.
+                            Notes, contacts et réglages (champs carte, colonnes) restent intacts.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Annuler</AlertDialogCancel>
+                        <AlertDialogAction
+                            data-testid="confirm-reset-pipeline-btn"
+                            onClick={() => {
+                                const count = Object.keys(workspace.leads || {}).length;
+                                dispatch({
+                                    type: "RESET_PIPELINE_VIEW",
+                                    workspaceId: workspace.id,
+                                });
+                                setConfirmResetView(false);
+                                import("sonner").then(({ toast }) =>
+                                    toast.success("Vue remise à zéro", {
+                                        description: count
+                                            ? `${count} lead${count > 1 ? "s" : ""} en Nouveau`
+                                            : "Aucun lead à déplacer",
+                                    })
+                                );
+                            }}
+                        >
+                            Remettre à zéro
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
 
             <AlertDialog open={confirmDelete} onOpenChange={(v) => !v && setConfirmDelete(false)}>
                 <AlertDialogContent className="rounded-2xl" data-testid="delete-current-ws-dialog">

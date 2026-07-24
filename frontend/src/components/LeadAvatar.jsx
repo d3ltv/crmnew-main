@@ -37,8 +37,9 @@ function initialsFromLead(lead) {
 /**
  * Logo entreprise → domaine parent → favicon → initiale.
  * Sur les cartes Kanban : charge l'image seulement à l'entrée viewport (moins de RAM/réseau).
+ * @param {{ lead: object, size?: string, card?: boolean, panel?: boolean, bgClass?: string }} props
  */
-export const LeadAvatar = ({ lead, size, card = false, bgClass }) => {
+export const LeadAvatar = ({ lead, size, card = false, panel = false, bgClass }) => {
     const [step, setStep] = useState(0);
     const [inView, setInView] = useState(!card);
     const rootRef = useRef(null);
@@ -91,19 +92,25 @@ export const LeadAvatar = ({ lead, size, card = false, bgClass }) => {
     const currentUrl = inView ? (candidates[step] || null) : null;
     const hue = AVATAR_HUES[hashId(lead.id) % AVATAR_HUES.length];
     const well = bgClass || hue;
-    const containerSize = card ? "w-7 h-7" : "w-8 h-8";
-    const imgSize = card ? "w-4 h-4" : "w-5 h-5";
+
+    const dims = panel
+        ? { box: "w-11 h-11 rounded-xl", img: "w-7 h-7", fav: "w-5 h-5", initial: "text-[13px]" }
+        : card
+            ? { box: "w-7 h-7 rounded-md", img: "w-4 h-4", fav: "w-3.5 h-3.5", initial: "text-[10px]" }
+            : { box: "w-8 h-8 rounded-md", img: "w-5 h-5", fav: "w-4.5 h-4.5", initial: "text-[11px]" };
+
     const isFavicon = currentUrl && /favicons|duckduckgo/i.test(currentUrl);
-    const imgClass = isFavicon
-        ? (card ? "w-3.5 h-3.5" : "w-4.5 h-4.5")
-        : imgSize;
-    const initialSize = size || (card ? "text-[10px]" : "text-[11px]");
+    const imgClass = isFavicon ? dims.fav : dims.img;
+    const initialSize = size || dims.initial;
+    const boxShell = panel
+        ? `${dims.box} border border-border/60 shadow-sm bg-white dark:bg-white/10`
+        : `${dims.box} bg-white dark:bg-white/10`;
 
     if (currentUrl) {
         return (
             <span
                 ref={rootRef}
-                className={`shrink-0 select-none flex items-center justify-center ${containerSize} rounded-md overflow-hidden bg-white dark:bg-white/10`}
+                className={`shrink-0 select-none flex items-center justify-center overflow-hidden ${boxShell}`}
                 aria-hidden
             >
                 <img
@@ -123,7 +130,7 @@ export const LeadAvatar = ({ lead, size, card = false, bgClass }) => {
     return (
         <span
             ref={rootRef}
-            className={`shrink-0 select-none flex items-center justify-center ${containerSize} rounded-md font-semibold ${well} ${initialSize}`}
+            className={`shrink-0 select-none flex items-center justify-center font-semibold ${dims.box} ${panel ? "border border-border/50 shadow-sm" : ""} ${well} ${initialSize}`}
             aria-hidden
         >
             {initialsFromLead(lead)}

@@ -644,12 +644,12 @@ export const WorkspacesPage = () => {
                     </p>
                 )}
 
-                <div id="calendar-section" className="mt-16 scroll-mt-20" data-testid="home-calendar-section">
-                    <div className="mb-5">
-                        <h2 className="text-[22px] font-normal tracking-tight text-foreground">
+                <div id="calendar-section" className="mt-10 scroll-mt-20" data-testid="home-calendar-section">
+                    <div className="mb-3">
+                        <h2 className="text-[18px] font-semibold tracking-tight text-foreground">
                             Calendrier
                         </h2>
-                        <p className="text-sm text-muted-foreground mt-1">
+                        <p className="text-sm text-muted-foreground mt-0.5">
                             Cliquez un jour pour ouvrir l&apos;agenda
                         </p>
                     </div>

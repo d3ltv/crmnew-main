@@ -10,6 +10,7 @@ import { LeadDetailPanel } from "./LeadDetailPanel";
 import { CsvImportModal } from "./CsvImportModal";
 import { CallNoteModal } from "./CallNoteModal";
 import { WonDealModal } from "./WonDealModal";
+import { LostDealModal } from "./LostDealModal";
 import { MeetingModal } from "./MeetingModal";
 import { StorageErrorBanner } from "./StorageErrorBanner";
 import { Users, Upload, Plus } from "lucide-react";
@@ -19,7 +20,9 @@ import {
     isNouveauCol as isNouveauColumn,
     isContactedCol as isContactedColumn,
     isMeetingCol as isMeetingColumn,
+    isLostCol as isLostColumn,
 } from "@/constants/columnPatterns";
+import { resolvePipelineColumnId } from "@/lib/pipelineRoles";
 import { isManualRdv } from "@/lib/nextActionUtils";
 import { PENDING_LEAD_EVENT } from "@/lib/calendarEvents";
 
@@ -67,6 +70,7 @@ export const WorkspacePage = () => {
     const closeSidebar = () => persistSidebarOpen(false);
     const [callNoteLeadId, setCallNoteLeadId] = useState(null);
     const [wonLeadId, setWonLeadId] = useState(null);
+    const [lostLeadId, setLostLeadId] = useState(null);
     const [meetingLeadId, setMeetingLeadId] = useState(null);
     const [quickMode, setQuickMode] = useState(false);
     const [quickCount, setQuickCount] = useState(0);
@@ -100,12 +104,17 @@ export const WorkspacePage = () => {
             prevColumnsRef.current = next;
             setCallNoteLeadId(null);
             setWonLeadId(null);
+            setLostLeadId(null);
             setMeetingLeadId(null);
             return;
         }
 
         const prev = prevColumnsRef.current;
         const next = {};
+        const wonColId = resolvePipelineColumnId(workspace, "won");
+        const lostColId = resolvePipelineColumnId(workspace, "lost");
+        const rdvColId = resolvePipelineColumnId(workspace, "rdv");
+
         for (const l of Object.values(workspace.leads)) {
             next[l.id] = l.columnId;
             const wasIn = prev[l.id];
@@ -130,14 +139,18 @@ export const WorkspacePage = () => {
                     setCallNoteLeadId(l.id);
                 }
 
-                // Prompt deal value on entering "Gagné"
-                if (isWonColumn(targetCol)) {
+                // Prompt deal value on entering "Gagné" / closé
+                if (l.columnId === wonColId || isWonColumn(targetCol)) {
                     setWonLeadId(l.id);
+                }
+                // Motif rapide on entering "Perdu"
+                if (l.columnId === lostColId || isLostColumn(targetCol)) {
+                    setLostLeadId(l.id);
                 }
                 // Prompt meeting date on entering "Rendez-vous"
                 // — sauf si le lead a déjà un RDV enregistré
                 const hasExistingRdv = isManualRdv(l.nextAction);
-                if (isMeetingColumn(targetCol) && !hasExistingRdv) {
+                if ((l.columnId === rdvColId || isMeetingColumn(targetCol)) && !hasExistingRdv) {
                     setMeetingLeadId(l.id);
                 }
             }
@@ -210,6 +223,8 @@ export const WorkspacePage = () => {
         state.workspaces[state.currentId]?.leads[callNoteLeadId] || null;
     const wonLead =
         state.workspaces[state.currentId]?.leads[wonLeadId] || null;
+    const lostLead =
+        state.workspaces[state.currentId]?.leads[lostLeadId] || null;
     const meetingLead =
         state.workspaces[state.currentId]?.leads[meetingLeadId] || null;
 
@@ -362,6 +377,13 @@ export const WorkspacePage = () => {
                 lead={wonLead}
                 workspace={workspace}
                 onClose={() => setWonLeadId(null)}
+            />
+
+            <LostDealModal
+                open={!!lostLead}
+                lead={lostLead}
+                workspace={workspace}
+                onClose={() => setLostLeadId(null)}
             />
 
             <MeetingModal

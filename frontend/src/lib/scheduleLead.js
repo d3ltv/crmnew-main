@@ -1,17 +1,16 @@
 /**
- * Planification calendrier + avance Kanban (Nouveau → Contacté → À rappeler → RDV…).
+ * Planification calendrier + avance Kanban (Nouveau → Contacté → Relance → RDV…).
  */
 
 import { isManualRdv } from "@/lib/nextActionUtils";
 import {
-    findBestMeetingColumnId,
-    findBestRappelColumnId,
     isEarlyPipelineColumn,
     isWonColumn,
     isLostColumn,
     isPropositionColumn,
     isMeetingColumn,
 } from "@/constants/columnPatterns";
+import { resolvePipelineColumnId } from "@/lib/pipelineRoles";
 
 /**
  * Enregistre nextAction et avance le lead dans la bonne colonne si pertinent.
@@ -49,8 +48,8 @@ export function scheduleLeadNextAction(dispatch, {
     }
 
     const targetId = isManualRdv(nextAction)
-        ? findBestMeetingColumnId(workspace.columnOrder, workspace.columns, lead.columnId)
-        : findBestRappelColumnId(workspace.columnOrder, workspace.columns, lead.columnId);
+        ? resolvePipelineColumnId(workspace, "rdv")
+        : resolvePipelineColumnId(workspace, "relance");
 
     if (!targetId || targetId === lead.columnId) {
         return { moved: false, toColumnId: null, toColumnName: null };

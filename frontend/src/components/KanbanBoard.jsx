@@ -5,15 +5,11 @@ import { CallNoteModal } from "./CallNoteModal";
 import { Plus } from "lucide-react";
 import { toast } from "sonner";
 import {
-    isContactedColumn,
     findBestNouveauColumnId,
     findBestContactedColumnId,
 } from "@/constants/columnPatterns";
 import { isManualRdv } from "@/lib/nextActionUtils";
 import { filterLeads } from "@/lib/leadFilter";
-
-// Wrapper local — colonnes "contacté" pour le tri stale
-const isContactedCol = (name = "") => isContactedColumn(name);
 
 export const KanbanBoard = ({
     workspace,
@@ -106,14 +102,6 @@ export const KanbanBoard = ({
                 m[cid] = ordered;
             } else {
                 m[cid] = grouped[cid];
-            }
-
-            // Leads stales toujours en tête dans les colonnes "contacté"
-            if (isContactedCol(col?.name)) {
-                m[cid] = [
-                    ...m[cid].filter((l) => l.staleInContacted),
-                    ...m[cid].filter((l) => !l.staleInContacted),
-                ];
             }
 
             // RDV urgent (< 24h) en tête sur TOUTES les colonnes, peu importe le tri
