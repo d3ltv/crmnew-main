@@ -345,6 +345,39 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
         return () => document.removeEventListener("keydown", onKey);
     }, [open, onClose]);
 
+    const scheduleOverdue = useMemo(() => {
+        if (!local?.nextAction?.dueAt && !local?.nextAction?.date) return false;
+        const due = new Date(local.nextAction.dueAt || `${local.nextAction.date}T09:00:00`);
+        return !Number.isNaN(due.getTime()) && due.getTime() < Date.now() - 60000;
+    }, [local?.nextAction]);
+
+    const prospectSlot = useMemo(() => {
+        const allWs = (state.order || [])
+            .map((id) => state.workspaces?.[id])
+            .filter(Boolean);
+        return getBestProspectingSlot(allWs);
+    }, [state.workspaces, state.order]);
+
+    const defaultRelanceDays = useMemo(() => {
+        const cfg = normalizeInconsistencyConfig(workspace?.inconsistencyConfig);
+        return cfg.thresholds?.noAnswerDays || 2;
+    }, [workspace?.inconsistencyConfig]);
+
+    const needsCalendarNudge = useMemo(() => {
+        if (!local) return false;
+        const watchasks = inconsistencies.some(
+            (i) => i.action?.type === "plan_rdv"
+                || ["rdv_overdue", "no_answer_gap", "no_answer", "contact_gap", "stale_contact"].includes(i.id)
+                || /rappel|relance|rdv|contact/i.test(`${i.title || ""} ${i.message || ""}`)
+        );
+        const fuOverdue = !!(local.autoFollowup && (
+            local.autoFollowup.overdue
+            || (local.autoFollowup.dueAt && new Date(local.autoFollowup.dueAt).getTime() <= Date.now())
+        ));
+        const noFutureSlot = !local.nextAction || scheduleOverdue;
+        return noFutureSlot && (watchasks || fuOverdue || scheduleOverdue);
+    }, [local, inconsistencies, scheduleOverdue]);
+
     if (!open || !local) return null;
 
     const isJobs = workspace.template === "jobs";
