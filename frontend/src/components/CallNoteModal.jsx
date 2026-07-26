@@ -9,8 +9,15 @@ import { parseNote, diffWithLead, formatDetected, detectAppointment } from "@/li
 import { makeRdvNextAction } from "@/lib/nextActionUtils";
 import { normalizeInconsistencyConfig } from "@/lib/inconsistencyRules";
 import { resolvePipelineColumnId } from "@/lib/pipelineRoles";
+import { saveCallRecording } from "@/lib/callRecordings";
+import { CallRecorderBar } from "@/components/CallRecorderBar";
+import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 
 const RELANCE_DAY_CHIPS = [1, 2, 3, 4, 5, 6, 7];
+
+const newRecordingId = () =>
+    `rec_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
 export const CallNoteModal = ({
     open,
@@ -27,6 +34,9 @@ export const CallNoteModal = ({
     const [outcomeManual, setOutcomeManual] = useState(false);
     const [suggestRelance, setSuggestRelance] = useState(true);
     const [relanceDays, setRelanceDays] = useState(2);
+    const [pendingRecording, setPendingRecording] = useState(null);
+    const [recordingBusy, setRecordingBusy] = useState(false);
+    const [saving, setSaving] = useState(false);
 
     /** Relance « joint » : défaut config. « Pas de réponse » : timing smart (+1 j max). */
     const defaultRelanceDays = useMemo(() => {
@@ -41,6 +51,9 @@ export const CallNoteModal = ({
             setOutcomeManual(false);
             setSuggestRelance(true);
             setRelanceDays(defaultRelanceDays);
+            setPendingRecording(null);
+            setRecordingBusy(false);
+            setSaving(false);
         }
     }, [open, lead?.id, defaultRelanceDays]);
 
@@ -48,7 +61,7 @@ export const CallNoteModal = ({
         const val = e.target.value;
         setText(val);
         if (!outcomeManual) {
-            setOutcome(val.trim().length > 0 ? "reached" : null);
+            setOutcome(val.trim().length > 0 || pendingRecording?.blob ? "reached" : null);
         }
     };
 
@@ -58,6 +71,16 @@ export const CallNoteModal = ({
         setSuggestRelance(true);
         if (value === "reached") {
             setRelanceDays(defaultRelanceDays);
+        }
+    };
+
+    /** Vocal = interlocuteur joint (sauf choix manuel « Pas de réponse »). */
+    const handleRecordingChange = (rec) => {
+        setPendingRecording(rec);
+        if (rec?.blob && !outcomeManual) {
+            setOutcome("reached");
+        } else if (!rec && !outcomeManual && !text.trim()) {
+            setOutcome(null);
         }
     };
 
@@ -88,15 +111,42 @@ export const CallNoteModal = ({
         || (diff.extraContacts || []).length > 0
     );
 
-    const effectiveOutcome = outcome ?? (text.trim() ? "reached" : "noanswer");
+    const hasRecording = !!pendingRecording?.blob;
+    const effectiveOutcome = outcome
+        ?? (text.trim() || hasRecording ? "reached" : "noanswer");
     const showRelanceSuggest = !appointment && (
         effectiveOutcome === "noanswer" || effectiveOutcome === "reached"
     );
 
-    const save = () => {
-        if (!lead || !open) return;
-        const finalOutcome = outcome ?? "noanswer";
+    const save = async () => {
+        if (!lead || !open || saving || recordingBusy) return;
+        // Vocal sans choix manuel → Joint ; sinon défaut « pas de réponse »
+        const finalOutcome = outcome
+            ?? (pendingRecording?.blob ? "reached" : "noanswer");
         const content = text.trim();
+
+        setSaving(true);
+        let recordingId = null;
+        if (pendingRecording?.blob) {
+            try {
+                recordingId = newRecordingId();
+                await saveCallRecording({
+                    id: recordingId,
+                    leadId: lead.id,
+                    workspaceId: workspace.id,
+                    blob: pendingRecording.blob,
+                    mimeType: pendingRecording.mimeType,
+                    durationMs: pendingRecording.durationMs,
+                    peaks: pendingRecording.peaks,
+                });
+            } catch (err) {
+                console.warn("[CallNote] save recording failed:", err);
+                toast.error("Audio non sauvegardé", {
+                    description: "La note sera quand même enregistrée",
+                });
+                recordingId = null;
+            }
+        }
 
         let effectiveColumnId = lead.columnId;
         if (pendingMoveToColumnId && lead.columnId !== pendingMoveToColumnId) {
@@ -121,6 +171,7 @@ export const CallNoteModal = ({
                 workspaceId: workspace.id,
                 leadId: lead.id,
                 text: noteText,
+                recordingId,
             });
         } else {
             dispatch({
@@ -128,6 +179,7 @@ export const CallNoteModal = ({
                 workspaceId: workspace.id,
                 leadId: lead.id,
                 text: noteText,
+                recordingId,
             });
         }
 
@@ -282,7 +334,7 @@ export const CallNoteModal = ({
     useEffect(() => {
         const onKey = (e) => {
             if (e.key === "Escape" && open) onClose();
-            if (e.key === "Enter" && open) {
+            if (e.key === "Enter" && open && !saving && !recordingBusy) {
                 if (e.target.tagName === "TEXTAREA") {
                     if (e.metaKey || e.ctrlKey) save();
                 } else {
@@ -293,11 +345,10 @@ export const CallNoteModal = ({
         document.addEventListener("keydown", onKey);
         return () => document.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open, text, outcome, pendingMoveToColumnId, suggestRelance, relanceDays]);
+    }, [open, text, outcome, pendingMoveToColumnId, suggestRelance, relanceDays, pendingRecording, saving, recordingBusy]);
 
     if (!open || !lead) return null;
 
-    const columnName = workspace.columns[lead.columnId]?.name;
     const isMac = /iPhone|iPad|Macintosh/.test(navigator.userAgent);
     const noAnswerDue = suggestNoAnswerFollowUp();
     const noAnswerDueLabel = formatNoAnswerFollowUpLabel(noAnswerDue);
@@ -309,9 +360,17 @@ export const CallNoteModal = ({
     });
     const schedulePreviewLabel = effectiveOutcome === "noanswer"
         ? noAnswerDueLabel
-        : `${relanceDueLabel} (hors week-end)`;
+        : relanceDueLabel;
 
     const skip = () => onClose();
+
+    const footerHint = hasNewInfo
+        ? "Fiche mise à jour"
+        : appointment
+            ? `RDV · ${appointment.label}`
+            : suggestRelance && showRelanceSuggest
+                ? `Rappel · ${schedulePreviewLabel}`
+                : null;
 
     return (
         <>
@@ -322,60 +381,69 @@ export const CallNoteModal = ({
             />
             <div
                 data-testid="call-note-modal"
-                className="fixed z-[70] left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] max-w-[480px] bg-card rounded-2xl shadow-panel border border-border overflow-y-auto animate-in fade-in zoom-in-95 duration-200"
-                style={{
-                    top: "50%",
-                    transform: "translate(-50%, -50%)",
-                    maxHeight: "calc(100dvh - 2rem)",
-                }}
+                className="fixed z-[70] left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[calc(100%-1.5rem)] max-w-[420px] max-h-[min(92dvh,640px)] bg-card rounded-2xl shadow-panel border border-border overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200"
             >
-                <div className="px-5 pt-5 pb-3">
-                    <div className="flex items-start justify-between gap-3">
+                {/* Header — même langage que Meeting / Lost */}
+                <div className="px-5 pt-5 pb-3 flex items-start justify-between gap-3 shrink-0">
+                    <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-10 h-10 rounded-2xl bg-primary/10 flex items-center justify-center shrink-0">
+                            <Phone size={18} className="text-primary" strokeWidth={1.75} />
+                        </div>
                         <div className="min-w-0">
-                            <div className="text-[11px] uppercase tracking-wider text-primary font-semibold">
-                                {columnName}
-                            </div>
-                            <h3 className="text-lg font-semibold tracking-tight truncate mt-0.5">
-                                Note d&apos;appel · {lead.company}
-                            </h3>
-                            <p className="text-xs text-muted-foreground mt-0.5">
+                            <h3 className="text-base font-semibold tracking-tight">Note d&apos;appel</h3>
+                            <p className="text-xs text-muted-foreground mt-0.5 truncate">
+                                {lead.company}
+                                <span className="opacity-50"> · </span>
                                 {formatDateTimeLong(new Date().toISOString())}
                             </p>
                         </div>
-                        <button
-                            onClick={skip}
-                            data-testid="call-note-close"
-                            aria-label="Fermer"
-                            className="w-9 h-9 rounded-full hover:bg-secondary text-muted-foreground shrink-0 flex items-center justify-center"
-                        >
-                            <X size={16} />
-                        </button>
                     </div>
+                    <button
+                        type="button"
+                        onClick={skip}
+                        data-testid="call-note-close"
+                        aria-label="Fermer"
+                        className="w-9 h-9 rounded-full hover:bg-secondary text-muted-foreground shrink-0 flex items-center justify-center"
+                    >
+                        <X size={16} />
+                    </button>
+                </div>
 
-                    <div className="mt-4 flex gap-2">
+                {/* Body scrollable */}
+                <div className="px-5 pb-2 space-y-3 overflow-y-auto flex-1 min-h-0">
+                    {/* Outcome — segmented, neutre */}
+                    <div
+                        className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-secondary/60"
+                        role="group"
+                        aria-label="Résultat de l'appel"
+                    >
                         <button
+                            type="button"
                             data-testid="call-outcome-reached"
                             onClick={() => handleOutcomeClick("reached")}
-                            className={`flex-1 h-16 rounded-xl text-sm font-medium flex flex-col items-center justify-center gap-1 transition-all ${
+                            className={cn(
+                                "h-10 rounded-lg text-[12.5px] font-medium inline-flex items-center justify-center gap-1.5 transition-colors",
                                 outcome === "reached"
-                                    ? "bg-emerald-500 text-white shadow-lg scale-[1.02]"
-                                    : "bg-secondary text-foreground hover:bg-emerald-500/10"
-                            }`}
+                                    ? "bg-card text-foreground shadow-sm"
+                                    : "text-muted-foreground hover:text-foreground"
+                            )}
                         >
-                            <Phone size={24} strokeWidth={2} />
-                            <span className="text-xs">Contacté</span>
+                            <Phone size={14} strokeWidth={2} />
+                            Joint
                         </button>
                         <button
+                            type="button"
                             data-testid="call-outcome-noanswer"
                             onClick={() => handleOutcomeClick("noanswer")}
-                            className={`flex-1 h-16 rounded-xl text-sm font-medium flex flex-col items-center justify-center gap-1 transition-all ${
+                            className={cn(
+                                "h-10 rounded-lg text-[12.5px] font-medium inline-flex items-center justify-center gap-1.5 transition-colors",
                                 outcome === "noanswer"
-                                    ? "bg-rose-500 text-white shadow-lg scale-[1.02]"
-                                    : "bg-secondary text-foreground hover:bg-rose-500/10"
-                            }`}
+                                    ? "bg-card text-foreground shadow-sm"
+                                    : "text-muted-foreground hover:text-foreground"
+                            )}
                         >
-                            <PhoneOff size={24} strokeWidth={2} />
-                            <span className="text-xs">Pas de réponse</span>
+                            <PhoneOff size={14} strokeWidth={2} />
+                            Pas de réponse
                         </button>
                     </div>
 
@@ -383,100 +451,89 @@ export const CallNoteModal = ({
                         data-testid="call-note-text"
                         value={text}
                         onChange={handleTextChange}
-                        placeholder="Note d'appel… Ex : « Rappeler M. Dupont mardi 14h »"
+                        placeholder="Que s'est-il dit ? Ex. « Rappeler mardi 14h »"
                         autoFocus
-                        className="mt-3 min-h-[100px] resize-none rounded-xl text-sm"
+                        className="min-h-[88px] resize-none rounded-xl text-sm border-border"
                     />
-                    <p className="text-[11px] text-muted-foreground mt-1.5 flex items-center gap-2 flex-wrap">
-                        <span>
-                            <kbd className="px-1.5 py-0.5 rounded bg-muted border border-border font-mono text-[10px]">Entrée</kbd>
-                            {" "}→ enregistrer
-                        </span>
-                        <span className="opacity-50">·</span>
-                        <span>
-                            <kbd className="px-1.5 py-0.5 rounded bg-muted border border-border font-mono text-[10px]">{isMac ? "⌘" : "Ctrl"}+Entrée</kbd>
-                            {" "}dans la note
-                        </span>
-                    </p>
+
+                    <CallRecorderBar
+                        onChange={handleRecordingChange}
+                        onBusyChange={setRecordingBusy}
+                        disabled={saving}
+                    />
 
                     {appointment && (
-                        <div className="mt-3 rounded-xl border border-primary/30 bg-primary/8 p-3 flex items-center gap-3">
-                            <CalendarClock size={16} className="text-primary shrink-0" />
-                            <div className="flex-1 min-w-0">
-                                <div className="text-[11px] font-semibold text-primary uppercase tracking-wider">
-                                    Rendez-vous détecté
-                                </div>
-                                <div className="text-sm font-semibold text-foreground mt-0.5">
-                                    {appointment.label}
-                                </div>
+                        <div className="flex items-center gap-2.5 rounded-xl border border-border bg-secondary/40 px-3 py-2.5">
+                            <CalendarClock size={15} className="text-foreground shrink-0 opacity-70" strokeWidth={1.75} />
+                            <div className="min-w-0 flex-1">
+                                <p className="text-[12px] font-medium text-foreground truncate">
+                                    RDV détecté · {appointment.label}
+                                </p>
+                                <p className="text-[10px] text-muted-foreground">Sera enregistré à la sauvegarde</p>
                             </div>
-                            <span className="text-[10px] text-muted-foreground shrink-0">
-                                sera enregistré
-                            </span>
                         </div>
                     )}
 
                     {showRelanceSuggest && (
                         <div
-                            className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/8 p-3 space-y-2.5"
+                            className="rounded-xl border border-border bg-secondary/30 px-3 py-2.5 space-y-2"
                             data-testid="call-relance-suggest"
                         >
-                            <label className="flex items-start gap-2.5 cursor-pointer">
+                            <label className="flex items-center gap-2.5 cursor-pointer">
                                 <input
                                     type="checkbox"
                                     checked={suggestRelance}
                                     onChange={(e) => setSuggestRelance(e.target.checked)}
-                                    className="mt-0.5 rounded border-border"
+                                    className="rounded border-border accent-primary"
                                     data-testid="call-relance-toggle"
                                 />
-                                <span className="min-w-0">
-                                    <span className="flex items-center gap-1.5 text-[12px] font-semibold text-amber-800 dark:text-amber-300">
-                                        <BellRing size={13} strokeWidth={2.25} />
-                                        {effectiveOutcome === "noanswer"
-                                            ? "Programmer un rappel"
-                                            : "Suggérer une relance"}
-                                    </span>
-                                    <span className="block text-[11px] text-muted-foreground mt-0.5">
-                                        {suggestRelance
-                                            ? `Prévu : ${schedulePreviewLabel}`
-                                            : "Aucune relance ne sera créée"}
-                                    </span>
+                                <BellRing size={13} className="text-muted-foreground shrink-0" strokeWidth={2} />
+                                <span className="text-[12.5px] font-medium text-foreground flex-1 min-w-0">
+                                    {effectiveOutcome === "noanswer" ? "Programmer un rappel" : "Suggérer une relance"}
                                 </span>
+                                {suggestRelance && (
+                                    <span className="text-[11px] text-muted-foreground tabular-nums shrink-0">
+                                        {schedulePreviewLabel}
+                                    </span>
+                                )}
                             </label>
+
                             {suggestRelance && effectiveOutcome === "reached" && (
-                                <div className="flex flex-wrap gap-1.5 pl-6">
+                                <div className="flex flex-wrap gap-1 pl-7">
                                     {RELANCE_DAY_CHIPS.map((d) => (
                                         <button
                                             key={d}
                                             type="button"
                                             data-testid={`call-relance-days-${d}`}
                                             onClick={() => setRelanceDays(d)}
-                                            className={`h-7 px-2.5 rounded-full text-[11px] font-medium transition-colors ${
+                                            className={cn(
+                                                "h-7 min-w-[2rem] px-2 rounded-lg text-[11px] font-medium transition-colors",
                                                 relanceDays === d
-                                                    ? "bg-amber-600 text-white"
-                                                    : "bg-background border border-border text-muted-foreground hover:text-foreground"
-                                            }`}
+                                                    ? "bg-foreground text-background"
+                                                    : "bg-background/80 text-muted-foreground hover:text-foreground border border-border"
+                                            )}
                                         >
-                                            +{d} j
+                                            +{d}j
                                         </button>
                                     ))}
                                 </div>
                             )}
+
                             {suggestRelance && effectiveOutcome === "noanswer" && (
-                                <p className="pl-6 text-[11px] text-muted-foreground/90">
-                                    Matin → après-midi · sinon +1 j · vendredi soir → lundi matin
+                                <p className="pl-7 text-[10px] text-muted-foreground leading-snug">
+                                    Matin → après-midi · sinon +1 j · ven. soir → lun. matin
                                 </p>
                             )}
                         </div>
                     )}
 
                     {detectedItems.length > 0 && (
-                        <div className="mt-3 rounded-xl border border-primary/20 bg-primary/5 p-3 space-y-2">
-                            <div className="flex items-center gap-1.5 text-[11px] font-semibold text-primary uppercase tracking-wider">
-                                <Sparkles size={11} />
-                                Infos détectées — seront ajoutées à la fiche
+                        <div className="rounded-xl border border-border px-3 py-2.5 space-y-1.5">
+                            <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                                <Sparkles size={11} strokeWidth={2} />
+                                Détecté dans la note
                             </div>
-                            <div className="space-y-1">
+                            <div className="flex flex-wrap gap-1.5">
                                 {detectedItems.map((item, i) => {
                                     const willAddPerson = item.type === "person"
                                         && (diff.willAddPersons || []).includes(item.value);
@@ -496,28 +553,27 @@ export const CallNoteModal = ({
                                         );
 
                                     return (
-                                        <div
+                                        <span
                                             key={i}
-                                            className={`flex items-center gap-2 text-[12px] rounded-lg px-2 py-1 ${
+                                            className={cn(
+                                                "inline-flex items-center gap-1 max-w-full rounded-lg px-2 py-1 text-[11px] border border-border",
                                                 isNew
-                                                    ? "text-foreground"
+                                                    ? "bg-secondary/60 text-foreground"
                                                     : personOnFile
                                                         ? "text-muted-foreground"
-                                                        : "text-muted-foreground line-through opacity-50"
-                                            }`}
+                                                        : "text-muted-foreground/60 line-through"
+                                            )}
+                                            title={
+                                                isNew
+                                                    ? "Sera ajouté"
+                                                    : personOnFile
+                                                        ? "Déjà sur la fiche"
+                                                        : "Déjà présent"
+                                            }
                                         >
-                                            <span className="text-base leading-none shrink-0">{item.icon}</span>
+                                            <span className="shrink-0">{item.icon}</span>
                                             <span className="truncate font-medium">{item.value}</span>
-                                            {isNew && item.type === "person" && (
-                                                <span className="ml-auto text-[10px] shrink-0 text-primary">sera ajouté</span>
-                                            )}
-                                            {personOnFile && (
-                                                <span className="ml-auto text-[10px] shrink-0 opacity-70">sur la fiche</span>
-                                            )}
-                                            {!isNew && !personOnFile && (
-                                                <span className="ml-auto text-[10px] shrink-0 opacity-70">déjà présent</span>
-                                            )}
-                                        </div>
+                                        </span>
                                     );
                                 })}
                             </div>
@@ -525,38 +581,33 @@ export const CallNoteModal = ({
                     )}
                 </div>
 
-                <div className="px-5 py-3 border-t border-border/60 flex items-center justify-between gap-2 bg-secondary/30">
-                    <div className="text-[11px] text-muted-foreground min-w-0">
-                        {hasNewInfo && (
-                            <span className="text-primary font-medium">
-                                ✓ Fiche mise à jour automatiquement
-                            </span>
+                {/* Footer */}
+                <div className="px-5 py-3 border-t border-border/60 flex items-center justify-between gap-2 bg-secondary/20 shrink-0">
+                    <p className="text-[10px] text-muted-foreground min-w-0 truncate">
+                        {footerHint || (
+                            <>
+                                <kbd className="font-mono opacity-70">{isMac ? "⌘" : "Ctrl"}+↵</kbd>
+                                {" "}dans la note
+                            </>
                         )}
-                        {!hasNewInfo && appointment && (
-                            <span className="text-primary font-medium">RDV sera enregistré</span>
-                        )}
-                        {!hasNewInfo && !appointment && suggestRelance && showRelanceSuggest && (
-                            <span className="text-amber-600 dark:text-amber-400 font-medium truncate block">
-                                Rappel · {effectiveOutcome === "noanswer" ? noAnswerDueLabel : relanceDueLabel}
-                            </span>
-                        )}
-                    </div>
-                    <div className="flex gap-2 shrink-0">
+                    </p>
+                    <div className="flex gap-1.5 shrink-0">
                         <Button
                             variant="ghost"
                             onClick={skip}
                             data-testid="call-note-skip"
-                            className="h-10 rounded-full"
+                            className="h-9 rounded-full px-3 text-[13px]"
                         >
                             Passer
                         </Button>
                         <Button
                             onClick={save}
+                            disabled={saving || recordingBusy}
                             data-testid="call-note-save"
-                            className="h-10 rounded-full bg-primary hover:bg-primary/90 text-primary-foreground"
+                            className="h-9 rounded-full px-4 bg-primary hover:bg-primary/90 text-primary-foreground text-[13px]"
                         >
-                            <Save size={14} className="mr-1.5" />
-                            Enregistrer
+                            <Save size={13} className="mr-1.5" />
+                            {saving ? "…" : recordingBusy ? "Stop d'abord" : "Enregistrer"}
                         </Button>
                     </div>
                 </div>

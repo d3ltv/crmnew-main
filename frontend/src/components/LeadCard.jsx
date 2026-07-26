@@ -15,6 +15,7 @@ import {
     Star,
     CheckCircle2,
     MessageSquare,
+    Mic,
 } from "lucide-react";
 import { getColumnColor } from "@/lib/columnColors";
 import { formatShortDateTime } from "@/lib/dateUtils";
@@ -170,6 +171,48 @@ const MoveColumnButton = ({ lead, workspace, currentColumnId, dispatch, onOpenCh
 };
 
 /* ── Format last contact ──────────────────────────────────────── */
+/** Affiche la note ; si enregistrement audio → micro à côté de « Joint » / « Pas de réponse ». */
+function NoteTextWithAudio({ note }) {
+    const text = note?.text || "";
+    const hasAudio = !!note?.recordingId;
+    if (!hasAudio) return text;
+
+    const mic = (
+        <Mic
+            size={11}
+            strokeWidth={2.25}
+            className="inline-block ml-0.5 -mt-0.5 text-primary shrink-0"
+            aria-label="Appel enregistré"
+        />
+    );
+
+    const parts = text.split(/(Joint|Pas de réponse)/i);
+    if (parts.length === 1) {
+        return (
+            <>
+                {text}
+                {mic}
+            </>
+        );
+    }
+
+    return (
+        <>
+            {parts.map((part, i) => {
+                if (/^(Joint|Pas de réponse)$/i.test(part)) {
+                    return (
+                        <span key={i} className="inline">
+                            {part}
+                            {mic}
+                        </span>
+                    );
+                }
+                return <React.Fragment key={i}>{part}</React.Fragment>;
+            })}
+        </>
+    );
+}
+
 function formatLastContact(iso) {
     if (!iso) return null;
     const d = new Date(iso);
@@ -745,7 +788,9 @@ export const LeadCard = memo(({
                         {lead.notes && lead.notes.length > 0 && (visible.has("lastNote") || isStale) && (
                             <div className={`flex items-start gap-1.5 text-[11.5px] ${isStale ? "text-rose-600 dark:text-rose-400 font-medium" : "text-muted-foreground"}`} data-testid={`lead-event-note-${lead.id}`}>
                                 <MessageSquare size={10} strokeWidth={1.5} className="shrink-0 mt-0.5 opacity-60" />
-                                <span className="line-clamp-2 leading-relaxed">{lead.notes[0].text}</span>
+                                <span className="line-clamp-2 leading-relaxed">
+                                    <NoteTextWithAudio note={lead.notes[0]} />
+                                </span>
                             </div>
                         )}
 

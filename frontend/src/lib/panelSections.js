@@ -13,6 +13,7 @@ import { isMeetingColumn } from "@/constants/columnPatterns";
 export const PANEL_SECTION_IDS = [
     "imported",
     "calendar",
+    "voice",
     "contact",
     "notes",
     "relances",
@@ -24,6 +25,7 @@ export const PANEL_SECTION_IDS = [
 export const PANEL_SECTION_META = {
     imported: { label: "Données importées", icon: "Database" },
     calendar: { label: "Calendrier", icon: "CalendarClock" },
+    voice:    { label: "Vocal", icon: "Mic" },
     contact:  { label: "Contact & coordonnées", icon: "User" },
     notes:    { label: "Notes", icon: "MessageSquare" },
     relances: { label: "Relances", icon: "Repeat2" },
@@ -32,9 +34,9 @@ export const PANEL_SECTION_META = {
     history:  { label: "Historique de statut", icon: "History" },
 };
 
-/** Défaut : calendrier juste sous l'import, avant le contact. */
+/** Défaut : calendrier puis vocal juste sous l'import, avant le contact. */
 export const DEFAULT_PANEL_SECTIONS = {
-    order: ["imported", "calendar", "contact", "notes", "relances", "tags", "deal", "history"],
+    order: ["imported", "calendar", "voice", "contact", "notes", "relances", "tags", "deal", "history"],
     hidden: [],
     collapsed: ["imported"],
 };
@@ -53,7 +55,20 @@ export function normalizePanelSections(raw) {
 
     const order = [...orderIn];
     for (const id of PANEL_SECTION_IDS) {
-        if (!order.includes(id)) order.push(id);
+        if (order.includes(id)) continue;
+        // Nouveaux workspaces / migration : vocal près du haut (sous calendrier)
+        if (id === "voice") {
+            const afterCal = order.indexOf("calendar");
+            const beforeNotes = order.indexOf("notes");
+            const insertAt = afterCal >= 0
+                ? afterCal + 1
+                : beforeNotes >= 0
+                    ? beforeNotes
+                    : order.length;
+            order.splice(insertAt, 0, id);
+        } else {
+            order.push(id);
+        }
     }
 
     const hidden = hiddenIn.filter((id) => order.includes(id));

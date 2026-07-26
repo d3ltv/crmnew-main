@@ -68,7 +68,6 @@ export const KanbanBoard = ({
 
     // --- Leads ordered per column (respects leadOrder if present) ---
     const byColumn = useMemo(() => {
-        const now = Date.now();
         const m = {};
         workspace.columnOrder.forEach((cid) => (m[cid] = []));
         // Group filtered leads by column
@@ -78,17 +77,28 @@ export const KanbanBoard = ({
             if (grouped[l.columnId]) grouped[l.columnId].push(l);
         });
 
-        // Détecte si un lead a un RDV dans moins de 24h (non dépassé)
-        const hasUrgentRdv = (lead) => {
-            if (!isManualRdv(lead.nextAction)) return false;
-            const t = new Date(lead.nextAction.dueAt || lead.nextAction.date).getTime();
-            return t > now - 60000 && t - now < 24 * 3600 * 1000;
+        const activityTs = (lead) => {
+            const hist = lead.statusHistory;
+            const lastStatus = hist?.length ? hist[hist.length - 1]?.at : null;
+            return Math.max(
+                Date.parse(lead.lastContact || 0) || 0,
+                Date.parse(lead.contactedColumnEnteredAt || 0) || 0,
+                Date.parse(lastStatus || 0) || 0,
+                Date.parse(lead.updatedAt || 0) || 0,
+                Date.parse(lead.createdAt || 0) || 0
+            );
         };
 
-        // Sort each group by stored leadOrder if present
+        // Vrai RDV manuel (pas rappel auto / followup)
+        const isPriorityRdv = (lead) => isManualRdv(lead.nextAction);
+        const rdvDue = (lead) => {
+            const t = new Date(lead.nextAction?.dueAt || lead.nextAction?.date || 0).getTime();
+            return Number.isFinite(t) ? t : Number.MAX_SAFE_INTEGER;
+        };
+
         workspace.columnOrder.forEach((cid) => {
-            const col = workspace.columns[cid];
             const stored = workspace.leadOrder?.[cid];
+            let list;
             if (stored && stored.length > 0) {
                 const idToLead = {};
                 grouped[cid].forEach((l) => (idToLead[l.id] = l));
@@ -99,17 +109,23 @@ export const KanbanBoard = ({
                 grouped[cid].forEach((l) => {
                     if (!stored.includes(l.id)) ordered.push(l);
                 });
-                m[cid] = ordered;
+                list = ordered;
             } else {
-                m[cid] = grouped[cid];
+                list = grouped[cid];
             }
 
-            // RDV urgent (< 24h) en tête sur TOUTES les colonnes, peu importe le tri
-            // Priorité absolue sur la colonne autoFollowup (colonne rappel auto)
-            m[cid] = [
-                ...m[cid].filter(hasUrgentRdv),
-                ...m[cid].filter((l) => !hasUrgentRdv(l)),
-            ];
+            // 1) Plus récent → plus ancien
+            // 2) Vrais RDV remontent en tête (échéance croissante)
+            const rdv = list.filter(isPriorityRdv).sort((a, b) => {
+                const byDue = rdvDue(a) - rdvDue(b);
+                if (byDue !== 0) return byDue;
+                return activityTs(b) - activityTs(a);
+            });
+            const rest = list
+                .filter((l) => !isPriorityRdv(l))
+                .sort((a, b) => activityTs(b) - activityTs(a));
+
+            m[cid] = [...rdv, ...rest];
         });
         return m;
     }, [filtered, workspace.columnOrder, workspace.leadOrder, workspace.columns]);

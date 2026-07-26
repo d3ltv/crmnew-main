@@ -23,6 +23,7 @@ import {
     Repeat2,
     MapPin,
     Pencil,
+    Mic,
 } from "lucide-react";
 import { CopyBtn } from "./CopyBtn";
 import { Button } from "@/components/ui/button";
@@ -48,6 +49,9 @@ import {
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { CallRecordingPlayer } from "@/components/CallRecordingPlayer";
+import { VoiceCallSection } from "@/components/VoiceCallSection";
+import { saveCallRecording } from "@/lib/callRecordings";
 import { getColumnColor } from "@/lib/columnColors";
 import {
     ensureWeekday,
@@ -89,7 +93,7 @@ import {
 import { AgencySuspectBadge, AGENCY_NAME_CLS } from "./AgencySuspectBadge";
 import { LeadAvatar } from "./LeadAvatar";
 
-const SECTION_ICONS = { Database, User, MessageSquare, Repeat2, Tag, Trophy, History, CalendarClock };
+const SECTION_ICONS = { Database, User, MessageSquare, Repeat2, Tag, Trophy, History, CalendarClock, Mic };
 
 function formatDateTime(iso) {
     return formatDateTimeLong(iso);
@@ -309,6 +313,8 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
     const { dispatch, state } = useCrm();
     const panelMode = state.leadPanelMode || "side";
     const [noteDraft, setNoteDraft] = useState("");
+    const [noteSaving, setNoteSaving] = useState(false);
+    const [voiceSaving, setVoiceSaving] = useState(false);
     const [tagDraft, setTagDraft] = useState("");
     const [cfLabel, setCfLabel] = useState("");
     const [cfValue, setCfValue] = useState("");
@@ -371,6 +377,8 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
     useEffect(() => {
         // Reset drafts when switching to a different lead
         setNoteDraft("");
+        setNoteSaving(false);
+        setVoiceSaving(false);
         setTagDraft("");
         setCfLabel("");
         setCfValue("");
@@ -495,6 +503,8 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                 return "Relances";
             case "calendar":
                 return "Calendrier";
+            case "voice":
+                return "Vocal";
             default:
                 return PANEL_SECTION_META[id]?.label || id;
         }
@@ -593,13 +603,19 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
         });
     };
 
-    const addNote = () => {
-        if (!noteDraft.trim()) return;
+    const addNote = async () => {
+        if (noteSaving) return;
+        const content = noteDraft.trim();
+        if (!content) return;
+
+        setNoteSaving(true);
+        const noteText = content;
+
         dispatch({
             type: "ADD_NOTE",
             workspaceId: workspace.id,
             leadId: local.id,
-            text: noteDraft.trim(),
+            text: noteText,
         });
 
         // Appliquer les infos détectées
@@ -660,8 +676,8 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
             dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label: "Adresse", value: draftDiff.newAddress, pinned: false });
         }
 
-        const noteText = noteDraft.trim();
         setNoteDraft("");
+        setNoteSaving(false);
 
         if (draftAppointment) {
             toast.success("Note + RDV au calendrier", {
@@ -679,6 +695,39 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                 },
             });
         }
+    };
+
+    const saveVoiceNote = async (payload) => {
+        if (voiceSaving || !payload?.blob) return;
+        setVoiceSaving(true);
+        let recordingId = null;
+        try {
+            recordingId = `rec_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+            await saveCallRecording({
+                id: recordingId,
+                leadId: local.id,
+                workspaceId: workspace.id,
+                blob: payload.blob,
+                mimeType: payload.mimeType,
+                durationMs: payload.durationMs,
+                peaks: payload.peaks,
+            });
+        } catch (err) {
+            console.warn("[LeadVoice] save recording failed:", err);
+            toast.error("Audio non sauvegardé");
+            setVoiceSaving(false);
+            return;
+        }
+
+        dispatch({
+            type: "LOG_CONTACT",
+            workspaceId: workspace.id,
+            leadId: local.id,
+            text: "📞 Joint · Note vocale",
+            recordingId,
+        });
+        toast.success("Appel enregistré · Joint");
+        setVoiceSaving(false);
     };
 
     const addTag = () => {
@@ -1589,11 +1638,13 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                             || /pas\s*de\s*r[eé]ponse|rappeler|relancer|📵/i.test(noteDraft)
                                         ) && (
                                             <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 space-y-2">
-                                                <div className="flex items-center gap-1.5 text-[11px] font-semibold text-primary uppercase tracking-wider">
-                                                    <Sparkles size={11} />
-                                                    {draftAppointment || draftDetectedItems.length > 0
-                                                        ? "Détecté — sera appliqué"
-                                                        : "Suggestion calendrier"}
+                                                <div className="flex items-center justify-between gap-2 text-[11px] font-semibold text-primary uppercase tracking-wider">
+                                                    <span className="inline-flex items-center gap-1.5">
+                                                        <Sparkles size={11} />
+                                                        {draftAppointment || draftDetectedItems.length > 0
+                                                            ? "Détecté — sera appliqué"
+                                                            : "Suggestion calendrier"}
+                                                    </span>
                                                 </div>
                                                 {draftAppointment && (
                                                     <div className="flex items-center justify-between gap-2 text-[12px] text-foreground font-medium">
@@ -1638,11 +1689,11 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                         <div className="flex justify-end">
                                             <Button
                                                 onClick={addNote}
-                                                disabled={!noteDraft.trim()}
+                                                disabled={noteSaving || !noteDraft.trim()}
                                                 data-testid="lead-add-note-btn"
                                                 className="h-9 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 text-xs"
                                             >
-                                                Ajouter
+                                                {noteSaving ? "Enregistrement…" : "Ajouter"}
                                             </Button>
                                         </div>
                                         <div className="space-y-2 pt-2">
@@ -1658,11 +1709,19 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                                     <div className="text-sm whitespace-pre-wrap leading-relaxed">
                                                         {n.text}
                                                     </div>
+                                                    {n.recordingId && (
+                                                        <CallRecordingPlayer
+                                                            recordingId={n.recordingId}
+                                                            leadLabel={local.company || local.contact || "appel"}
+                                                            workspaceId={workspace.id}
+                                                            leadId={local.id}
+                                                        />
+                                                    )}
                                                 </div>
                                             ))}
                                             {(!local.notes || local.notes.length === 0) && (
                                                 <p className="text-xs text-muted-foreground/70 italic text-center py-4">
-                                                    Aucune note pour l'instant.
+                                                    Aucune note pour l&apos;instant.
                                                 </p>
                                             )}
                                         </div>
@@ -1683,6 +1742,24 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                                 </div>
                                             </div>
                                         )}
+                                    </PanelSectionCard>
+                                );
+                            }
+
+                            case "voice": {
+                                const voiceNotes = (local.notes || [])
+                                    .filter((n) => n.recordingId)
+                                    .slice(0, 8);
+                                return (
+                                    <PanelSectionCard {...sectionProps} badge={voiceNotes.length || undefined}>
+                                        <VoiceCallSection
+                                            onSave={saveVoiceNote}
+                                            saving={voiceSaving}
+                                            recent={voiceNotes}
+                                            leadLabel={local.company || local.contact || "appel"}
+                                            workspaceId={workspace.id}
+                                            leadId={local.id}
+                                        />
                                     </PanelSectionCard>
                                 );
                             }

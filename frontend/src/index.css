@@ -62,40 +62,47 @@ body {
         --glow-primary: 0 0 0 3px hsl(var(--primary) / 0.12);
     }
     .dark {
-        --background: 222 14% 8%;
-        --surface: 222 14% 10%;
-        --surface-2: 222 12% 12%;
-        --foreground: 220 10% 94%;
-        --card: 222 14% 13%;
-        --card-foreground: 220 10% 94%;
-        --popover: 222 14% 12%;
-        --popover-foreground: 220 10% 94%;
-        --primary: 211 100% 58%;
+        /*
+         * Mode nuit — inspiré Cursor / VS Code Dark+
+         * Charbon neutre (peu de teinte bleue), contraste texte fort,
+         * accents rares : bleu lien, or status, rouge erreur.
+         */
+        --background: 0 0% 7%;          /* #121212 — fond page */
+        --surface: 0 0% 9%;             /* #171717 — sidebar / topbar */
+        --surface-2: 0 0% 12%;          /* #1e1e1e — zones secondaires */
+        --foreground: 0 0% 88%;         /* #e0e0e0 — texte principal */
+        --card: 0 0% 11%;               /* #1c1c1c — cartes / colonnes */
+        --card-foreground: 0 0% 88%;
+        --popover: 0 0% 10%;            /* #1a1a1a — menus */
+        --popover-foreground: 0 0% 88%;
+        --primary: 212 100% 61%;        /* #3794ff — liens / CTA */
         --primary-foreground: 0 0% 100%;
-        --secondary: 222 12% 16%;
-        --secondary-foreground: 220 10% 94%;
-        --muted: 222 12% 16%;
-        --muted-foreground: 220 8% 56%;
-        --accent: 222 12% 16%;
-        --accent-foreground: 220 10% 94%;
-        --destructive: 4 80% 55%;
+        --secondary: 0 0% 14%;          /* #242424 — chips / rails */
+        --secondary-foreground: 0 0% 88%;
+        --muted: 0 0% 14%;
+        --muted-foreground: 0 0% 53%;   /* #888 — meta / secondaire */
+        --accent: 0 0% 16%;             /* #292929 — hover soft */
+        --accent-foreground: 0 0% 92%;
+        --destructive: 0 84% 62%;       /* #f14c4c */
         --destructive-foreground: 0 0% 100%;
-        --success: 142 55% 45%;
-        --warning: 38 92% 52%;
-        --border: 222 12% 18%;
-        --input: 222 12% 18%;
-        --ring: 211 100% 58%;
+        --success: 145 40% 48%;         /* vert sobre (positif) */
+        --warning: 43 74% 57%;          /* #e2b340 — or “Built” / mise en avant */
+        --border: 0 0% 17%;             /* #2b2b2b — filets fins */
+        --input: 0 0% 8%;               /* #141414 — champs en creux */
+        --ring: 212 100% 61%;
+        --selection: 207 52% 31%;       /* #264f78 */
 
-        --glass-bg: 222 14% 10% / 0.82;
-        --glass-blur: 18px;
-        --glass-saturate: 130%;
+        --glass-bg: 0 0% 9% / 0.88;
+        --glass-blur: 14px;
+        --glass-saturate: 110%;
 
+        /* Flat comme Cursor — pas de glow / ombres épaisses */
         --shadow-card: none;
-        --shadow-card-hover: 0 1px 2px rgba(0, 0, 0, 0.35);
+        --shadow-card-hover: 0 0 0 1px hsl(0 0% 22%);
         --shadow-panel:
-            0 20px 48px -12px rgba(0, 0, 0, 0.55),
-            0 4px 12px -4px rgba(0, 0, 0, 0.3);
-        --glow-primary: 0 0 0 3px hsl(var(--primary) / 0.2);
+            0 8px 24px -8px rgba(0, 0, 0, 0.55),
+            0 0 0 1px hsl(0 0% 17%);
+        --glow-primary: 0 0 0 1px hsl(var(--primary) / 0.45);
     }
 }
 
@@ -116,6 +123,10 @@ body {
     }
     ::selection {
         background: hsl(var(--primary) / 0.2);
+    }
+    .dark ::selection {
+        background: hsl(var(--selection, 207 52% 31%) / 0.9);
+        color: hsl(0 0% 96%);
     }
 }
 
@@ -181,6 +192,29 @@ body {
 }
 .kanban-col-scroll::-webkit-scrollbar-track {
     background: transparent;
+}
+
+/* Scrollbars mode nuit — discrètes comme Cursor */
+.dark {
+    color-scheme: dark;
+}
+.dark ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+.dark ::-webkit-scrollbar-track {
+    background: transparent;
+}
+.dark ::-webkit-scrollbar-thumb {
+    background: hsl(0 0% 22%);
+    border-radius: 6px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+    background: hsl(0 0% 30%);
+    border: 2px solid transparent;
+    background-clip: padding-box;
 }
 
 .kanban-hscroll {

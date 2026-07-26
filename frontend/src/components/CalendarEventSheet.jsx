@@ -36,6 +36,8 @@ import {
     isAgencyDetectionEnabled,
 } from "@/lib/agencyDetection";
 import { AgencySuspectBadge, AGENCY_NAME_CLS } from "./AgencySuspectBadge";
+import { VoiceMicButton } from "./VoiceMicButton";
+import { saveCallRecording } from "@/lib/callRecordings";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -193,6 +195,10 @@ export function CalendarEventSheet({ open, event, onClose }) {
     const [editingSchedule, setEditingSchedule] = useState(false);
     const [atMenu, setAtMenu] = useState(null); // { query, start, end }
     const [pendingMeetingCol, setPendingMeetingCol] = useState(null);
+    const [pendingRecording, setPendingRecording] = useState(null);
+    const [recordingBusy, setRecordingBusy] = useState(false);
+    const [micKey, setMicKey] = useState(0);
+    const [applying, setApplying] = useState(false);
 
     const columnName = workspace?.columns?.[lead?.columnId]?.name || "";
     const brief = useMemo(
@@ -239,6 +245,10 @@ export function CalendarEventSheet({ open, event, onClose }) {
         setEditingSchedule(false);
         setAtMenu(null);
         setPendingMeetingCol(null);
+        setPendingRecording(null);
+        setRecordingBusy(false);
+        setApplying(false);
+        setMicKey((k) => k + 1);
     }, [open, event?.id, event?.dueAt, lead?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
@@ -383,9 +393,31 @@ export function CalendarEventSheet({ open, event, onClose }) {
         }
     };
 
-    const applySmartNote = () => {
+    const applySmartNote = async () => {
+        if (applying || recordingBusy) return;
         const raw = note.trim();
-        if (!raw && !pendingMeetingCol) return;
+        if (!raw && !pendingMeetingCol && !pendingRecording?.blob) return;
+
+        setApplying(true);
+        let recordingId = null;
+        if (pendingRecording?.blob) {
+            try {
+                recordingId = `rec_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+                await saveCallRecording({
+                    id: recordingId,
+                    leadId: lead.id,
+                    workspaceId: workspace.id,
+                    blob: pendingRecording.blob,
+                    mimeType: pendingRecording.mimeType,
+                    durationMs: pendingRecording.durationMs,
+                    peaks: pendingRecording.peaks,
+                });
+            } catch (err) {
+                console.warn("[CalendarNote] save recording failed:", err);
+                toast.error("Audio non sauvegardé");
+                recordingId = null;
+            }
+        }
 
         const appointment = detectAppointment(raw);
         const detected = parseNote(raw);
@@ -398,14 +430,30 @@ export function CalendarEventSheet({ open, event, onClose }) {
         if (!noteText && targetCol) {
             noteText = `Déplacé vers « ${targetCol.name} »`;
         }
+        // Vocal = Joint
+        if (recordingId) {
+            noteText = noteText
+                ? (/^📞|^📵/.test(noteText) ? noteText : `📞 Joint · ${noteText}`)
+                : "📞 Joint · Note vocale";
+        }
 
         if (noteText) {
-            dispatch({
-                type: "ADD_NOTE",
-                workspaceId: workspace.id,
-                leadId: lead.id,
-                text: noteText,
-            });
+            if (recordingId) {
+                dispatch({
+                    type: "LOG_CONTACT",
+                    workspaceId: workspace.id,
+                    leadId: lead.id,
+                    text: noteText,
+                    recordingId,
+                });
+            } else {
+                dispatch({
+                    type: "ADD_NOTE",
+                    workspaceId: workspace.id,
+                    leadId: lead.id,
+                    text: noteText,
+                });
+            }
         }
 
         const patch = {};
@@ -445,6 +493,9 @@ export function CalendarEventSheet({ open, event, onClose }) {
             setEditingSchedule(true);
             setNote(noteText || raw);
             setAtMenu(null);
+            setPendingRecording(null);
+            setMicKey((k) => k + 1);
+            setApplying(false);
             toast.message(`RDV requis pour « ${targetCol.name} »`, {
                 description: "Indiquez la date ci-dessous ou dans la note (ex. lundi 14h).",
             });
@@ -482,6 +533,7 @@ export function CalendarEventSheet({ open, event, onClose }) {
         }
 
         const bits = [];
+        if (recordingId) bits.push("vocal");
         if (noteText) bits.push("note");
         if (person) bits.push(`contact ${person}`);
         if (appointment) bits.push(appointment.label);
@@ -491,7 +543,10 @@ export function CalendarEventSheet({ open, event, onClose }) {
         });
         setNote("");
         setPendingMeetingCol(null);
+        setPendingRecording(null);
+        setMicKey((k) => k + 1);
         setAtMenu(null);
+        setApplying(false);
         onClose?.();
     };
 
@@ -830,10 +885,18 @@ export function CalendarEventSheet({ open, event, onClose }) {
 
                     {/* Note intelligente */}
                     <div className="space-y-1.5 pt-1 border-t border-border/50 relative">
-                        <p className="text-[12px] font-medium inline-flex items-center gap-1.5">
-                            <Wand2 size={12} className="text-primary" />
-                            Note intelligente
-                        </p>
+                        <div className="flex items-center justify-between gap-2">
+                            <p className="text-[12px] font-medium inline-flex items-center gap-1.5">
+                                <Wand2 size={12} className="text-primary" />
+                                Note intelligente
+                            </p>
+                            <VoiceMicButton
+                                key={micKey}
+                                onChange={setPendingRecording}
+                                onBusyChange={setRecordingBusy}
+                                disabled={applying}
+                            />
+                        </div>
                         <p className="text-[10px] text-muted-foreground leading-snug">
                             Ex. « reporter lundi 14h », « mr Durand », « @Relance » — @ propose les colonnes.
                         </p>
@@ -978,13 +1041,23 @@ export function CalendarEventSheet({ open, event, onClose }) {
 
                         <Button
                             type="button"
-                            disabled={!note.trim() && !pendingMeetingCol}
+                            disabled={
+                                applying
+                                || recordingBusy
+                                || (!note.trim() && !pendingMeetingCol && !pendingRecording?.blob)
+                            }
                             className="h-8 rounded-full text-[12px] w-full"
                             onClick={applySmartNote}
                             data-testid="calendar-event-apply-smart"
                         >
                             <MessageSquare size={12} className="mr-1.5" />
-                            Appliquer
+                            {applying
+                                ? "…"
+                                : recordingBusy
+                                    ? "Stop d'abord"
+                                    : pendingRecording?.blob && !note.trim()
+                                        ? "Enregistrer le vocal"
+                                        : "Appliquer"}
                         </Button>
                     </div>
                 </div>

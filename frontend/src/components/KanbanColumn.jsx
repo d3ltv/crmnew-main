@@ -40,12 +40,9 @@ import {
 import { ColorPickerRow } from "./ColorPickerRow";
 import { getColumnColor } from "@/lib/columnColors";
 import { useCrm } from "@/context/CrmContext";
-import { isContactedColumn, isNouveauColumn } from "@/constants/columnPatterns";
+import { isNouveauColumn, isWonColumn } from "@/constants/columnPatterns";
 import { isManualRdv } from "@/lib/nextActionUtils";
 import { getLeadVigilance } from "@/lib/inconsistencyRules";
-
-// Wrapper local : accepte un nom de colonne string
-const isContactedCol = (name = "") => isContactedColumn(name);
 
 // Wrapper qui applique un scale CSS sur la card sans changer le flow du document.
 // Un margin-bottom négatif compense la hauteur "fantôme" réservée par le navigateur.
@@ -158,30 +155,56 @@ export const KanbanColumn = ({
     const color = getColumnColor(column);
     const { dispatch } = useCrm();
 
+    const isWonColumnView = isWonColumn(column.name)
+        || workspace?.pipelineRoles?.won === column.id;
+
+    const wonTotal = useMemo(() => {
+        if (!isWonColumnView) return 0;
+        return leads.reduce((sum, l) => {
+            const v = Number(l.dealValue);
+            return sum + (Number.isFinite(v) ? v : 0);
+        }, 0);
+    }, [leads, isWonColumnView]);
+
+    const wonTotalLabel = useMemo(() => {
+        if (!isWonColumnView) return null;
+        return new Intl.NumberFormat("fr-FR", {
+            style: "currency",
+            currency: "EUR",
+            maximumFractionDigits: 0,
+        }).format(wonTotal);
+    }, [isWonColumnView, wonTotal]);
+
     // ── Tri local — persisté par colonne ──────────────────────────────────────
     const SORT_KEY = `crm_sort_${column.id}`;
+    // Défaut toutes colonnes : plus récent → plus ancien (activité / contact / création)
+    const DEFAULT_SORT = { key: "lastContact", dir: "desc", label: "Plus récent" };
+
     const [sort, setSort] = useState(() => {
         try {
             const s = localStorage.getItem(SORT_KEY);
-            // Si déjà sauvegardé (y compris null explicite), respecter le choix
-            if (s !== null) return JSON.parse(s);
+            if (s !== null) {
+                const parsed = JSON.parse(s);
+                if (parsed) return parsed;
+            }
         } catch {}
-        // Tri par défaut : colonnes "contacté" → dernier contact du plus récent au plus ancien
-        if (isContactedCol(column.name)) {
-            return { key: "lastContact", dir: "desc", label: "Dernier contact" };
-        }
-        return null;
-    }); // null = ordre manuel | { key, dir: "asc"|"desc", label }
+        return DEFAULT_SORT;
+    }); // null = ordre manuel | { key, dir, label }
+
+    // Toujours un tri date par défaut (pas d’ordre manuel désordonné)
+    const effectiveSort = sort || DEFAULT_SORT;
 
     const applySort = (key, label, { preferDesc = false } = {}) => {
         setSort((prev) => {
+            const current = prev || DEFAULT_SORT;
             let next;
-            if (prev?.key === key) {
+            if (current?.key === key) {
                 if (preferDesc) {
-                    // desc → asc → reset (pour vigilance : rouge d’abord au 1er clic)
-                    next = prev.dir === "desc" ? { key, dir: "asc", label } : null;
+                    if (current.dir === "desc") next = { key, dir: "asc", label };
+                    else next = DEFAULT_SORT;
                 } else {
-                    next = prev.dir === "asc" ? { key, dir: "desc", label } : null;
+                    if (current.dir === "asc") next = { key, dir: "desc", label };
+                    else next = DEFAULT_SORT;
                 }
             } else {
                 next = { key, dir: preferDesc ? "desc" : "asc", label };
@@ -192,9 +215,8 @@ export const KanbanColumn = ({
     };
 
     const clearSort = () => {
-        setSort(null);
-        // Stocker null explicitement pour que le tri par défaut ne se réapplique pas
-        try { localStorage.setItem(SORT_KEY, JSON.stringify(null)); } catch {}
+        setSort(DEFAULT_SORT);
+        try { localStorage.setItem(SORT_KEY, JSON.stringify(DEFAULT_SORT)); } catch {}
     };
 
     // Champs extra disponibles dans cette colonne
@@ -204,22 +226,28 @@ export const KanbanColumn = ({
         return [...keys].sort();
     }, [leads]);
 
-    // Leads triés
+    // Leads triés : RDV manuels d’abord, puis plus récent → plus ancien
     const sortedLeads = useMemo(() => {
-        if (!sort) return leads;
-        const { key, dir } = sort;
+        const { key, dir } = effectiveSort;
         const mul = dir === "asc" ? 1 : -1;
+
+        const activityTs = (lead) => {
+            const hist = lead.statusHistory;
+            const lastStatus = hist?.length ? hist[hist.length - 1]?.at : null;
+            const t = Math.max(
+                Date.parse(lead.lastContact || 0) || 0,
+                Date.parse(lead.contactedColumnEnteredAt || 0) || 0,
+                Date.parse(lastStatus || 0) || 0,
+                Date.parse(lead.updatedAt || 0) || 0,
+                Date.parse(lead.createdAt || 0) || 0
+            );
+            return t;
+        };
 
         const getValue = (lead) => {
             if (key === "company")     return (lead.company || "").toLowerCase();
             if (key === "createdAt")   return lead.createdAt || "";
-            if (key === "lastContact") {
-                // Ancienneté du contact : plus récent → plus vieux (dir desc)
-                const t = Date.parse(
-                    lead.lastContact || lead.contactedColumnEnteredAt || lead.updatedAt || lead.createdAt || 0
-                );
-                return Number.isFinite(t) ? t : 0;
-            }
+            if (key === "lastContact") return activityTs(lead);
             if (key === "phone")       return (lead.phone || "").replace(/\D/g, "");
             if (key === "email")       return (lead.email || "").toLowerCase();
             if (key === "dealValue")   return lead.dealValue ?? -Infinity;
@@ -234,16 +262,7 @@ export const KanbanColumn = ({
             return "";
         };
 
-        // Tri appliqué, mais les RDV urgents restent en tête (gérés par KanbanBoard)
-        const now = Date.now();
-        const hasUrgentRdv = (lead) => {
-            if (!isManualRdv(lead.nextAction)) return false;
-            const t = new Date(lead.nextAction.dueAt || lead.nextAction.date).getTime();
-            return t > now - 60000 && t - now < 24 * 3600 * 1000;
-        };
-
-        const urgent = leads.filter(hasUrgentRdv);
-        const rest = [...leads.filter((l) => !hasUrgentRdv(l))].sort((a, b) => {
+        const sortByActive = (a, b) => {
             const va = getValue(a), vb = getValue(b);
             if (va === vb) return 0;
             if (key === "vigilance") {
@@ -253,10 +272,24 @@ export const KanbanColumn = ({
             if (va === "" || va === -Infinity) return 1;
             if (vb === "" || vb === -Infinity) return -1;
             return va < vb ? -mul : mul;
-        });
+        };
 
-        return [...urgent, ...rest];
-    }, [leads, sort, workspace.columns, workspace.inconsistencyConfig]);
+        // Vrais RDV (pas rappel auto / followup) → toujours en tête, bientôt d’abord
+        const isPriorityRdv = (lead) => isManualRdv(lead.nextAction);
+        const rdvDue = (lead) => {
+            const t = new Date(lead.nextAction?.dueAt || lead.nextAction?.date || 0).getTime();
+            return Number.isFinite(t) ? t : Number.MAX_SAFE_INTEGER;
+        };
+
+        const rdvFirst = [...leads.filter(isPriorityRdv)].sort((a, b) => {
+            const byDue = rdvDue(a) - rdvDue(b);
+            if (byDue !== 0) return byDue;
+            return sortByActive(a, b);
+        });
+        const rest = [...leads.filter((l) => !isPriorityRdv(l))].sort(sortByActive);
+
+        return [...rdvFirst, ...rest];
+    }, [leads, effectiveSort, workspace.columns, workspace.inconsistencyConfig]);
 
     useEffect(() => {
         if (editing) inputRef.current?.select();
@@ -394,13 +427,18 @@ export const KanbanColumn = ({
 
                 <span
                     data-testid={`column-count-${column.id}`}
-                    className="text-[12px] text-muted-foreground/70 tabular-nums shrink-0 font-medium"
+                    className={
+                        isWonColumnView
+                            ? "text-[12px] text-foreground/90 tabular-nums shrink-0 font-semibold"
+                            : "text-[12px] text-muted-foreground/70 tabular-nums shrink-0 font-medium"
+                    }
+                    title={isWonColumnView ? `${leads.length} deal${leads.length !== 1 ? "s" : ""}` : undefined}
                 >
-                    {leads.length}
+                    {isWonColumnView ? wonTotalLabel : leads.length}
                 </span>
-                {sort && (
-                    <span title={`Trié par ${sort.label}`} className="shrink-0 text-primary/70">
-                        {sort.dir === "asc" ? <ArrowUp size={11} /> : <ArrowDown size={11} />}
+                {effectiveSort && (
+                    <span title={`Trié par ${effectiveSort.label}`} className="shrink-0 text-primary/70">
+                        {effectiveSort.dir === "asc" ? <ArrowUp size={11} /> : <ArrowDown size={11} />}
                     </span>
                 )}
                 {column.autoFollowup && (
@@ -458,19 +496,19 @@ export const KanbanColumn = ({
                             <DropdownMenuSubTrigger className="flex items-center gap-2">
                                 <ArrowUpDown size={14} className="text-muted-foreground" />
                                 <span>Trier par</span>
-                                {sort && (
+                                {effectiveSort && (
                                     <span className="ml-auto text-[10px] font-medium text-primary truncate max-w-[80px]">
-                                        {sort.label}
+                                        {effectiveSort.label}
                                     </span>
                                 )}
                             </DropdownMenuSubTrigger>
                             <DropdownMenuSubContent className="w-52 rounded-xl">
                                 {/* Reset */}
-                                {sort && (
+                                {effectiveSort?.key !== "lastContact" && (
                                     <>
                                         <DropdownMenuItem onClick={clearSort} className="text-muted-foreground">
                                             <XIcon size={13} className="mr-2" />
-                                            Ordre manuel
+                                            Plus récent (défaut)
                                         </DropdownMenuItem>
                                         <DropdownMenuSeparator />
                                     </>
@@ -485,10 +523,10 @@ export const KanbanColumn = ({
                                     { key: "email",       label: "Email" },
                                     { key: "dealValue",   label: "Valeur deal" },
                                     { key: "createdAt",   label: "Date création" },
-                                    { key: "lastContact", label: "Dernier contact" },
+                                    { key: "lastContact", label: "Plus récent", preferDesc: true },
                                     { key: "vigilance",   label: "Vigilance", preferDesc: true },
                                 ].map(({ key, label, preferDesc }) => {
-                                    const active = sort?.key === key;
+                                    const active = effectiveSort?.key === key;
                                     return (
                                         <DropdownMenuItem
                                             key={key}
@@ -496,7 +534,7 @@ export const KanbanColumn = ({
                                         >
                                             <span className="flex-1">{label}</span>
                                             {active && (
-                                                sort.dir === "asc"
+                                                effectiveSort.dir === "asc"
                                                     ? <ArrowUp size={13} className="text-primary" />
                                                     : <ArrowDown size={13} className="text-primary" />
                                             )}
@@ -511,12 +549,12 @@ export const KanbanColumn = ({
                                         </DropdownMenuLabel>
                                         {extraKeys.map((k) => {
                                             const key = `extra:${k}`;
-                                            const active = sort?.key === key;
+                                            const active = effectiveSort?.key === key;
                                             return (
                                                 <DropdownMenuItem key={key} onClick={() => applySort(key, k)}>
                                                     <span className="flex-1 truncate">{k}</span>
                                                     {active && (
-                                                        sort.dir === "asc"
+                                                        effectiveSort.dir === "asc"
                                                             ? <ArrowUp size={13} className="text-primary" />
                                                             : <ArrowDown size={13} className="text-primary" />
                                                     )}

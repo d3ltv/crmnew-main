@@ -10,6 +10,7 @@ import React, {
 } from "react";
 import { inferColumnColor } from "@/lib/columnColors";
 import { startAutoBackup, stopAutoBackup, saveBackup } from "@/lib/autoBackup";
+import { purgeExpiredCallRecordings } from "@/lib/callRecordings";
 import { resolveLogo } from "@/lib/logoUtils";
 import {
     isContactedColumn,
@@ -1237,6 +1238,7 @@ function reducer(state, action) {
                 id: uid(),
                 text: action.text,
                 at: new Date().toISOString(),
+                ...(action.recordingId ? { recordingId: action.recordingId } : {}),
             };
             return updateWs(state, ws.id, {
                 leads: {
@@ -1246,6 +1248,24 @@ function reducer(state, action) {
                         notes: [note, ...(lead.notes || [])],
                         lastContact: new Date().toISOString(),
                     },
+                },
+            });
+        }
+        case "CLEAR_NOTE_RECORDING": {
+            // Retire recordingId d'une note (le blob IndexedDB est géré à part)
+            const ws = state.workspaces[action.workspaceId];
+            if (!ws) return state;
+            const lead = ws.leads[action.leadId];
+            if (!lead || !action.recordingId) return state;
+            const notes = (lead.notes || []).map((n) => {
+                if (n.recordingId !== action.recordingId) return n;
+                const { recordingId: _rid, ...rest } = n;
+                return rest;
+            });
+            return updateWs(state, ws.id, {
+                leads: {
+                    ...ws.leads,
+                    [action.leadId]: { ...lead, notes },
                 },
             });
         }
@@ -1262,6 +1282,7 @@ function reducer(state, action) {
                           id: uid(),
                           text: action.text,
                           at: now,
+                          ...(action.recordingId ? { recordingId: action.recordingId } : {}),
                       },
                       ...(lead.notes || []),
                   ]
@@ -1316,6 +1337,28 @@ function reducer(state, action) {
                     ...newLeadOrder,
                     [lead.columnId]: srcOrder,
                     [contactedColumn.id]: destOrder,
+                };
+            } else if (contactedColumn && lead.columnId === contactedColumn.id) {
+                // Déjà dans Contacté : remonter en tête (dernier contacté = premier)
+                const destOrder = [
+                    action.leadId,
+                    ...(ws.leadOrder?.[contactedColumn.id] || [])
+                        .filter((id) => id !== action.leadId),
+                ];
+                // Si leadOrder incomplet, reconstruire depuis les leads de la colonne
+                const inCol = Object.values(ws.leads)
+                    .filter((l) => l.columnId === contactedColumn.id && l.id !== action.leadId)
+                    .map((l) => l.id);
+                inCol.forEach((id) => {
+                    if (!destOrder.includes(id)) destOrder.push(id);
+                });
+                newLeadOrder = {
+                    ...newLeadOrder,
+                    [contactedColumn.id]: destOrder,
+                };
+                updatedLead = {
+                    ...updatedLead,
+                    staleInContacted: false,
                 };
             }
 
@@ -2032,6 +2075,11 @@ export function CrmProvider({ children }) {
         // On passe une fonction qui lit toujours l'état le plus récent via stateRef
         startAutoBackup(() => stateRef.current);
         return () => stopAutoBackup();
+    }, []);
+
+    // Purge des enregistrements d'appel locaux > 30 j (sauf téléchargés)
+    useEffect(() => {
+        purgeExpiredCallRecordings();
     }, []);
 
     // Apply theme class on <html>

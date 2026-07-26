@@ -580,7 +580,7 @@ export const WorkspacesPage = () => {
                     >
                         <Clock3 size={13} className="text-primary shrink-0" />
                         <span>
-                            Meilleur créneau historique :{" "}
+                            Créneau à prioriser :{" "}
                             <span className="font-medium text-foreground">{prospectingSlot.shortLabel}</span>
                         </span>
                     </div>
